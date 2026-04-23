@@ -1,0 +1,46 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "data_dir": "./docker/data"
+  },
+
+  "auth": {
+    "tokens": [
+      { "label": "dashboard", "key_env": "SQUAD_DASHBOARD_TOKEN", "scopes": ["*"] }
+    ]
+  },
+
+  "chat": { "delivery": "interrupt" },
+
+  "llm": {
+    "primary": { "model": "anthropic/claude-sonnet-4-5" },
+    "fallbacks": [
+      { "model": "openai/gpt-4o" },
+      { "model": "google/gemini-2.0-flash" }
+    ],
+    "providers": {
+      "anthropic":  { "api_key_env": "ANTHROPIC_API_KEY" },
+      "openai":     { "api_key_env": "OPENAI_API_KEY" },
+      "google":     { "api_key_env": "GOOGLE_API_KEY" },
+      "openrouter": { "api_key_env": "OPENROUTER_API_KEY" }
+    }
+  },
+
+  "subagents": {
+    "max_concurrent_global": 8,
+    "max_concurrent_per_parent": 4,
+    "max_tree_depth": 3
+  },
+
+  "policy": {
+    "approvals": {
+      "default": "tag-match",
+      "require_for_tags": ["write", "exec", "network"],
+      "timeout_seconds": 120
+    }
+  },
+
+  "plugins": [],
+  "channels": {}
+}

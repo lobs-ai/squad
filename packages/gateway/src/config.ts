@@ -1,6 +1,5 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
-import { parse as parseYaml } from "yaml";
 
 const authTokenSchema = z.object({
   label: z.string(),
@@ -30,24 +29,12 @@ export const DELIVERY_MODES = ["interrupt", "queue"] as const;
 export type DeliveryMode = (typeof DELIVERY_MODES)[number];
 
 /**
- * Delivery config accepts three shapes for ergonomics:
+ * Delivery config accepts three shapes for ergonomics. After parsing they
+ * all normalize to the same internal shape.
  *
- *   # Easiest — just pick the default.
- *   chat:
- *     delivery: interrupt
- *
- *   # Still simple — override one knob.
- *   chat:
- *     delivery_mode: interrupt
- *
- *   # Full form — tune every knob.
- *   chat:
- *     delivery:
- *       mode: interrupt
- *       max_queued: 50
- *       collapse_duplicates: true
- *
- * All three normalize to the same internal shape after parsing.
+ *   { "chat": { "delivery": "interrupt" } }
+ *   { "chat": { "delivery_mode": "interrupt" } }
+ *   { "chat": { "delivery": { "mode": "interrupt", "max_queued": 50 } } }
  */
 const deliveryObjectSchema = z
   .object({
@@ -63,11 +50,9 @@ const chatConfigSchema = z
     if (typeof raw !== "object") return raw;
     const obj = raw as Record<string, unknown>;
     const normalized: Record<string, unknown> = { ...obj };
-    // Support the shorthand `chat: { delivery: "interrupt" }`.
     if (typeof normalized.delivery === "string") {
       normalized.delivery = { mode: normalized.delivery };
     }
-    // Support the shorthand `chat: { delivery_mode: "interrupt" }`.
     if (typeof normalized.delivery_mode === "string") {
       const existing =
         typeof normalized.delivery === "object" && normalized.delivery !== null
@@ -79,6 +64,36 @@ const chatConfigSchema = z
     return normalized;
   }, z.object({ delivery: deliveryObjectSchema }))
   .default({});
+
+/**
+ * Model reference for `llm.primary` / `llm.fallbacks[]`. A bare string is
+ * shorthand for `{ "model": "<string>" }` — both accepted so config can stay
+ * compact while leaving room for per-model knobs later (maxTokens, temp, …).
+ */
+const modelRefSchema = z.preprocess(
+  (raw) => (typeof raw === "string" ? { model: raw } : raw),
+  z.object({ model: z.string().min(1) }),
+);
+
+const llmConfigSchema = z
+  .object({
+    /** The first model the runner tries for any new session. */
+    primary: modelRefSchema.default({ model: "claude-sonnet-4-5" }),
+    /**
+     * Ordered fallbacks. If `primary` fails with a fallback-eligible error
+     * (rate limit, 5xx, timeout, network), the runner advances to the next
+     * model in this list and sticks there for the rest of the session.
+     * Auth and invalid-request failures bypass the chain.
+     */
+    fallbacks: z.array(modelRefSchema).default([]),
+    /** Keys / base URLs per provider. */
+    providers: z.record(providerConfigSchema).default({}),
+  })
+  .default({
+    primary: { model: "claude-sonnet-4-5" },
+    fallbacks: [],
+    providers: {},
+  });
 
 export const configSchema = z.object({
   server: z
@@ -93,12 +108,7 @@ export const configSchema = z.object({
       tokens: z.array(authTokenSchema).default([]),
     })
     .default({ tokens: [] }),
-  llm: z
-    .object({
-      default_model: z.string().default("claude-sonnet-4-5"),
-      providers: z.record(providerConfigSchema).default({}),
-    })
-    .default({ default_model: "claude-sonnet-4-5", providers: {} }),
+  llm: llmConfigSchema,
   subagents: z
     .object({
       max_concurrent_global: z.number().int().positive().default(8),
@@ -130,8 +140,11 @@ export type ConfigInput = z.input<typeof configSchema>;
 export function loadConfig(path: string | undefined): Config {
   if (!path) return configSchema.parse({});
   const raw = readFileSync(path, "utf8");
-  const parsed = parseYaml(raw);
-  return configSchema.parse(parsed ?? {});
+  const trimmed = raw.trim();
+  // Treat an empty file like `{}` so setup can land on a path that exists
+  // but hasn't been filled in yet.
+  const parsed = trimmed.length === 0 ? {} : JSON.parse(trimmed);
+  return configSchema.parse(parsed);
 }
 
 /**

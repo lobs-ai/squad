@@ -22,7 +22,9 @@ WORKDIR /app
 
 COPY --from=build /app /app
 
-RUN mkdir -p /app/data
+# Bind-mount target for host-side state (config.json, .env, sqlite, uploads).
+# Owned by /app's user; docker-compose mounts ./docker over the top.
+RUN mkdir -p /app/docker/data
 
 EXPOSE 8080
 

@@ -12,6 +12,7 @@
   "scripts": {
     "build": "pnpm -r build",
     "dev": "pnpm --filter @squad/gateway dev",
+    "setup": "node scripts/setup.mjs",
     "start:local": "scripts/launch-local.sh start",
     "start:dev": "scripts/launch-local.sh dev",
     "start:docker": "scripts/launch-docker.sh up",

@@ -2,15 +2,26 @@ import type { Dispatcher } from "./index.js";
 import type { SessionStore } from "../db/sessions.js";
 import { ProtocolError, ErrorCode } from "@squad/protocol";
 
+export interface SessionDispatchDeps {
+  /** Default primary model when `session.start` is called without one. */
+  defaultModel: string;
+  /** Default fallback chain when `session.start` is called without one. */
+  defaultFallbacks: string[];
+}
+
 export function registerSessionMethods(
   dispatcher: Dispatcher,
   store: SessionStore,
-  defaultModel: string,
+  deps: SessionDispatchDeps,
 ): void {
   dispatcher.register("session.start", async (params) => {
     const session = store.create({
       ...(params.title !== undefined ? { title: params.title } : {}),
-      model: params.model ?? defaultModel,
+      model: params.model ?? deps.defaultModel,
+      // Callers can pin a session to a specific model with `fallbacks: []` to
+      // opt out of the gateway-configured chain. `undefined` inherits the
+      // gateway default.
+      fallbacks: params.fallbacks ?? deps.defaultFallbacks,
       ...(params.platform !== undefined ? { platform: params.platform } : {}),
       ...(params.remoteId !== undefined ? { remoteId: params.remoteId } : {}),
       ...(params.deliveryMode !== undefined ? { deliveryMode: params.deliveryMode } : {}),

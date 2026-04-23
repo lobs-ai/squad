@@ -10,6 +10,7 @@ interface SessionRow {
   platform: string | null;
   remote_id: string | null;
   model: string;
+  fallbacks_json: string;
   status: SessionStatus;
   delivery_mode: DeliveryMode;
   tokens_in: number;
@@ -19,6 +20,16 @@ interface SessionRow {
 }
 
 function rowToRecord(row: SessionRow): SessionRecord {
+  let fallbacks: string[] = [];
+  try {
+    const parsed = JSON.parse(row.fallbacks_json);
+    if (Array.isArray(parsed)) {
+      fallbacks = parsed.filter((x): x is string => typeof x === "string");
+    }
+  } catch {
+    // Corrupted row — fall back to empty. The record is still usable; the
+    // agent loop will just run the primary with no fallback chain.
+  }
   return {
     id: row.id,
     parentSessionId: row.parent_session_id,
@@ -27,6 +38,7 @@ function rowToRecord(row: SessionRow): SessionRecord {
     platform: row.platform,
     remoteId: row.remote_id,
     model: row.model,
+    fallbacks,
     status: row.status,
     deliveryMode: row.delivery_mode,
     tokensIn: row.tokens_in,
@@ -39,6 +51,8 @@ function rowToRecord(row: SessionRow): SessionRecord {
 export interface CreateSessionInput {
   title?: string;
   model: string;
+  /** Ordered fallback models for this session's sticky chain. Defaults to []. */
+  fallbacks?: string[];
   platform?: string;
   remoteId?: string;
   parentSessionId?: string;
@@ -59,11 +73,12 @@ export class SessionStore {
     const now = new Date().toISOString();
     const id = randomUUID();
     const deliveryMode = input.deliveryMode ?? this.defaults.deliveryMode;
+    const fallbacksJson = JSON.stringify(input.fallbacks ?? []);
     this.db
       .prepare(
         `INSERT INTO sessions (id, parent_session_id, subagent_def_id, title, platform, remote_id,
-            model, status, delivery_mode, tokens_in, tokens_out, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'idle', ?, 0, 0, ?, ?)`,
+            model, fallbacks_json, status, delivery_mode, tokens_in, tokens_out, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, 0, 0, ?, ?)`,
       )
       .run(
         id,
@@ -73,6 +88,7 @@ export class SessionStore {
         input.platform ?? null,
         input.remoteId ?? null,
         input.model,
+        fallbacksJson,
         deliveryMode,
         now,
         now,

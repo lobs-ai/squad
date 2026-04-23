@@ -17,10 +17,12 @@
  */
 
 import { randomBytes } from "node:crypto";
-// Squad local edit: use createClient instead of createResilientClient —
-// Squad does not vendor the resilient-client / circuit-breaker / key-manager
-// machinery. Retries and fallbacks live outside the runner.
-import { createClient, parseModelString } from "@squad/llm";
+// Squad local edit: Squad uses a sticky-per-session model chain rather than
+// the lobs-core resilient-client / circuit-breaker / key-manager stack. The
+// chain tries the primary first and advances on fallback-eligible errors
+// (rate limit / 5xx / timeout / network). Once it advances it stays there
+// for the rest of the run — no probe-back-to-primary per turn.
+import { createClient, createModelChain, parseModelString } from "@squad/llm";
 import type { LLMMessage, ContentBlock, ToolUseBlock } from "@squad/llm";
 import {
   type AgentSpec,
@@ -100,8 +102,15 @@ export async function runAgent(spec: AgentSpec): Promise<AgentResult> {
   const hooks = getHookRegistry();
 
   // ── Provider ──────────────────────────────────────────────────────────────
+  // `model` is the primary; `spec.fallbacks` extends the chain. Sticky: once
+  // a fallback takes over, every subsequent turn reuses that model.
   const parsed = parseModelString(model);
-  const llm = spec.clientOverride ?? createClient(model);
+  const fallbacks = spec.fallbacks ?? [];
+  const llm =
+    spec.clientOverride ??
+    (fallbacks.length > 0
+      ? createModelChain({ primary: model, fallbacks })
+      : createClient(model));
 
   // ── System prompt ─────────────────────────────────────────────────────────
   const systemPrompt =

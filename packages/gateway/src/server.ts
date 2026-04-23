@@ -171,7 +171,12 @@ function handleHttp(req: IncomingMessage, res: ServerResponse, deps: GatewayDeps
 
 function buildDispatcher(deps: GatewayDeps): Dispatcher {
   const d = new Dispatcher();
-  registerSessionMethods(d, deps.sessions, deps.config.llm.default_model);
+  const primaryModel = deps.config.llm.primary.model;
+  const fallbackModels = deps.config.llm.fallbacks.map((f) => f.model);
+  registerSessionMethods(d, deps.sessions, {
+    defaultModel: primaryModel,
+    defaultFallbacks: fallbackModels,
+  });
   registerChatMethods(d, {
     sessions: deps.sessions,
     messages: deps.messages,
@@ -179,7 +184,8 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
     broadcast: deps.broadcast,
     logger: deps.logger,
     toolRegistry: deps.toolRegistry,
-    defaultModel: deps.config.llm.default_model,
+    defaultModel: primaryModel,
+    defaultFallbacks: fallbackModels,
     coordinator: deps.coordinator,
     ...(deps.clientOverride !== undefined ? { clientOverride: deps.clientOverride } : {}),
   });
@@ -190,7 +196,8 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
     sessions: deps.sessions,
     startedAt: deps.startedAt,
     version: deps.version,
-    defaultModel: deps.config.llm.default_model,
+    primaryModel,
+    fallbackModels,
     providers: Object.keys(deps.config.llm.providers),
     subagents: {
       maxConcurrentGlobal: deps.config.subagents.max_concurrent_global,

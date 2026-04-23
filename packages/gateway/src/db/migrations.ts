@@ -132,6 +132,13 @@ const migrations: Migration[] = [
       ALTER TABLE sessions ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'interrupt';
     `,
   },
+  {
+    id: 6,
+    name: "session_fallbacks",
+    up: `
+      ALTER TABLE sessions ADD COLUMN fallbacks_json TEXT NOT NULL DEFAULT '[]';
+    `,
+  },
 ];
 
 export function runMigrations(db: DatabaseHandle): void {

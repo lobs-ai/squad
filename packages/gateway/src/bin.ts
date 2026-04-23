@@ -22,7 +22,10 @@ async function main(): Promise<void> {
     });
   }
 
-  const booted = await boot({ config });
+  const booted = await boot({
+    config,
+    ...(configPath ? { configPath } : {}),
+  });
   booted.handle.http.listen(config.server.port, config.server.host, () => {
     logger.info(
       { host: config.server.host, port: config.server.port },

@@ -103,7 +103,7 @@ squad/
 ├── examples/
 │   ├── compose.yml                  # default: one service, Discord in-process
 │   ├── compose.split-channels.yml   # opt-in: gateway + discord as separate services
-│   ├── config.yaml
+│   ├── config.json
 │   └── subagents/                   # starter subagent definitions (code-reviewer, researcher)
 ├── VENDOR.md               # source commit SHAs for files copied from lobs/agentic
 └── docs/
@@ -157,7 +157,7 @@ We drop agentic's `session.ts` (we use our own SQLite session store) and any run
 | Other               | `z-ai`, `minimax`, `kimi`, `opencode-zen`, `opencode-go`                                                        |
 | Escape hatch        | `openai-compatible` (requires a `baseUrl` in config — works against any OpenAI-compatible endpoint)             |
 
-Local providers (`ollama`, `lmstudio`, `llamacpp`, `vllm`) don't require an API key. Every other provider reads `<PROVIDER>_API_KEY` from the environment unless overridden in `config.yaml`.
+Local providers (`ollama`, `lmstudio`, `llamacpp`, `vllm`) don't require an API key. Every other provider reads `<PROVIDER>_API_KEY` from the environment unless overridden in `config.json`.
 
 **Default model** is Anthropic (`claude-sonnet-4-6`), but any installed provider is usable per-session. Sessions, routines, and plugins can specify their own model string. Further providers (a brand-new vendor, a custom fine-tuned endpoint with special auth, etc.) still come as plugins that register an additional `LLMClient`.
 
@@ -341,7 +341,7 @@ my-plugin/
 
 On startup the gateway:
 
-1. Reads `extensions/` and any paths in `config.yaml`'s `plugins` list.
+1. Reads `extensions/` and any paths in `config.json`'s `plugins` list.
 2. For each, dynamically `import()`s the entry, gets the default export, validates it.
 3. Calls `plugin.register(api)` with a scoped `GatewayAPI`:
    - `api.tools.register(tool)`
@@ -641,84 +641,72 @@ Routines are a v1 feature because "run this every morning" is one of the highest
 
 ## Configuration
 
-`config.yaml`:
+`config.json`:
 
-```yaml
-server:
-  host: 0.0.0.0
-  port: 8080
-  data_dir: ./data            # SQLite + logs live here
+```json
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "data_dir": "./data"
+  },
 
-auth:
-  # one or more API keys with scopes
-  tokens:
-    - label: dashboard
-      key_env: SQUAD_DASHBOARD_TOKEN
-      scopes: ["*"]
-    - label: discord-connector
-      key_env: SQUAD_DISCORD_TOKEN
-      scopes: ["channel:discord", "chat.*", "session.*"]
+  "auth": {
+    "tokens": [
+      { "label": "dashboard",          "key_env": "SQUAD_DASHBOARD_TOKEN", "scopes": ["*"] },
+      { "label": "discord-connector",  "key_env": "SQUAD_DISCORD_TOKEN",
+        "scopes": ["channel:discord", "chat.*", "session.*"] }
+    ]
+  },
 
-llm:
-  # Model used when a session / routine doesn't specify its own.
-  # Accepts either a bare model id (provider inferred from the name)
-  # or an explicit "provider/model-id" string.
-  default_model: claude-sonnet-4-6
+  "llm": {
+    "primary": { "model": "anthropic/claude-sonnet-4-5" },
+    "fallbacks": [
+      { "model": "openai/gpt-4o" },
+      { "model": "google/gemini-2.0-flash" }
+    ],
+    "providers": {
+      "anthropic":          { "api_key_env": "ANTHROPIC_API_KEY" },
+      "openai":             { "api_key_env": "OPENAI_API_KEY" },
+      "openrouter":         { "api_key_env": "OPENROUTER_API_KEY" },
+      "google":             { "api_key_env": "GOOGLE_API_KEY" },
+      "groq":               { "api_key_env": "GROQ_API_KEY" },
+      "ollama":             { "base_url":   "http://localhost:11434" },
+      "lmstudio":           { "base_url":   "http://localhost:1234/v1" },
+      "openai-compatible":  { "base_url":   "https://my-custom-endpoint.example.com/v1",
+                              "api_key_env": "MY_CUSTOM_KEY" }
+    }
+  },
 
-  # Per-provider API keys. Omitted providers fall back to <PROVIDER>_API_KEY
-  # environment variables. Local providers (ollama, lmstudio, llamacpp, vllm)
-  # don't need a key.
-  providers:
-    anthropic:
-      api_key_env: ANTHROPIC_API_KEY
-    openai:
-      api_key_env: OPENAI_API_KEY
-    openrouter:
-      api_key_env: OPENROUTER_API_KEY
-    google:
-      api_key_env: GOOGLE_API_KEY
-    groq:
-      api_key_env: GROQ_API_KEY
-    # ... deepseek, mistral, together, xai, perplexity, fireworks, cerebras,
-    #     cohere, sambanova, novita, hyperbolic, lambda, z-ai, minimax, kimi,
-    #     opencode-zen, opencode-go — same shape, all optional.
-    ollama:
-      base_url: http://localhost:11434
-    lmstudio:
-      base_url: http://localhost:1234/v1
-    # Escape hatch for any OpenAI-compatible endpoint not listed above.
-    openai-compatible:
-      base_url: https://my-custom-endpoint.example.com/v1
-      api_key_env: MY_CUSTOM_KEY
+  "plugins": [
+    "./extensions/my-cool-tool",
+    "./extensions/code-reviewer-subagent",
+    "@squad-community/slack-channel"
+  ],
 
-plugins:
-  - ./extensions/my-cool-tool
-  - ./extensions/code-reviewer-subagent
-  - "@squad-community/slack-channel"   # npm package
+  "channels": {
+    "discord": { "process": "inproc", "bot_token_env": "DISCORD_BOT_TOKEN" }
+  },
 
-# Discord is a first-party channel plugin. By default it loads in-process.
-# Set `process: standalone` to run it as a separate service (see
-# examples/compose.split-channels.yml).
-channels:
-  discord:
-    process: inproc            # or "standalone"
-    bot_token_env: DISCORD_BOT_TOKEN
+  "subagents": {
+    "max_concurrent_global": 8,
+    "max_concurrent_per_parent": 4,
+    "max_tree_depth": 3
+  },
 
-subagents:
-  # Pool-wide caps; per-subagent limits live on the subagent definition itself.
-  max_concurrent_global: 8
-  max_concurrent_per_parent: 4
-  max_tree_depth: 3
-
-policy:
-  approvals:
-    # Default: prompt for approval on any tool with a matching tag.
-    # Plugin-supplied ApprovalPolicy implementations can auto-approve/deny
-    # before this fires (e.g. path-scoped filesystem rules).
-    default: tag-match
-    require_for_tags: ["write", "exec", "network"]
-    timeout_seconds: 120
+  "policy": {
+    "approvals": {
+      "default": "tag-match",
+      "require_for_tags": ["write", "exec", "network"],
+      "timeout_seconds": 120
+    }
+  }
+}
 ```
+
+**Models.** `llm.primary` is the model the runner tries first for every new session. `llm.fallbacks` is an ordered list; if the primary fails with a fallback-eligible error (rate limit, 5xx, timeout, network), the runner advances to the next model in the chain and **sticks there for the rest of the session** — no silent drops back to the primary mid-conversation. Auth and invalid-request failures bypass the chain. Each model is a `"provider/model-id"` string or a bare id whose provider is inferred from the prefix. Per-session overrides flow through `session.start({ model, fallbacks })`.
+
+**Providers.** Each provider entry is a key lookup — `api_key_env` names the env var, `api_key` hard-codes the key, `base_url` overrides the endpoint. Omitted providers fall back to `<PROVIDER>_API_KEY` environment variables by convention. Local providers (`ollama`, `lmstudio`, `llamacpp`, `vllm`) don't require a key.
 
 ---
 
@@ -731,7 +719,7 @@ services:
   squad:
     image: squad/squad
     ports: ["8080:8080"]
-    volumes: [./data:/app/data, ./config.yaml:/app/config.yaml:ro]
+    volumes: [./data:/app/data, ./config.json:/app/config.json:ro]
     environment: [ANTHROPIC_API_KEY, SQUAD_DASHBOARD_TOKEN, DISCORD_BOT_TOKEN]
 ```
 
@@ -795,7 +783,7 @@ packages/channel-discord/
 ### Configuration
 
 ```yaml
-# in config.yaml, or a channel-specific file
+# in config.json, or a channel-specific file
 channel:
   discord:
     bot_token_env: DISCORD_BOT_TOKEN

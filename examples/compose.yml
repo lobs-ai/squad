@@ -5,15 +5,13 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8080:8080"
+    env_file:
+      - ../docker/.env
     environment:
-      - SQUAD_CONFIG=/app/config.yaml
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - SQUAD_DASHBOARD_TOKEN=${SQUAD_DASHBOARD_TOKEN:-dev-dashboard-token}
-      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - SQUAD_CONFIG=/app/docker/config.json
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
+      - ../docker:/app/docker
       - ../extensions:/app/extensions:ro
-      - squad-data:/app/data
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
       interval: 30s
@@ -21,6 +19,3 @@ services:
       retries: 3
       start_period: 10s
     restart: unless-stopped
-
-volumes:
-  squad-data:

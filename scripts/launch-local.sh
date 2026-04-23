@@ -23,9 +23,9 @@ if ! command -v pnpm >/dev/null 2>&1; then
   fi
 fi
 
-# Point the gateway at the repo-local config and create its data dir.
-export SQUAD_CONFIG="${SQUAD_CONFIG:-$REPO_ROOT/config.yaml}"
-mkdir -p "$REPO_ROOT/data"
+# Point the gateway at the docker/-mounted config. data_dir inside that
+# config is relative to the repo root, so the local + Docker runs share state.
+export SQUAD_CONFIG="${SQUAD_CONFIG:-$REPO_ROOT/docker/config.json}"
 
 # Only re-install if node_modules is missing or the lockfile is newer.
 if [ ! -d node_modules ] || [ pnpm-lock.yaml -nt node_modules ]; then

@@ -49,6 +49,43 @@ describe("config.chat.delivery parsing", () => {
   });
 });
 
+describe("config.llm primary/fallbacks parsing", () => {
+  it("defaults primary to claude-sonnet-4-5 with no fallbacks", () => {
+    const c = configSchema.parse({});
+    expect(c.llm.primary.model).toBe("claude-sonnet-4-5");
+    expect(c.llm.fallbacks).toEqual([]);
+    expect(c.llm.providers).toEqual({});
+  });
+
+  it("accepts primary as a bare string", () => {
+    const c = configSchema.parse({ llm: { primary: "openai/gpt-4o" } });
+    expect(c.llm.primary.model).toBe("openai/gpt-4o");
+  });
+
+  it("accepts primary as an object", () => {
+    const c = configSchema.parse({ llm: { primary: { model: "openai/gpt-4o" } } });
+    expect(c.llm.primary.model).toBe("openai/gpt-4o");
+  });
+
+  it("accepts fallbacks as a mix of strings and objects", () => {
+    const c = configSchema.parse({
+      llm: {
+        primary: "anthropic/claude-sonnet-4-5",
+        fallbacks: ["openai/gpt-4o", { model: "google/gemini-2.0-flash" }],
+      },
+    });
+    expect(c.llm.fallbacks.map((f) => f.model)).toEqual([
+      "openai/gpt-4o",
+      "google/gemini-2.0-flash",
+    ]);
+  });
+
+  it("rejects empty primary model string", () => {
+    expect(() => configSchema.parse({ llm: { primary: "" } })).toThrow();
+    expect(() => configSchema.parse({ llm: { primary: { model: "" } } })).toThrow();
+  });
+});
+
 describe("loadConfig", () => {
   let tmp: string;
   beforeEach(() => {
@@ -59,32 +96,41 @@ describe("loadConfig", () => {
   it("returns all defaults when path is undefined", () => {
     const c = loadConfig(undefined);
     expect(c.server.port).toBe(8080);
-    expect(c.llm.default_model).toBe("claude-sonnet-4-5");
+    expect(c.llm.primary.model).toBe("claude-sonnet-4-5");
+    expect(c.llm.fallbacks).toEqual([]);
     expect(c.plugins).toEqual([]);
   });
 
-  it("reads a YAML file and merges with defaults", () => {
-    const path = join(tmp, "c.yaml");
+  it("reads a JSON file and merges with defaults", () => {
+    const path = join(tmp, "c.json");
     writeFileSync(
       path,
-      [
-        "server:",
-        "  port: 9999",
-        "llm:",
-        "  default_model: claude-haiku-4-5",
-      ].join("\n"),
+      JSON.stringify({
+        server: { port: 9999 },
+        llm: {
+          primary: "anthropic/claude-haiku-4-5",
+          fallbacks: ["openai/gpt-4o-mini"],
+        },
+      }),
     );
     const c = loadConfig(path);
     expect(c.server.port).toBe(9999);
     expect(c.server.data_dir).toBe("./data"); // default still applied
-    expect(c.llm.default_model).toBe("claude-haiku-4-5");
+    expect(c.llm.primary.model).toBe("anthropic/claude-haiku-4-5");
+    expect(c.llm.fallbacks[0]?.model).toBe("openai/gpt-4o-mini");
   });
 
-  it("treats an empty YAML file as {}", () => {
-    const path = join(tmp, "c.yaml");
+  it("treats an empty JSON file as {}", () => {
+    const path = join(tmp, "c.json");
     writeFileSync(path, "");
     const c = loadConfig(path);
     expect(c.server.port).toBe(8080);
+  });
+
+  it("rejects malformed JSON", () => {
+    const path = join(tmp, "c.json");
+    writeFileSync(path, "{ oops");
+    expect(() => loadConfig(path)).toThrow();
   });
 });
 

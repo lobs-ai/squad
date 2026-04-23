@@ -1,11 +1,16 @@
 import type { Dispatcher } from "./index.js";
 import type { SessionStore } from "../db/sessions.js";
+import { listAvailableModels } from "@squad/llm";
 
 export interface AdminDeps {
   sessions: SessionStore;
   startedAt: number;
   version: string;
-  defaultModel: string;
+  /** The configured primary model for new sessions. */
+  primaryModel: string;
+  /** The configured fallback chain, in order. */
+  fallbackModels: string[];
+  /** Provider names with credentials wired up. */
   providers: string[];
   subagents: { maxConcurrentGlobal: number; maxConcurrentPerParent: number; maxTreeDepth: number };
   approvals: { requireForTags: string[]; timeoutSeconds: number };
@@ -26,10 +31,21 @@ export function registerAdminMethods(dispatcher: Dispatcher, deps: AdminDeps): v
   });
 
   dispatcher.register("admin.config", async () => ({
-    defaultModel: deps.defaultModel,
+    primary: { model: deps.primaryModel },
+    fallbacks: deps.fallbackModels.map((model) => ({ model })),
     providers: deps.providers,
     subagents: deps.subagents,
     approvals: deps.approvals,
+  }));
+
+  dispatcher.register("admin.models", async () => ({
+    models: listAvailableModels(deps.providers).map((m) => ({
+      id: m.id,
+      displayName: m.displayName,
+      provider: m.provider,
+      contextWindow: m.contextWindow,
+      ...(m.notes !== undefined ? { notes: m.notes } : {}),
+    })),
   }));
 
   // tokens.* writes are intentionally not in Phase 3. Added in Phase 10.

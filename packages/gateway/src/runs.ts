@@ -45,6 +45,8 @@ export interface RunOptions {
    */
   persistUserMessage: boolean;
   model: string;
+  /** Ordered fallback models for this session's sticky chain. */
+  fallbacks?: string[];
   systemPrompt?: string;
   toolRegistry: ToolRegistry;
   clientOverride?: LLMClient;
@@ -116,6 +118,7 @@ export async function runChatTurn(
         .join("\n") || "",
     agent: "default",
     model: options.model,
+    fallbacks: options.fallbacks ?? [],
     cwd: process.cwd(),
     tools: options.toolRegistry.names(),
     toolRegistry: options.toolRegistry,

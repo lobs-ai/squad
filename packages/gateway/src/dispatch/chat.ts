@@ -19,6 +19,7 @@ export interface ChatDeps {
   logger: Logger;
   toolRegistry: ToolRegistry;
   defaultModel: string;
+  defaultFallbacks: string[];
   coordinator: RunCoordinator;
   /** Testing seam: inject a stub LLMClient to bypass real provider calls. */
   clientOverride?: LLMClient;
@@ -39,6 +40,10 @@ export function registerChatMethods(dispatcher: Dispatcher, deps: ChatDeps): voi
   ): Promise<MessageRecord | null> => {
     const session = deps.sessions.get(sessionId);
     const model = session.model || deps.defaultModel;
+    // Fallbacks are pinned at session creation (see session.start). New
+    // sessions created via channels that don't know about the chain fall
+    // back to the gateway default so every session still gets resilience.
+    const fallbacks = session.fallbacks.length > 0 ? session.fallbacks : deps.defaultFallbacks;
     return new Promise<MessageRecord | null>((resolve, reject) => {
       let resolved = false;
       const run = runChatTurn(
@@ -48,6 +53,7 @@ export function registerChatMethods(dispatcher: Dispatcher, deps: ChatDeps): voi
           userContent: content,
           persistUserMessage: opts.persistUserMessage,
           model,
+          fallbacks,
           toolRegistry: deps.toolRegistry,
           onUserMessagePersisted: (msg) => {
             resolved = true;

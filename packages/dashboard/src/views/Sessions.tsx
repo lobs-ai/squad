@@ -17,6 +17,11 @@ export function Sessions({
           <div className="meta">
             <span className={`status ${s.status}`}>{s.status}</span>
             <span className="model">{s.model}</span>
+            {s.fallbacks.length > 0 && (
+              <span className="fallbacks" title={s.fallbacks.join(" → ")}>
+                +{s.fallbacks.length} fallback{s.fallbacks.length === 1 ? "" : "s"}
+              </span>
+            )}
             <span className="tokens">{s.tokensIn + s.tokensOut} tokens</span>
           </div>
         </div>

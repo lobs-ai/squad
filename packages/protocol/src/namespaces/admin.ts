@@ -13,7 +13,8 @@ export const adminHealthResult = z.object({
 
 export const adminConfigParams = z.object({}).optional();
 export const adminConfigResult = z.object({
-  defaultModel: z.string(),
+  primary: z.object({ model: z.string() }),
+  fallbacks: z.array(z.object({ model: z.string() })),
   providers: z.array(z.string()),
   subagents: z.object({
     maxConcurrentGlobal: z.number().int().positive(),
@@ -24,6 +25,19 @@ export const adminConfigResult = z.object({
     requireForTags: z.array(z.string()),
     timeoutSeconds: z.number().int().positive(),
   }),
+});
+
+export const adminModelsParams = z.object({}).optional();
+export const adminModelsResult = z.object({
+  models: z.array(
+    z.object({
+      id: z.string(),
+      displayName: z.string(),
+      provider: z.string(),
+      contextWindow: z.number().int().nonnegative(),
+      notes: z.string().optional(),
+    }),
+  ),
 });
 
 export const tokenScopeSchema = z.string();
@@ -52,6 +66,7 @@ export const adminTokensRevokeResult = z.object({ token: tokenRecordSchema });
 export const adminMethods = {
   "admin.health": { params: adminHealthParams, result: adminHealthResult },
   "admin.config": { params: adminConfigParams, result: adminConfigResult },
+  "admin.models": { params: adminModelsParams, result: adminModelsResult },
   "admin.tokens.create": { params: adminTokensCreateParams, result: adminTokensCreateResult },
   "admin.tokens.revoke": { params: adminTokensRevokeParams, result: adminTokensRevokeResult },
 } as const;

@@ -14,6 +14,12 @@ export const sessionRecordSchema = z.object({
   platform: z.string().nullable(),
   remoteId: z.string().nullable(),
   model: z.string(),
+  /**
+   * Ordered list of fallback models. Empty when the session has no fallback
+   * chain beyond the primary. Fallbacks are sticky for the life of the
+   * session — once one takes over, the runner stays on it.
+   */
+  fallbacks: z.array(z.string()).default([]),
   status: sessionStatus,
   deliveryMode: deliveryMode,
   tokensIn: z.number().int().nonnegative(),
@@ -27,6 +33,7 @@ export type SessionRecord = z.infer<typeof sessionRecordSchema>;
 export const sessionStartParams = z.object({
   title: z.string().optional(),
   model: z.string().optional(),
+  fallbacks: z.array(z.string()).optional(),
   platform: z.string().optional(),
   remoteId: z.string().optional(),
   systemPrompt: z.string().optional(),

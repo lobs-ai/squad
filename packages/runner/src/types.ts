@@ -67,10 +67,19 @@ export interface AgentSpec {
   agent: string;
 
   /**
-   * Model string in "provider/model-id" format.
+   * Primary model string in "provider/model-id" format. Required.
    * @example "anthropic/claude-sonnet-4-20250514"
    */
   model: string;
+
+  /**
+   * Ordered fallback models. If the primary fails with a fallback-eligible
+   * error (rate limit, 5xx, timeout, network), the runner advances to the
+   * next model and sticks there for the rest of this `runAgent` call. Auth
+   * and invalid-request failures bypass the chain. Leave empty for no
+   * fallback.
+   */
+  fallbacks?: string[];
 
   /** Working directory for exec / file operations. */
   cwd: string;

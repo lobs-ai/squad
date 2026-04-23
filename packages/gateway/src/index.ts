@@ -4,7 +4,9 @@ import {
   registerTaskTools,
   registerAskUserTool,
   registerSpawnSubagentTool,
+  registerConfigTools,
 } from "@squad/tools";
+import { JsonConfigBackend } from "./config-backend.js";
 import { logger } from "./logger.js";
 import { resolveTokenSecrets, configSchema, type Config } from "./config.js";
 import { Authenticator } from "./auth.js";
@@ -31,6 +33,7 @@ import { createGatewayServer, type GatewayHandle } from "./server.js";
 
 export { logger } from "./logger.js";
 export { loadConfig, type Config } from "./config.js";
+export { JsonConfigBackend } from "./config-backend.js";
 export { createGatewayServer } from "./server.js";
 export { Broadcast } from "./broadcast.js";
 export { Authenticator } from "./auth.js";
@@ -58,6 +61,13 @@ export const VERSION = "0.0.0";
 export interface BootOptions {
   config: Config;
   toolRegistry?: ToolRegistry;
+  /**
+   * Absolute path to the config.json file. When set, the agent gets
+   * `get_config` / `set_config` / `unset_config` / `list_config_paths`
+   * tools that persist edits back to this file. Omit to disable the
+   * config tools (tests, ephemeral deployments).
+   */
+  configPath?: string;
   /** Testing seam: inject an LLMClient to bypass real provider calls. */
   clientOverride?: LLMClient;
 }
@@ -87,8 +97,12 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   const startedAt = Date.now();
   // Re-parse through configSchema so callers that pass partial literals get
   // sensible defaults (chat.delivery, etc.). Idempotent for already-parsed
-  // values.
-  const config = configSchema.parse(opts.config) as Config;
+  // values. Held in a mutable ref so config-tool edits are visible to code
+  // that reads `liveConfig.current` later in the process lifetime.
+  const liveConfig: { current: Config } = {
+    current: configSchema.parse(opts.config) as Config,
+  };
+  const config = liveConfig.current;
 
   const dbPath = join(config.server.data_dir, "squad.db");
   const db = openDb({ path: dbPath });
@@ -139,6 +153,16 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   registerAskUserTool(toolRegistry, questionBackendFor(questions));
   registerSpawnSubagentTool(toolRegistry, subagentBackendFor(subagentPool, subagentRegistry));
 
+  if (opts.configPath) {
+    const configBackend = new JsonConfigBackend({
+      path: opts.configPath,
+      onUpdate: (next) => {
+        liveConfig.current = next;
+      },
+    });
+    registerConfigTools(toolRegistry, configBackend);
+  }
+
   const deliveryQueue = new DeliveryQueue({
     maxQueued: config.chat.delivery.max_queued,
     collapseDuplicates: config.chat.delivery.collapse_duplicates,
@@ -179,7 +203,8 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     async (r) => {
       logger.info({ routine: r.name }, "routine fired");
       const session = sessions.create({
-        model: r.model ?? config.llm.default_model,
+        model: r.model ?? config.llm.primary.model,
+        fallbacks: config.llm.fallbacks.map((f) => f.model),
         title: `routine:${r.name}`,
       });
       // Phase 10 runs the routine prompt through the agent loop via the

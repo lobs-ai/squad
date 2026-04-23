@@ -26,14 +26,13 @@ pnpm-debug.log*
 .env
 .env.*
 !.env.example
-config.yaml
-config.prod.yaml
 
-# Data
-data/
-
-# Docker
-.docker/
+# Docker bind-mount surface — all host-side state lives here.
+# Everything inside is gitignored; the folder ships with just README + .gitkeep
+# and `pnpm setup` populates it with config.json + .env.
+docker/*
+!docker/.gitkeep
+!docker/README.md
 
 # OS
 .DS_Store

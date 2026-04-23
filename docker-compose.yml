@@ -3,6 +3,9 @@ services:
   # plugin host, dashboard static assets, SQLite storage, and the Discord channel
   # running in-process. One image, one mention of the bot, done.
   #
+  # All host-side state (config.json, .env, sqlite, uploads) lives under ./docker
+  # and is bind-mounted at /app/docker. Run `pnpm setup` to generate it.
+  #
   # To isolate Discord in a separate process (recommended if you run multiple
   # channels or want a crash in the bot to not restart the gateway), see
   # examples/compose.split-channels.yml.
@@ -11,16 +14,14 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8080:8080"            # HTTP + WebSocket + dashboard
+      - "8080:8080" # HTTP + WebSocket + dashboard
+    env_file:
+      - ./docker/.env
     environment:
-      - SQUAD_CONFIG=/app/config.yaml
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - SQUAD_DASHBOARD_TOKEN=${SQUAD_DASHBOARD_TOKEN:-dev-dashboard-token}
-      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - SQUAD_CONFIG=/app/docker/config.json
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
+      - ./docker:/app/docker
       - ./extensions:/app/extensions:ro
-      - squad-data:/app/data
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
       interval: 30s
@@ -28,6 +29,3 @@ services:
       retries: 3
       start_period: 10s
     restart: unless-stopped
-
-volumes:
-  squad-data:
