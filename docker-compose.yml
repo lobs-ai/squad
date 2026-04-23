@@ -1,0 +1,66 @@
+services:
+  # The Squad gateway — the central hub
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - SQUAD_CONFIG=/app/config.yaml
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - squad-data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # Ollama runtime (optional — comment out if using cloud API)
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    restart: unless-stopped
+    profiles:
+      - local-ai
+
+  # CLI connector for testing
+  cli:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["--connector", "cli"]
+    environment:
+      - SQUAD_GATEWAY_URL=ws://gateway:8080
+      - SQUAD_AUTH_API_KEY=${SQUAD_AUTH_API_KEY:-dev-key}
+    profiles:
+      - cli
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+  # Discord connector (configure with your bot token)
+  discord:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["--connector", "discord"]
+    environment:
+      - SQUAD_GATEWAY_URL=ws://gateway:8080
+      - SQUAD_AUTH_API_KEY=${SQUAD_AUTH_API_KEY:-dev-key}
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+    profiles:
+      - discord
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+volumes:
+  squad-data:
+  ollama-data:

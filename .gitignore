@@ -1,0 +1,35 @@
+# Binaries
+squad-gateway
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Config with secrets
+config.yaml
+config.prod.yaml
+
+# Data
+data/
+
+# Docker
+.docker/
+
+# OS
+.DS_Store
+Thumbs.db
