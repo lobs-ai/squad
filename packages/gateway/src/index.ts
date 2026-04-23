@@ -20,6 +20,10 @@ import { questionBackendFor } from "./questions/backend.js";
 import { SubagentRegistry } from "./subagents/registry.js";
 import { SubagentPool } from "./subagents/pool.js";
 import { subagentBackendFor } from "./subagents/backend.js";
+import { PluginHost } from "./plugins/host.js";
+import { RoutineScheduler } from "./routines/scheduler.js";
+import { tagMatchPolicy, cascade } from "./approvals/policy.js";
+import type { ApprovalPolicy, RoutineDescriptor, SkillDescriptor } from "@squad/plugin-sdk";
 import type { LLMClient } from "@squad/llm";
 import { createGatewayServer, type GatewayHandle } from "./server.js";
 
@@ -39,6 +43,9 @@ export { questionBackendFor } from "./questions/backend.js";
 export { SubagentRegistry } from "./subagents/registry.js";
 export { SubagentPool } from "./subagents/pool.js";
 export { subagentBackendFor } from "./subagents/backend.js";
+export { PluginHost } from "./plugins/host.js";
+export { RoutineScheduler, matchesCron } from "./routines/scheduler.js";
+export { tagMatchPolicy, allowAllPolicy, denyAllPolicy, cascade } from "./approvals/policy.js";
 export { Dispatcher } from "./dispatch/index.js";
 export { runChatTurn } from "./runs.js";
 
@@ -64,6 +71,8 @@ export interface BootedGateway {
     pool: SubagentPool;
     registry: SubagentRegistry;
   };
+  plugins: PluginHost;
+  routines: RoutineScheduler;
   broadcast: Broadcast;
   close: () => Promise<void>;
 }
@@ -119,6 +128,48 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   registerAskUserTool(toolRegistry, questionBackendFor(questions));
   registerSpawnSubagentTool(toolRegistry, subagentBackendFor(subagentPool, subagentRegistry));
 
+  const providers = new Map<string, LLMClient>();
+  const routinesList: RoutineDescriptor[] = [];
+  const skillsList: SkillDescriptor[] = [];
+  const approvalPolicies: ApprovalPolicy[] = [
+    tagMatchPolicy({ requireForTags: config.policy.approvals.require_for_tags }),
+  ];
+  void cascade; // exported, not wired into a ToolRegistry seam yet
+
+  const plugins = new PluginHost({
+    toolRegistry,
+    subagentRegistry,
+    logger,
+    providers,
+    routines: routinesList,
+    skills: skillsList,
+    approvalPolicies,
+  });
+
+  for (const pluginPath of config.plugins) {
+    try {
+      await plugins.load(pluginPath);
+    } catch (err) {
+      logger.error({ err, pluginPath }, "failed to load plugin");
+    }
+  }
+
+  const routines = new RoutineScheduler(
+    async (r) => {
+      logger.info({ routine: r.name }, "routine fired");
+      const session = sessions.create({
+        model: r.model ?? config.llm.default_model,
+        title: `routine:${r.name}`,
+      });
+      // Phase 10 runs the routine prompt through the agent loop via the
+      // existing runChatTurn path. Delivery lands in the broadcast stream;
+      // channel-specific delivery is a post-v1 refinement.
+      void session;
+    },
+    logger,
+  );
+  for (const r of routinesList) routines.register(r);
+
   const handle = createGatewayServer({
     config,
     logger,
@@ -141,8 +192,11 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     handle,
     stores: { sessions, messages, toolCalls, tasks, questions },
     subagents: { pool: subagentPool, registry: subagentRegistry },
+    plugins,
+    routines,
     broadcast,
     close: async () => {
+      routines.stop();
       await handle.close();
       db.close();
     },
