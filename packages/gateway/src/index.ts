@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { ToolRegistry, registerTaskTools } from "@squad/tools";
+import { ToolRegistry, registerTaskTools, registerAskUserTool } from "@squad/tools";
 import { logger } from "./logger.js";
 import { loadConfig, resolveTokenSecrets, type Config } from "./config.js";
 import { Authenticator } from "./auth.js";
@@ -10,6 +10,8 @@ import { MessageStore } from "./db/messages.js";
 import { ToolCallStore } from "./db/tool-calls.js";
 import { TaskStore } from "./tasks/store.js";
 import { taskBackendFor } from "./tasks/backend.js";
+import { QuestionStore } from "./questions/store.js";
+import { questionBackendFor } from "./questions/backend.js";
 import type { LLMClient } from "@squad/llm";
 import { createGatewayServer, type GatewayHandle } from "./server.js";
 
@@ -24,6 +26,8 @@ export { MessageStore } from "./db/messages.js";
 export { ToolCallStore } from "./db/tool-calls.js";
 export { TaskStore } from "./tasks/store.js";
 export { taskBackendFor } from "./tasks/backend.js";
+export { QuestionStore } from "./questions/store.js";
+export { questionBackendFor } from "./questions/backend.js";
 export { Dispatcher } from "./dispatch/index.js";
 export { runChatTurn } from "./runs.js";
 
@@ -43,6 +47,7 @@ export interface BootedGateway {
     messages: MessageStore;
     toolCalls: ToolCallStore;
     tasks: TaskStore;
+    questions: QuestionStore;
   };
   broadcast: Broadcast;
   close: () => Promise<void>;
@@ -66,8 +71,21 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     onUpdated: (task) => broadcast.publish(`tasks.updated/${task.taskListId}`, { task }),
     onDeleted: (task) => broadcast.publish(`tasks.deleted/${task.taskListId}`, { task }),
   });
+  const questions = new QuestionStore(
+    db,
+    {
+      onAsked: (q) => broadcast.publish(`questions.asked/${q.sessionId}`, { question: q }),
+      onAnswered: (q) => broadcast.publish(`questions.answered/${q.sessionId}`, { question: q }),
+      onCancelled: (q) =>
+        broadcast.publish(`questions.cancelled/${q.sessionId}`, { question: q }),
+      onTimedOut: (q) =>
+        broadcast.publish(`questions.timed_out/${q.sessionId}`, { question: q }),
+    },
+    config.policy.approvals.timeout_seconds,
+  );
   const toolRegistry = opts.toolRegistry ?? new ToolRegistry();
   registerTaskTools(toolRegistry, taskBackendFor(tasks));
+  registerAskUserTool(toolRegistry, questionBackendFor(questions));
 
   const handle = createGatewayServer({
     config,
@@ -78,6 +96,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     messages,
     toolCalls,
     tasks,
+    questions,
     toolRegistry,
     startedAt,
     version: VERSION,
@@ -86,7 +105,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
 
   return {
     handle,
-    stores: { sessions, messages, toolCalls, tasks },
+    stores: { sessions, messages, toolCalls, tasks, questions },
     broadcast,
     close: async () => {
       await handle.close();

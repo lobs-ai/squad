@@ -91,6 +91,27 @@ const migrations: Migration[] = [
       CREATE INDEX idx_tasks_status ON tasks(task_list_id, status);
     `,
   },
+  {
+    id: 3,
+    name: "questions",
+    up: `
+      CREATE TABLE questions (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id),
+        asked_by TEXT NOT NULL,
+        input_json TEXT NOT NULL,
+        answers_json TEXT,
+        annotations_json TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        asked_at TEXT NOT NULL,
+        answered_at TEXT,
+        timed_out_at TEXT
+      );
+
+      CREATE INDEX idx_questions_session ON questions(session_id, asked_at);
+      CREATE INDEX idx_questions_status ON questions(status);
+    `,
+  },
 ];
 
 export function runMigrations(db: DatabaseHandle): void {

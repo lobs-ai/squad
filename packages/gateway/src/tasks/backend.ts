@@ -1,4 +1,4 @@
-import type { TaskBackend, Task as ToolTask } from "@squad/tools";
+import type { TaskBackend, TaskBackendTask } from "@squad/tools";
 import type { TaskStore } from "./store.js";
 
 /**
@@ -8,13 +8,13 @@ import type { TaskStore } from "./store.js";
  */
 export function taskBackendFor(store: TaskStore): TaskBackend {
   return {
-    create: async (input) => store.create(input) as Promise<ToolTask>,
-    update: async (input) => store.update(input) as Promise<ToolTask>,
-    get: async (sessionId, taskId) => store.get(sessionId, taskId) as ToolTask,
+    create: async (input) => store.create(input) as Promise<TaskBackendTask>,
+    update: async (input) => store.update(input) as Promise<TaskBackendTask>,
+    get: async (sessionId, taskId) => store.get(sessionId, taskId) as TaskBackendTask,
     list: async (sessionId, opts) =>
       store.list(sessionId, {
         includeDeleted: opts.includeDeleted ?? false,
         ...(opts.status !== undefined ? { status: opts.status } : {}),
-      }) as ToolTask[],
+      }) as TaskBackendTask[],
   };
 }

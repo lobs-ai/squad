@@ -12,10 +12,12 @@ import { registerSessionMethods } from "./dispatch/session.js";
 import { registerChatMethods } from "./dispatch/chat.js";
 import { registerAdminMethods } from "./dispatch/admin.js";
 import { registerTaskMethods } from "./dispatch/tasks.js";
+import { registerQuestionMethods } from "./dispatch/questions.js";
 import type { SessionStore } from "./db/sessions.js";
 import type { MessageStore } from "./db/messages.js";
 import type { ToolCallStore } from "./db/tool-calls.js";
 import type { TaskStore } from "./tasks/store.js";
+import type { QuestionStore } from "./questions/store.js";
 
 export interface GatewayDeps {
   config: Config;
@@ -26,6 +28,7 @@ export interface GatewayDeps {
   messages: MessageStore;
   toolCalls: ToolCallStore;
   tasks: TaskStore;
+  questions: QuestionStore;
   toolRegistry: ToolRegistry;
   startedAt: number;
   version: string;
@@ -121,6 +124,7 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
     ...(deps.clientOverride !== undefined ? { clientOverride: deps.clientOverride } : {}),
   });
   registerTaskMethods(d, deps.tasks, deps.broadcast);
+  registerQuestionMethods(d, deps.questions);
   registerAdminMethods(d, {
     sessions: deps.sessions,
     startedAt: deps.startedAt,
