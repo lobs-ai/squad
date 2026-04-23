@@ -2,58 +2,82 @@
 
 ## Overview
 
-Squad is a self-hostable agent platform designed to live in **any communication channel** — chat apps, email, SMS, voice, webhooks, IDEs — alongside a local web dashboard. A single **gateway** process owns everything — sessions, tool execution, plugin loading, the WebSocket/HTTP surface — and every communication channel plugs into it through the same **channel** contract.
+Squad is a self-hostable agent platform that competes on two things: **usability** and **subagents**. Everything else in the design serves one of those two.
 
-Channels are the extension story for "how users talk to agents". **Discord is the first channel we ship** because it's a clean, well-documented target that proves the abstraction end-to-end. Anything we learn building it should shape the channel contract; anything Discord-specific stays in the Discord package.
+The four load-bearing primitives:
 
-The design target for v1 is **stability and focus**: one shipped channel to start (Discord), one storage engine (SQLite), one deployment story (Docker Compose). For LLMs we ship every provider the vendored agent loop supports out of the box — Anthropic, OpenAI, and ~24 OpenAI-compatible endpoints — so users aren't locked to a single model vendor on day one. Anything beyond this core — additional channels, tools, skills, scheduled routines, new providers — is a plugin.
+1. **Subagents.** A parent agent can spawn workers with their own model, tools, system prompt, and token budget; they run in parallel, stream progress back through the same protocol, and every run is its own searchable session. Subagent definitions are plugins — ship a `code-reviewer` or `researcher` once, any agent can call it.
+2. **Tasks.** A first-class, session-tree-scoped task list. Agents create tasks, claim them, mark them `in_progress` / `completed`, express dependencies, and see each other's progress. Users see the same list. In a multi-subagent run, the task list is the shared plan of record.
+3. **Ask-user questions.** Structured multiple-choice questions with channel-native rendering: Discord buttons, dashboard cards, CLI select-lists, SMS keyword replies. An agent asking a clarifying question is one tool call, not a free-text paragraph the user has to parse and answer correctly. This is the single biggest usability win a channel-agnostic platform can ship.
+4. **The protocol is the product.** Every client of the gateway — Discord, dashboard, CLI, a third-party UI, another channel — speaks the same WebSocket wire. Tasks, ask-user questions, and subagent trees are protocol primitives, so every client gets a consistent rendering story for free. None of them is privileged.
 
-**Influences.** Squad borrows the gateway/plugin/broadcast pattern from OpenClaw, the command-registry and session-persistence patterns from hermes-agent, and vendors its agent loop from [`lobs/agentic`](../agentic) — we copy the files into `packages/runner` and `packages/llm` rather than taking a dependency on the library.
+And one supporting discipline: **vendored, not imported.** `packages/runner` and `packages/llm` are copied from [`lobs/agentic`](../agentic) with pinned source commits in `VENDOR.md`. Upstream velocity can't break Squad; re-sync is a deliberate act.
+
+The design target for v1 is **stability and focus**: one shipped channel to start (Discord), one storage engine (SQLite), one deployment story (a single Docker Compose service). For LLMs we ship every provider the vendored agent loop supports out of the box — native Anthropic, native OpenAI, and ~24 OpenAI-compatible endpoints through one shared client — so users aren't locked to a single model vendor on day one. Anything beyond this core — additional channels, tools, skills, scheduled routines, new providers, reusable subagent definitions — is a plugin.
+
+**Influences and distinctions.** Squad borrows the gateway/plugin/broadcast pattern from OpenClaw and the session-persistence patterns from hermes-agent. Where we differ: OpenClaw's dashboard is privileged; Squad's dashboard is symmetric with every other client. Hermes's headline features are a closed learning loop and a terminal-first UX; Squad's headline features are the subagent primitive, the task primitive, and the ask-user primitive — all rendered natively per channel. We don't try to out-channel OpenClaw or out-learn hermes. We try to be the platform where an agent working across Discord, the dashboard, and a CLI feels native on each one.
 
 ---
 
 ## Design Principles
 
-1. **One process, one deploy.** The gateway runs the agent loop in-process. No separate "runtime service", no cross-process RPC for normal turns. Fewer moving parts = more stable.
+1. **One process, one deploy.** The gateway runs the agent loop — and by default the Discord channel — in-process. A single `docker compose up` stands up the whole stack. Channel plugins can be moved to their own container when scale or isolation demands it, but that's opt-in.
 2. **Any channel, any time.** The gateway is channel-agnostic. Discord, Slack, Telegram, SMS, email, voice, webhooks, IDE plugins — they all implement the same **channel** contract. Squad ships Discord as the reference channel; the rest are plugins.
-3. **Plugins are the extension story.** Tools, LLM providers, channels, skills, and routines are all plugins with a single, uniform entry contract.
-4. **The dashboard is a first-class client.** It connects to the gateway over WebSocket using the same protocol as every channel. Nothing special about being "the UI".
-5. **Vendor the agent loop.** `packages/runner` and `packages/llm` are copied from agentic, not imported. Squad owns them outright and can evolve them freely.
-6. **Self-host by default.** No telemetry, no hosted backend, no cloud-only features. Your data, your channels, your machine.
+3. **Plugins are the extension story.** Tools, LLM providers, channels, skills, routines, and **subagent definitions** are all plugins with a single, uniform entry contract.
+4. **The dashboard is not privileged.** It connects to the gateway over WebSocket using the same protocol as every channel. If the dashboard can do something, a third-party client can too.
+5. **Subagents, tasks, and ask-user are primitives, not tools bolted on.** They have their own protocol namespaces, their own storage, their own rendering contract per channel. A new channel implements tasks and questions by describing how it wants to render them; a new agent gets them for free.
+6. **Usability lives in the channel.** The gateway emits *structured intent* (a question with options, a task update, a subagent spawn). The channel turns it into *native UX* (Discord buttons, a Slack block, a dashboard card, a CLI select prompt). Agents never hand-roll channel-specific markup.
+7. **Vendor the agent loop.** `packages/runner` and `packages/llm` are copied from agentic with commit SHAs pinned in `VENDOR.md`. Squad owns them outright and re-syncs deliberately.
+8. **Self-host by default.** No telemetry, no hosted backend, no cloud-only features. Your data, your channels, your machine.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────┐        ┌───────────────────────────────────────┐
-│   Channel: Discord  │───WS──▶│                                       │
-│   Channel: Slack    │───WS──▶│               Gateway                 │
-│   Channel: Email    │───WS──▶│                                       │
-│   Channel: …        │───WS──▶│  ┌─────────────┐  ┌────────────────┐  │
-└─────────────────────┘        │  │  Dispatch   │  │  Plugin Host   │  │
-┌─────────────────────┐        │  │ (namespaced │  │ (load, init,   │  │
-│    Web Dashboard    │───WS──▶│  │  handlers)  │  │  hook, unload) │  │
-│   (React + Vite)    │◀──WS───│  └──────┬──────┘  └────────┬───────┘  │
-└─────────────────────┘        │         │                  │          │
-                               │  ┌──────▼──────────────────▼───────┐  │
-                               │  │       Runner (agent loop)       │  │
-                               │  │  runAgent() ⇒ LLM + tool calls  │  │
-                               │  └──────┬──────────────────┬───────┘  │
-                               │         │                  │          │
-                               │  ┌──────▼──────┐   ┌───────▼──────┐   │
-                               │  │   LLM       │   │  Tools       │   │
-                               │  │  (Anthropic)│   │  (registry)  │   │
-                               │  └─────────────┘   └──────────────┘   │
-                               │                                       │
-                               │  ┌───────────────────────────────┐    │
-                               │  │   SQLite (sessions, approvals,│    │
-                               │  │   routines, transcripts)      │    │
-                               │  └───────────────────────────────┘    │
-                               └───────────────────────────────────────┘
+┌─────────────────────┐        ┌────────────────────────────────────────────┐
+│ Channel: Discord*   │───WS──▶│                                            │
+│ Channel: Slack      │───WS──▶│                  Gateway                   │
+│ Channel: CLI        │───WS──▶│                                            │
+│ Channel: …          │───WS──▶│  ┌─────────────┐  ┌─────────────────────┐  │
+└─────────────────────┘        │  │  Dispatch   │  │    Plugin Host      │  │
+┌─────────────────────┐        │  │ (namespaced │  │ (load, init, hook,  │  │
+│   Web Dashboard     │───WS──▶│  │  handlers)  │  │  unload, subagents) │  │
+│   (React + Vite)    │◀──WS───│  └──────┬──────┘  └──────────┬──────────┘  │
+└─────────────────────┘        │         │                    │             │
+┌─────────────────────┐        │  ┌──────▼────────────────────▼──────────┐  │
+│  Your third-party   │───WS──▶│  │         Runner (agent loop)          │  │
+│    client / UI      │        │  │   runAgent() ⇒ LLM + tool calls      │  │
+└─────────────────────┘        │  └──────┬────────────────────┬──────────┘  │
+                               │         │                    │             │
+                               │  ┌──────▼──────┐     ┌───────▼──────────┐  │
+                               │  │ LLM clients │     │  Tools + spawn_  │  │
+                               │  │ (27 provs)  │     │  subagent        │  │
+                               │  └─────────────┘     └────────┬─────────┘  │
+                               │                               │             │
+                               │                     ┌─────────▼──────────┐  │
+                               │                     │  Subagent pool     │  │
+                               │                     │  (parallel workers,│  │
+                               │                     │   own sessions)    │  │
+                               │                     └─────────┬──────────┘  │
+                               │                               │             │
+                               │  ┌──────────────┐    ┌────────▼──────────┐  │
+                               │  │ Task store   │    │ Question store    │  │
+                               │  │ (per session │    │ (pending asks,    │  │
+                               │  │  tree, deps) │    │  channel-rendered)│  │
+                               │  └──────┬───────┘    └─────────┬─────────┘  │
+                               │         │                      │            │
+                               │  ┌──────▼──────────────────────▼─────────┐  │
+                               │  │ SQLite (sessions, subagents, tasks,   │  │
+                               │  │ questions, approvals, routines, FTS5) │  │
+                               │  └───────────────────────────────────────┘  │
+                               └────────────────────────────────────────────┘
+
+                     * Discord ships in-process by default.
+                       Out-of-process is a supported opt-in.
 ```
 
-Channels and the dashboard are all **clients** of the gateway. They open a WebSocket, authenticate, subscribe to the scopes they care about, and send/receive the same JSON messages. The gateway runs the agent loop in-process and streams results back to whichever clients asked for them. The gateway never needs to know *which* channel it's talking to — only that something on the other side speaks the channel protocol.
+Channels, the dashboard, and any third-party client are all **equal clients** of the gateway. They open a WebSocket, authenticate, subscribe to the scopes they care about, and send/receive the same JSON messages. The gateway runs the agent loop in-process and streams results back to whichever clients asked for them — including subagent runs, which live on their own topics. The gateway never needs to know *which* kind of client it's talking to — only that the other side speaks the protocol.
 
 ---
 
@@ -62,17 +86,26 @@ Channels and the dashboard are all **clients** of the gateway. They open a WebSo
 ```
 squad/
 ├── packages/
-│   ├── gateway/            # HTTP + WS server, dispatch, plugin host, storage
+│   ├── gateway/            # HTTP + WS server, dispatch, plugin host, storage, subagent pool,
+│   │                       # task store, question store
 │   ├── runner/             # Agent loop (vendored from agentic)
-│   ├── llm/                # LLMClient interface + Anthropic provider (vendored)
-│   ├── tools/              # BaseTool, ToolRegistry, built-in tools
-│   ├── protocol/           # Wire types + Zod schemas (shared by all clients)
+│   ├── llm/                # LLMClient interface + provider implementations (vendored)
+│   ├── tools/              # BaseTool, ToolRegistry, built-in tools:
+│   │                       # spawn_subagent, create_task, update_task, list_tasks, ask_user
+│   ├── protocol/           # Wire types + Zod schemas (includes subagents.*, tasks.*, questions.*)
 │   ├── plugin-sdk/         # definePlugin() contract, types for extension authors
 │   ├── channel-sdk/        # Shared runtime for channel processes (WS client, retry, session mapping)
-│   ├── channel-discord/    # First-party Discord channel (separate process)
+│   │                       # + the renderer contract each channel implements for tasks + questions
+│   ├── channel-discord/    # First-party Discord channel (in-process by default, standalone supported)
+│   ├── client-cli/         # Reference terminal client — proves any client can be built on the protocol
 │   └── dashboard/          # React + Vite web UI
-├── extensions/             # User-authored plugins (tools, channels, providers...)
-├── examples/               # docker-compose.yml, config.yaml, starter extensions
+├── extensions/             # User-authored plugins (tools, channels, providers, subagents...)
+├── examples/
+│   ├── compose.yml                  # default: one service, Discord in-process
+│   ├── compose.split-channels.yml   # opt-in: gateway + discord as separate services
+│   ├── config.yaml
+│   └── subagents/                   # starter subagent definitions (code-reviewer, researcher)
+├── VENDOR.md               # source commit SHAs for files copied from lobs/agentic
 └── docs/
 ```
 
@@ -82,11 +115,14 @@ The long-running server. Responsibilities:
 
 - HTTP surface: health, `/auth`, static dashboard assets, REST for admin ops (optional).
 - WebSocket surface: the wire protocol — every client connects here.
-- **Dispatch**: namespaced RPC handlers (`session.*`, `chat.*`, `plugins.*`, `routines.*`, `approvals.*`, `admin.*`). New namespaces go in `gateway/src/dispatch/<namespace>.ts`.
-- **Broadcast**: event stream with scoped subscriptions. Clients subscribe to e.g. `chat.*` for a specific session; the gateway only delivers what their token authorizes.
+- **Dispatch**: namespaced RPC handlers (`session.*`, `chat.*`, `subagents.*`, `tasks.*`, `questions.*`, `plugins.*`, `routines.*`, `approvals.*`, `admin.*`). New namespaces go in `gateway/src/dispatch/<namespace>.ts`.
+- **Broadcast**: event stream with scoped subscriptions. Clients subscribe to e.g. `chat.*` for a specific session, `subagents.*` for a parent session's worker tree, `tasks.*` for the task list, `questions.*` for pending asks. The gateway only delivers what their token authorizes.
 - **Plugin host**: discovers plugins on startup, calls each plugin's `register()` with a `GatewayAPI` handle, tears them down cleanly on shutdown/reload.
 - **Agent execution**: wraps `runAgent()` from `@squad/runner`. Each incoming user message produces a run; streaming text and tool activity broadcast as events.
-- **Storage**: a single SQLite database (via `better-sqlite3` or `bun:sqlite`) for sessions, messages, approvals, routines, and transcripts. FTS5 for session search.
+- **Subagent pool**: owns the lifecycle of spawned subagents — bounded concurrency, bounded depth, token budget enforcement, cancellation propagation from parent to children. See the [Subagents](#subagents) section.
+- **Task store**: owns the task list for each session tree. Handles dependencies, high-water-mark IDs, serialized writes under a lock so concurrent subagents can claim tasks safely. See the [Tasks](#tasks) section.
+- **Question store**: holds pending ask-user questions, keyed by session and correlation id. Resolves when any authorized channel or client submits an answer; times out under policy. See the [Ask-User Questions](#ask-user-questions) section.
+- **Storage**: a single SQLite database (via `better-sqlite3` or `bun:sqlite`) for sessions, messages, tasks, questions, approvals, routines, and transcripts. FTS5 for session search (parents and subagents alike).
 
 ### `@squad/runner` *(vendored from agentic)*
 
@@ -159,13 +195,14 @@ export default definePlugin({
 
 Plugin kinds supported in v1:
 
-| Kind      | What it registers                                  |
-|-----------|----------------------------------------------------|
-| `tool`    | New tools the agent can call                       |
-| `provider`| New `LLMClient` implementations                    |
-| `channel` | New platform adapters (gives Discord no privilege) |
-| `skill`   | Prompt snippets / memory injections                |
-| `routine` | Cron-scheduled agent runs                          |
+| Kind       | What it registers                                                        |
+|------------|--------------------------------------------------------------------------|
+| `tool`     | New tools the agent can call                                             |
+| `provider` | New `LLMClient` implementations                                          |
+| `channel`  | New platform adapters (gives Discord no privilege)                       |
+| `skill`    | Prompt snippets / memory injections                                      |
+| `routine`  | Cron-scheduled agent runs                                                |
+| `subagent` | A named, reusable subagent definition (model, tools, system prompt, budget) — callable by any agent via `spawn_subagent` |
 
 A plugin can be any of these (or several) — `kinds` is an array.
 
@@ -185,7 +222,13 @@ Community channels can either (a) be an out-of-process package that depends on `
 
 The first-party Discord channel — see the [Discord Implementation Plan](#discord-implementation-plan) section for details. It is the reference implementation of a channel and the shape new channels should follow.
 
-Running channels as **separate processes** by default is deliberate: a crash in one channel shouldn't take down the gateway or the others, and you should be able to bring channels up/down independently. In-gateway channel plugins are supported for early-stage or lightweight channels (webhooks, local CLI, IDE bridges) where a dedicated process is overkill.
+**By default Discord runs in-process** as a channel plugin, so `docker compose up` stands up the whole stack in one container. That matters more for first-run ergonomics than it looks: "run two containers so the bot can talk to the gateway" is a common place new users bounce off.
+
+When isolation matters — multiple channels, an untrusted connector, or a bot that must be bounced independently — the same package runs as a standalone process via `@squad/channel-sdk`. The protocol is identical; only the process boundary changes. An `examples/compose.split-channels.yml` is provided for that path.
+
+### `@squad/client-cli`
+
+A reference terminal client that does nothing but speak the protocol: auth, subscribe, send `chat.send`, render streaming deltas. It exists to prove the symmetry claim — if it can be built on the protocol with no special gateway support, so can anything else. Contributors add a new client by copying its 300-ish lines and changing the render layer.
 
 ### `@squad/dashboard`
 
@@ -193,11 +236,12 @@ React + Vite. Served by the gateway (static assets) or run standalone during dev
 
 Views:
 
-- **Chat** — live conversation view per session, streaming assistant text, inline tool activity, images.
-- **Sessions** — list/search (FTS5) across all sessions; jump to any transcript.
+- **Chat** — live conversation view per session, streaming assistant text, inline tool activity, images. Pending ask-user questions render inline as interactive cards.
+- **Tasks** — the shared task list for the active session tree: dependency arrows, owner filter, spinner on the current `activeForm`, soft-delete history. Updates live off `tasks.*` subscriptions.
+- **Sessions** — list/search (FTS5) across all sessions; tree view for parents with subagent children; jump to any transcript.
 - **Approvals** — queue of pending tool-call approvals (anything tagged `write`/`exec`/`network` by policy). Approve/deny with reason.
 - **Plugins** — installed list, status, reload/disable, per-plugin config.
-- **Channels** — Discord channel routing, bot status, per-channel agent config.
+- **Channels** — Discord channel routing, bot status, per-channel agent config, rendered capabilities.
 - **Routines** — cron-scheduled runs; view next-fire times and last run output.
 - **Logs** — gateway + plugin logs, filterable.
 - **Settings** — models, API keys, storage location.
@@ -229,19 +273,27 @@ Frames are JSON objects over WebSocket. Every frame has a `type` and an `id` (fo
 
 ### Methods (v1)
 
-| Namespace    | Methods                                                                    |
-|--------------|----------------------------------------------------------------------------|
-| `session.*`  | `start`, `resume`, `end`, `list`, `search`                                 |
-| `chat.*`     | `send` (user message), `stream` (server push), `history`                   |
-| `approvals.*`| `list`, `decide`                                                           |
-| `plugins.*`  | `list`, `enable`, `disable`, `reload`, `configure`                         |
-| `channels.*` | `list`, `bind` (channel → session routing), `unbind`                       |
-| `routines.*` | `list`, `create`, `update`, `delete`, `run_now`                            |
-| `admin.*`    | `health`, `config`, `tokens.create`, `tokens.revoke`                       |
+| Namespace     | Methods                                                                                   |
+|---------------|-------------------------------------------------------------------------------------------|
+| `session.*`   | `start`, `resume`, `end`, `list`, `search`                                                |
+| `chat.*`      | `send` (user message), `stream` (server push), `history`                                  |
+| `subagents.*` | `list` (registered definitions), `spawn`, `cancel`, `tree` (parent → children), `history` |
+| `tasks.*`     | `create`, `update`, `get`, `list`, `delete` (by `status: "deleted"`), `claim`, `watch`    |
+| `questions.*` | `ask`, `answer`, `cancel`, `list` (pending), `history`                                    |
+| `approvals.*` | `list`, `decide`                                                                          |
+| `plugins.*`   | `list`, `enable`, `disable`, `reload`, `configure`                                        |
+| `channels.*`  | `list`, `bind` (channel → session routing), `unbind`, `capabilities` (what can it render) |
+| `routines.*`  | `list`, `create`, `update`, `delete`, `run_now`                                           |
+| `admin.*`     | `health`, `config`, `tokens.create`, `tokens.revoke`                                      |
 
 ### Events (v1)
 
-`chat.user_message`, `chat.assistant_message`, `chat.text_delta`, `chat.tool_call`, `chat.tool_result`, `approvals.pending`, `approvals.decided`, `plugins.changed`, `routines.fired`, `log.line`.
+Chat: `chat.user_message`, `chat.assistant_message`, `chat.text_delta`, `chat.tool_call`, `chat.tool_result`.
+Subagents: `subagents.spawned`, `subagents.text_delta`, `subagents.tool_call`, `subagents.tool_result`, `subagents.completed`, `subagents.failed`.
+Tasks: `tasks.created`, `tasks.updated` (status / owner / deps / metadata), `tasks.deleted`.
+Questions: `questions.asked`, `questions.answered`, `questions.cancelled`, `questions.timed_out`.
+Approvals: `approvals.pending`, `approvals.decided`.
+Platform: `plugins.changed`, `routines.fired`, `log.line`.
 
 All schemas live in `@squad/protocol` as Zod — validated on both sides.
 
@@ -251,15 +303,24 @@ All schemas live in `@squad/protocol` as Zod — validated on both sides.
 
 **SQLite**, single file. Tables:
 
-- `sessions(id, title, platform, remote_id, model, created_at, updated_at, system_prompt_hash)`
+- `sessions(id, parent_session_id, subagent_def_id, title, platform, remote_id, model, created_at, updated_at, system_prompt_hash, status, tokens_in, tokens_out)`
+  - `parent_session_id` is NULL for top-level sessions and set for subagent runs. A single table, one FTS5 index, one search surface for both.
+  - `subagent_def_id` points at the registered subagent plugin that produced this run (NULL for user-initiated sessions).
 - `messages(id, session_id, role, content_json, created_at)` with FTS5 index on extracted text
 - `tool_calls(id, session_id, message_id, name, input_json, result_json, status, created_at)`
 - `approvals(id, session_id, tool_call_id, decision, reason, decided_by, decided_at)`
 - `routines(id, name, cron, prompt, model, delivery_json, enabled, last_run_at, next_run_at)`
+- `subagent_defs(id, name, version, config_json, registered_at)` — cache of what's been registered, so the tree view can resolve names even after a plugin unload.
+- `tasks(id, task_list_id, subject, description, active_form, owner, status, blocks_json, blocked_by_json, metadata_json, created_at, updated_at)`
+  - `task_list_id` is derived from the session tree root (every subagent in a tree shares one list).
+  - `status ∈ {'pending', 'in_progress', 'completed', 'deleted'}`. Deletes are soft so the transcript remains coherent.
+  - Writes are serialized under a per-list lock so concurrent subagents claiming tasks don't clobber each other.
+- `questions(id, session_id, header, question, options_json, multi_select, status, answer_json, annotations_json, asked_by, asked_at, answered_at, timed_out_at)`
+  - `status ∈ {'pending', 'answered', 'cancelled', 'timed_out'}`. One row per ask; answers are append-only (a cancelled + re-asked question is two rows).
 - `plugins(id, version, enabled, config_json, installed_at)`
 - `tokens(id, label, hash, scopes_json, created_at, revoked_at)`
 
-The gateway holds an open handle; writes are serialized. Backups are "copy the file". This is fine for the scale this project targets (one user, one Discord, one dashboard, a handful of concurrent conversations).
+The gateway holds an open handle; writes are serialized. Backups are "copy the file". This is fine for the scale this project targets (one user, one Discord, one dashboard, a handful of concurrent conversations plus their subagent trees).
 
 **Memory is injected into the user message, not the system prompt** — this preserves Anthropic prompt caching of the system prefix across turns (pattern borrowed from hermes-agent).
 
@@ -296,6 +357,229 @@ Plugins are **not sandboxed**. The assumption is you're self-hosting and you tru
 
 ---
 
+## Tasks
+
+A task list is the shared plan of record for a session tree. Agents — parent and subagents alike — create tasks, claim them, mark them `in_progress` / `completed`, and express dependencies. Users see the same list in whatever client they're on. In a fan-out workflow, the task list is how the parent hands out work and watches it come back.
+
+### Shape
+
+```ts
+type Task = {
+  id: string;                 // assigned per task-list high-water mark
+  subject: string;            // short imperative title ("Fix login redirect")
+  description: string;        // full detail of what needs to be done
+  activeForm?: string;        // present-continuous label for spinners ("Fixing login redirect")
+  owner?: string;             // agent name (parent's session id, or a subagent name)
+  status: 'pending' | 'in_progress' | 'completed' | 'deleted';
+  blocks: string[];           // task IDs this task blocks
+  blockedBy: string[];        // task IDs that block this task
+  metadata?: Record<string, unknown>;
+};
+```
+
+### Tools agents call
+
+| Tool              | Purpose                                                                    |
+|-------------------|----------------------------------------------------------------------------|
+| `create_task`     | Add a task. Returns the id. New tasks are `pending` with no owner.         |
+| `update_task`     | Update status / subject / description / owner / dependencies / metadata.   |
+| `list_tasks`      | Read the current list (ordered, pending + in-flight + recently completed). |
+| `get_task`        | Fetch one task by id (useful after a stale-read).                          |
+
+`update_task` is a single tool with multiple purposes on purpose — claiming a task (`owner: self`), starting work (`status: "in_progress"`), finishing (`status: "completed"`), soft-deleting (`status: "deleted"`), and linking dependencies (`addBlockedBy`, `addBlocks`) are all the same tool. Prompt discipline, not schema discipline, keeps agents honest.
+
+### Guidance baked into the tool prompts
+
+The `create_task` and `update_task` tool descriptions include normative guidance agents are expected to follow:
+
+- Use tasks when work is multi-step (3+ distinct actions), complex, or explicitly requested.
+- Skip tasks for trivial single-step work.
+- Mark `in_progress` **before** starting work, not after.
+- Mark `completed` only when the work is fully done — tests passing, implementation complete, no unresolved errors. On blockers, stay `in_progress` and create a new task describing what's needed.
+- Discover a new dependency during work → add it with `addBlockedBy`, don't re-plan silently.
+- On subagents: include enough detail in `description` that another agent could pick the task up cold. A subagent claims a task by setting `owner` via `update_task`.
+
+This guidance lives in `packages/tools/src/tasks/*prompt.ts` and is part of the tool's system-prompt surface; agents see it when the tool is in their schema.
+
+### Scope: the session tree
+
+Tasks are scoped to a **session tree**, not a single session. When a subagent spawns, it inherits its parent's task list, so the parent can create a task and the subagent can claim and complete it. `task_list_id` resolves to the tree's root session id.
+
+Concurrent writes (two subagents claiming tasks simultaneously) go through a per-list lock with retry backoff — a short critical section per mutation (read list → compute change → write) that scales cleanly to the handful of concurrent workers a session tree realistically has.
+
+### Rendering
+
+Task list state broadcasts as `tasks.*` events. Every client decides how to render:
+
+- **Dashboard** — an expanded task panel with live status, dependency arrows, and a filter-by-owner toggle when subagents are active.
+- **Discord** — a pinned embed for the active list, edited in place as tasks change; reactions to claim/complete.
+- **CLI** — a compact checklist that reprints when the list changes, with the current in-progress task shown with a spinner using `activeForm`.
+- **SMS** (post-v1) — summary line ("3 tasks, 1 in progress") with `TASKS` keyword to fetch details.
+
+The renderer contract is part of `@squad/channel-sdk`: a channel that wants task support implements `renderTaskList(state)` and `handleTaskAction(action)` and gets the full experience without gateway changes.
+
+### Subscriptions
+
+- `tasks.watch?session=<tree_root_id>` streams every change to that tree's list.
+- An agent that's just been asked to pick up work calls `list_tasks` once, then operates off the subscription — no polling.
+
+### Why this matters
+
+A shared task list is how multi-agent workflows stop being chaos. It gives the user a single view of "what is the agent planning and what has it done" that doesn't require reading the transcript. It gives subagents a way to coordinate without the parent mediating every step. It gives Squad a concrete, visible thing the competitors don't ship.
+
+---
+
+## Ask-User Questions
+
+The single biggest usability gap in every chat-based agent: the agent needs input, asks a free-text question, the user types the wrong thing, the agent retries or proceeds on a bad assumption. We fix this with a first-class **ask-user** primitive that renders natively per channel.
+
+### Shape
+
+```ts
+type AskQuestion = {
+  header: string;        // very short chip label ("Auth method")
+  question: string;      // the full question, ending in "?"
+  options: Array<{
+    label: string;       // short display (1–5 words)
+    description: string; // what picking this means / trade-off
+    preview?: string;    // optional content block — markdown or HTML snippet
+                         // for mockups, code, config, diagram comparisons
+  }>;
+  multiSelect?: boolean; // default false
+};
+
+type AskInput = {
+  questions: AskQuestion[];           // 1–4 questions, unique texts, 2–4 unique option labels each
+  timeoutSeconds?: number;            // default from policy
+  allowCustom?: boolean;              // default true — "Other" option always presented
+};
+```
+
+### The tool
+
+```ts
+// ask_user tool — returns once the user answers or the question times out
+{
+  name: "ask_user",
+  input: AskInput,
+  output: {
+    answers: Record<string /* question */, string /* chosen label or custom text */>;
+    annotations?: Record<string, { preview?: string; notes?: string }>;
+    status: "answered" | "timed_out" | "cancelled";
+  }
+}
+```
+
+Rules agents follow (in the tool prompt):
+
+- Use it to clarify ambiguity, gather preferences, or offer a decision between concrete approaches — not to ask "are you sure?" or "should I proceed?".
+- 2–4 options, mutually exclusive (unless `multiSelect`), ordered with the recommended choice first and labelled `(Recommended)`.
+- Don't include a literal "Other" option — the channel always surfaces one.
+- Use `preview` when the user would benefit from seeing a concrete artifact to compare (ASCII mockup, code snippet, config diff). Skip it for pure preference questions.
+
+### Channel rendering
+
+The ask-user primitive is where "usability lives in the channel" pays off. Channels receive a `questions.asked` event with the full `AskQuestion` array and decide how to render:
+
+- **Dashboard** — a side-by-side card with options on the left; if any option has a `preview`, it renders in a monospace pane on the right. Free-text "Other" fallback. Submit button.
+- **Discord** — each question becomes a message with up to 4 **buttons** (labels) plus a 5th "Other…" button that opens a modal for free-text. `multiSelect` becomes a select menu. If the question has previews, the bot posts the previews inline and the buttons below.
+- **CLI** — an interactive `select` prompt; `preview` content renders above the option list when an option is focused. "Other" opens an editor prompt.
+- **Slack** (post-v1) — Block Kit actions row; the same mapping as Discord.
+- **SMS / Email** (post-v1) — reply with option number or keyword; "Other" is any non-matching text.
+
+All channels share one answer shape, so the agent doesn't know or care which channel answered.
+
+### Flow
+
+1. Agent calls `ask_user` → gateway inserts a row in `questions`, broadcasts `questions.asked`, awaits an answer on the question's correlation id.
+2. Every subscribed client renders the question in its native UI. Only the session's authorized clients can submit.
+3. First valid submission wins. The gateway writes the answer, broadcasts `questions.answered`, and resolves the tool call.
+4. On timeout or session end: `questions.timed_out` / `questions.cancelled`, and the tool returns a result the model sees.
+
+### Channel capabilities
+
+Not every channel supports every feature (`preview` in SMS is meaningless). A channel declares its capabilities via `channels.capabilities`:
+
+```ts
+{ supportsPreview: true, supportsMultiSelect: true, maxOptions: 4, supportsFreeText: true }
+```
+
+The gateway degrades gracefully: if a session's channel doesn't support previews, previews fall out of the wire for that channel (but still render for concurrent dashboard clients). If a channel caps options at 3 and the agent sent 4, the gateway rejects the tool call with a clear error so the agent can re-shape the question — we never silently drop an option.
+
+### Why this matters
+
+- It turns "type exactly the right thing" into "tap one button" — an order-of-magnitude improvement in UX on chat channels.
+- It's a protocol-level feature, so every client gets a consistent model for free. Build an ask-user-aware UI once, use it everywhere.
+- Nothing else in this space ships this. OpenClaw is channel-rich but treats asks as free text. Hermes is terminal-first and doesn't have a cross-channel structured-question primitive.
+
+---
+
+## Subagents
+
+Subagents are the feature we expect Squad to be chosen for. OpenClaw and hermes-agent both support calling out to other agents in some form, but neither treats a subagent as a first-class primitive with its own session, its own topic, its own budget, a shared task list, and a reusable definition you install via the plugin system. We do.
+
+### Shape
+
+A **subagent definition** is a registered plugin value:
+
+```ts
+definePlugin({
+  id: "code-reviewer",
+  kinds: ["subagent"],
+  register(api) {
+    api.subagents.register({
+      name: "code-reviewer",
+      description: "Reviews a diff and reports issues with file:line references.",
+      model: "claude-sonnet-4-6",              // can differ from parent
+      tools: ["read_file", "list_directory"],  // narrower than parent by default
+      systemPrompt: "You are a careful reviewer. Report concrete issues only.",
+      inputSchema: z.object({ diff: z.string(), focus: z.array(z.string()).optional() }),
+      limits: {
+        maxTokens: 40_000,
+        maxToolCalls: 50,
+        timeoutMs: 120_000,
+      },
+    });
+  },
+});
+```
+
+Any agent can call it via the built-in `spawn_subagent` tool:
+
+```json
+{ "name": "spawn_subagent",
+  "input": {
+    "subagent": "code-reviewer",
+    "input": { "diff": "...", "focus": ["packages/gateway"] },
+    "wait": false
+  }}
+```
+
+`wait: true` returns the final result inline as a tool result. `wait: false` returns a `sessionId` immediately, and the parent can poll or the caller can subscribe to `subagents.*/<sessionId>`. Either way, the parent can fan out — a planner asking five research subagents to work in parallel and then summarizing — without extra scaffolding.
+
+### Execution
+
+- Each spawn creates a row in `sessions` with `parent_session_id` set. Full transcript, searchable, resumable.
+- Subagent runs broadcast on their own topics. The parent's `chat.*` stream is not cluttered with worker chatter; dashboards subscribe to `subagents.*/<parent_session>` to show the whole tree.
+- The subagent pool bounds concurrency globally and per-parent (defaults: 8 global, 4 per parent), bounds tree depth (default: 3), and enforces per-subagent token and tool-call limits before execution rather than after.
+- Cancellation propagates downward: cancel the parent → every in-flight descendant receives a cancellation and the tool result returns `status: "cancelled"`.
+- Approvals follow the parent's policy by default; a subagent definition can **narrow** the policy (e.g. a `research` subagent with no `write` or `exec` tools available at all) but never widen it.
+- **Task list is inherited.** Every subagent in a tree shares the root session's task list. A parent creates tasks, subagents claim them (`update_task {owner: self}`) and mark them complete. This is the coordination surface — not the parent's chat history.
+- Models can differ. Classic split: an Opus parent delegates bulk reads to a Haiku research subagent. The parent pays for reasoning, the worker pays for throughput.
+
+### Dashboard
+
+The **Sessions** view renders any session with children as a tree. Clicking into a subagent shows its own transcript, tool calls, and token accounting — same UI as a top-level session, because it is one. FTS5 search hits subagent transcripts the same way it hits parent ones.
+
+### Why this is the right bet
+
+- It matches how real workflows decompose (research → draft → review).
+- It's a protocol-level feature, so a CLI client, a dashboard, and a third-party UI all get subagent trees for free.
+- It gives plugin authors a way to ship *capability*, not just tools: a `code-reviewer` plugin, a `researcher` plugin, a `data-analyst` plugin, each with its own model/tool/prompt tuning.
+- It's the feature hermes-agent and OpenClaw most under-invest in, and the one we can most clearly lead on.
+
+---
+
 ## Agent Loop — What We Vendor
 
 The loop itself is unchanged from agentic. The gateway's job is to:
@@ -312,9 +596,33 @@ The loop itself is unchanged from agentic. The gateway's job is to:
 Approval flow:
 
 - A tool tagged `write`/`exec`/`network` (when policy requires) hits `before_tool_call`.
-- The hook inserts a row in `approvals`, broadcasts `approvals.pending`, and awaits a decision (with a timeout).
+- The hook consults the **policy engine** (see below), which may auto-approve, auto-deny, or escalate.
+- On escalate, the hook inserts a row in `approvals`, broadcasts `approvals.pending`, and awaits a decision (with a timeout).
 - The dashboard / Discord reaction triggers `approvals.decide`.
 - On approve, the hook returns; the runner executes the tool. On deny, the hook returns an error `ToolResult` that the model sees.
+
+### Policy engine
+
+v1 ships a tags-only policy: any tool with a matching tag prompts for approval. That's the floor — but users quickly want things like "auto-approve `write_file` inside `./data`, deny outside" or "auto-approve `fetch_url` to `github.com`, escalate everything else." So the policy engine is a pluggable seam from day one:
+
+```ts
+export interface ApprovalPolicy {
+  decide(ctx: {
+    sessionId: string;
+    parentSessionId: string | null; // non-null for subagent runs
+    tool: ToolDefinition;           // includes tags
+    input: unknown;                 // the tool's parsed input
+    history: ToolCall[];            // prior calls in the session
+  }): Promise<"approve" | "deny" | "escalate">;
+}
+```
+
+- v1 ships `tag-match` (the default) and `allow-all` / `deny-all` for testing.
+- Plugins of kind `tool` can ship an `ApprovalPolicy` alongside, so a `filesystem` plugin can register path-scoped rules and a `network` plugin can register host allowlists without new gateway code.
+- Decisions cascade: first plugin policy to return a non-`escalate` wins; otherwise fall through to the default.
+- Subagents inherit the parent's policy unless a subagent definition narrows it (remove a tag, remove a tool entirely).
+
+The v1 UX is still "tags + approve/deny queue"; the policy engine's presence is what keeps v1.1 path-scoped rules from being a breaking change.
 
 ---
 
@@ -385,11 +693,29 @@ llm:
 
 plugins:
   - ./extensions/my-cool-tool
+  - ./extensions/code-reviewer-subagent
   - "@squad-community/slack-channel"   # npm package
+
+# Discord is a first-party channel plugin. By default it loads in-process.
+# Set `process: standalone` to run it as a separate service (see
+# examples/compose.split-channels.yml).
+channels:
+  discord:
+    process: inproc            # or "standalone"
+    bot_token_env: DISCORD_BOT_TOKEN
+
+subagents:
+  # Pool-wide caps; per-subagent limits live on the subagent definition itself.
+  max_concurrent_global: 8
+  max_concurrent_per_parent: 4
+  max_tree_depth: 3
 
 policy:
   approvals:
-    # tools with these tags require approval unless the session is marked trusted
+    # Default: prompt for approval on any tool with a matching tag.
+    # Plugin-supplied ApprovalPolicy implementations can auto-approve/deny
+    # before this fires (e.g. path-scoped filesystem rules).
+    default: tag-match
     require_for_tags: ["write", "exec", "network"]
     timeout_seconds: 120
 ```
@@ -398,26 +724,20 @@ policy:
 
 ## Deployment
 
-**Docker Compose** is the only deployment target we commit to for v1.
+**One Docker Compose service** is the default, and it's the only path we commit to for v1. The gateway, the dashboard (static assets), and the Discord channel all live in one container:
 
 ```yaml
 services:
-  gateway:
-    image: squad/gateway
+  squad:
+    image: squad/squad
     ports: ["8080:8080"]
     volumes: [./data:/app/data, ./config.yaml:/app/config.yaml:ro]
-    environment: [ANTHROPIC_API_KEY, SQUAD_DASHBOARD_TOKEN]
-
-  discord:
-    image: squad/connector-discord
-    depends_on: { gateway: { condition: service_healthy } }
-    environment:
-      - SQUAD_GATEWAY_URL=ws://gateway:8080
-      - SQUAD_DISCORD_TOKEN
-      - DISCORD_BOT_TOKEN
+    environment: [ANTHROPIC_API_KEY, SQUAD_DASHBOARD_TOKEN, DISCORD_BOT_TOKEN]
 ```
 
-The dashboard is served by the gateway at `/` — no separate service.
+That's the whole stack. The dashboard is served by the gateway at `/`; Discord runs in-process via the `channel-discord` plugin.
+
+**Opt-in split**: for operators who want Discord in its own container (so a bot crash doesn't restart the gateway, or because they run several channels), `examples/compose.split-channels.yml` flips Discord to standalone mode. The channel is the same package, the same code, and the same protocol — the only difference is the process boundary and a `SQUAD_GATEWAY_URL`.
 
 Bare-metal is fine too (`pnpm start`), but we don't ship installers or systemd units in v1.
 
@@ -429,11 +749,12 @@ Deliberately cut so the first release can actually ship:
 
 - **Not multi-user.** One person, one deployment, one dashboard. Multi-tenancy is post-v1.
 - **Not Kubernetes.** Helm charts can come later if anyone asks.
-- **Not an agent router.** We ship many providers but the agent loop is one-model-per-run. Cross-model orchestration (A asks B for help, ensemble voting, etc.) is post-v1.
+- **Subagents yes, ensemble orchestration no.** The subagent primitive gives you delegation, fan-out, and per-worker models. What's not in v1: ensemble voting, automatic role assignment, cross-subagent consensus protocols — those are left to plugin authors.
 - **Only one shipped channel (Discord).** The channel contract is designed for any communication medium, but the only first-party channel in v1 is Discord. Slack, Telegram, SMS, email, voice, etc. are planned as channel plugins after v1 ships.
 - **Not a marketplace.** You install plugins by pointing at a path or an npm package. No registry, no ratings, no sandbox.
 - **Not sandboxed execution.** Tools run in the gateway process. Dangerous tools are approval-gated, not sandboxed. (If you need a sandbox, a plugin can shell out to Docker.)
 - **Not a hosted service.** No cloud, no SaaS, no telemetry.
+- **No learning loop in v1.** No agent-curated memory, no autonomous skill authoring, no dialectic user modeling. That's hermes's lane and we won't chase it before the core is stable. A MEMORY.md-style injection pattern is pencilled in for v1.1.
 
 ---
 
@@ -441,11 +762,14 @@ Deliberately cut so the first release can actually ship:
 
 Discord is the first channel we ship. This section is the concrete build plan for `packages/channel-discord`, separate from the channel abstraction in general so that "how Discord works" doesn't pollute the architecture doc.
 
+**Process model.** The package ships as a channel plugin that loads in-process by default — so the v1 `docker compose up` story is one container. The same package exports a standalone entrypoint (via `@squad/channel-sdk`) for users who want to run it as a separate service. Both modes use the same code paths; only the process boundary changes.
+
 ### Goals
 
 1. Prove the channel contract end-to-end: a message in Discord → gateway session → agent run → streamed reply back to Discord.
 2. Handle the real-world messiness: long replies, attachments, reactions for approvals, DMs vs. channels, threads, typing indicators.
 3. Stay in one file per concern so future channels have a clear template to copy.
+4. Demonstrate both deployment modes (in-process, standalone) from the same package with a flag.
 
 ### Package layout
 
@@ -457,10 +781,13 @@ packages/channel-discord/
 │   ├── bot.ts                # discord.js Client setup, intents, event wiring
 │   ├── inbound.ts            # Discord message → protocol chat.send
 │   ├── outbound.ts           # protocol events → Discord messages / edits
+│   ├── ask.ts                # questions.asked → buttons / select + modal for "Other"
+│   ├── tasks.ts              # tasks.* → pinned embed of the task list, reactions to claim/complete
 │   ├── approvals.ts          # reaction-based approve/deny flow
 │   ├── session-map.ts        # (guild, channel, user) ↔ session_id
 │   ├── formatting.ts         # markdown, code blocks, 2000-char chunking
 │   ├── attachments.ts        # upload/download via Discord CDN + gateway blob API
+│   ├── capabilities.ts       # declares what the Discord channel can render
 │   └── config.ts             # Zod-validated channel config
 └── test/
 ```
@@ -499,6 +826,15 @@ channel:
 - If `stream_edits` is on: first delta creates a new Discord message; subsequent deltas edit it until the final `chat.assistant_message` arrives. Re-chunk at the 1900-char boundary by creating a new message.
 - Tool activity renders as a compact italic line (`🔧 running read_file(...)`) — configurable.
 
+**Ask-user questions.**
+- On `questions.asked`: post one message per question with 2–4 buttons labelled by option, plus a 5th "Other…" button that opens a modal for free-text. `multiSelect: true` uses a select menu. If any option has a `preview`, the bot posts the previews as a preceding message (ASCII / code block) before the buttons.
+- First valid button click from an authorized user wins; call `questions.answer` with the choice + optional note. The original message is edited to show the chosen option and disable the controls.
+- Timeout mirrors the gateway policy; the bot posts the timeout reason if it fires.
+
+**Tasks.**
+- On `tasks.*`: maintain one pinned embed per active session-tree task list. Render `pending` / `in_progress` (with `activeForm` as the active line) / `completed`. Edit the embed in place as updates arrive — do not spam new messages.
+- Optional reactions: ✋ to claim (owner = invoking user), ✅ to mark completed, ❌ to soft-delete. Plugin-gated; off by default so the list isn't a free-for-all.
+
 **Approvals.**
 - On `approvals.pending` event where the tool's tags intersect `approval_tags`: post an embed describing the tool call + inputs, with ✅ / ❌ reactions.
 - Only the binding's owner (or a configured allowlist) can react. First valid reaction wins; call `approvals.decide` with the verdict.
@@ -517,11 +853,11 @@ channel:
 
 The Discord channel ships in three increments so we can cut a release at each:
 
-| Phase | Scope                                                                 | Release gate                          |
-|-------|-----------------------------------------------------------------------|---------------------------------------|
-| D0    | Inbound text → agent → outbound text. No streaming, no attachments.   | Chat roundtrip works in one channel.  |
-| D1    | Streaming edits, typing indicators, 2000-char chunking, DMs, threads. | Usable for real conversations.        |
-| D2    | Reaction approvals, attachments (in + out), binding config UI.        | Feature-complete for v1.              |
+| Phase | Scope                                                                               | Release gate                          |
+|-------|-------------------------------------------------------------------------------------|---------------------------------------|
+| D0    | Inbound text → agent → outbound text. No streaming, no attachments.                 | Chat roundtrip works in one channel.  |
+| D1    | Streaming edits, typing indicators, 2000-char chunking, DMs, threads.               | Usable for real conversations.        |
+| D2    | **Ask-user buttons + modal**, **task-list pinned embed**, approvals, attachments.   | Feature-complete for v1.              |
 
 ### Definition of done for v1
 
@@ -537,25 +873,30 @@ The Discord channel ships in three increments so we can cut a release at each:
 
 **v1 — the stable core**
 
-- [ ] `@squad/protocol` — wire types + Zod
-- [ ] `@squad/gateway` — WS server, dispatch, sessions, SQLite, plugin host
+- [ ] `@squad/protocol` — wire types + Zod (includes `subagents.*`, `tasks.*`, `questions.*`)
+- [ ] `@squad/gateway` — WS server, dispatch, sessions, SQLite, plugin host, subagent pool, task store, question store
 - [ ] `@squad/runner` — vendor agent-loop.ts + deps
 - [ ] `@squad/llm` — vendor types, client factory, and all three provider implementations (anthropic, openai, openai-compatible) covering the full agentic provider list
-- [ ] `@squad/tools` — base tool + registry + minimal built-ins
-- [ ] `@squad/plugin-sdk` — definePlugin contract
-- [ ] `@squad/channel-sdk` — shared runtime for channel processes
-- [ ] `@squad/channel-discord` — first-party Discord channel (D0 → D1 → D2, see plan above)
-- [ ] `@squad/dashboard` — chat, sessions, approvals, plugins, channels, routines
+- [ ] `@squad/tools` — base tool + registry + minimal built-ins + `spawn_subagent` + task tools (`create_task`, `update_task`, `list_tasks`, `get_task`) + `ask_user`
+- [ ] `@squad/plugin-sdk` — definePlugin contract (including `subagent` kind)
+- [ ] `@squad/channel-sdk` — shared runtime for channel processes + in-process adapter + renderer contract for tasks + questions
+- [ ] `@squad/channel-discord` — first-party Discord channel, in-process by default (D0 → D1 → D2, see plan above)
+- [ ] `@squad/client-cli` — reference terminal client, 300-ish lines, proves the symmetry claim; renders tasks + asks
+- [ ] `@squad/dashboard` — chat (with inline question cards), tasks panel, sessions (subagent tree view), approvals, plugins, channels, routines
+- [ ] Approval policy engine (tag-match default, plugin-supplied policies supported)
 - [ ] Routines (cron)
-- [ ] Docker Compose for the full stack
-- [ ] One example plugin of each kind
+- [ ] Docker Compose (one service) + split-channels example
+- [ ] `VENDOR.md` with source commit SHAs for every file copied from `lobs/agentic`
+- [ ] One example plugin of each kind (including a `code-reviewer` subagent that uses the shared task list)
 
 **v1.1 — ergonomics**
 
-- [ ] FTS5 session search UI
+- [ ] FTS5 session search UI (parents and subagents)
 - [ ] Memory / skills system (MEMORY.md pattern, injected into user message)
 - [ ] Hot-reload for plugins
 - [ ] Better error envelopes and plugin-error isolation
+- [ ] Path-scoped and host-scoped approval policies from first-party plugins
+- [ ] Subagent result caching (hash of input → prior result, opt-in per definition)
 
 **Post-v1 — "if people actually use it"**
 
@@ -566,4 +907,5 @@ The Discord channel ships in three increments so we can cut a release at each:
 - [ ] Multi-user / teams
 - [ ] Kubernetes Helm chart
 - [ ] Plugin marketplace (requires a sandbox story first)
+- [ ] Subagent orchestration patterns: ensemble voting, planner/worker templates, consensus protocols
 

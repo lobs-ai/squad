@@ -1,18 +1,22 @@
 services:
-  # The Squad gateway — WebSocket + HTTP server, agent loop, plugin host,
-  # dashboard static assets, SQLite storage. The hub of the stack.
-  gateway:
+  # The whole Squad stack in one container: WebSocket + HTTP server, agent loop,
+  # plugin host, dashboard static assets, SQLite storage, and the Discord channel
+  # running in-process. One image, one mention of the bot, done.
+  #
+  # To isolate Discord in a separate process (recommended if you run multiple
+  # channels or want a crash in the bot to not restart the gateway), see
+  # examples/compose.split-channels.yml.
+  squad:
     build:
       context: .
       dockerfile: Dockerfile
-      target: gateway
     ports:
       - "8080:8080"            # HTTP + WebSocket + dashboard
     environment:
       - SQUAD_CONFIG=/app/config.yaml
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - SQUAD_DASHBOARD_TOKEN=${SQUAD_DASHBOARD_TOKEN:-dev-dashboard-token}
-      - SQUAD_DISCORD_TOKEN=${SQUAD_DISCORD_TOKEN:-dev-discord-token}
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./extensions:/app/extensions:ro
@@ -23,23 +27,6 @@ services:
       timeout: 3s
       retries: 3
       start_period: 10s
-    restart: unless-stopped
-
-  # Discord connector — runs a discord.js bot in its own process so a bot
-  # crash doesn't take the gateway down. Speaks the same wire protocol as
-  # the dashboard.
-  discord:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: connector-discord
-    environment:
-      - SQUAD_GATEWAY_URL=ws://gateway:8080
-      - SQUAD_DISCORD_TOKEN=${SQUAD_DISCORD_TOKEN:-dev-discord-token}
-      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
-    depends_on:
-      gateway:
-        condition: service_healthy
     restart: unless-stopped
 
 volumes:
