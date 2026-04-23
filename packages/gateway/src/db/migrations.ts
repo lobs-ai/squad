@@ -68,6 +68,29 @@ const migrations: Migration[] = [
       CREATE INDEX idx_tool_calls_run ON tool_calls(run_id);
     `,
   },
+  {
+    id: 2,
+    name: "tasks",
+    up: `
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        task_list_id TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        description TEXT NOT NULL,
+        active_form TEXT,
+        owner TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        blocks_json TEXT NOT NULL DEFAULT '[]',
+        blocked_by_json TEXT NOT NULL DEFAULT '[]',
+        metadata_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX idx_tasks_list ON tasks(task_list_id, created_at);
+      CREATE INDEX idx_tasks_status ON tasks(task_list_id, status);
+    `,
+  },
 ];
 
 export function runMigrations(db: DatabaseHandle): void {

@@ -11,9 +11,11 @@ import type { Config } from "./config.js";
 import { registerSessionMethods } from "./dispatch/session.js";
 import { registerChatMethods } from "./dispatch/chat.js";
 import { registerAdminMethods } from "./dispatch/admin.js";
+import { registerTaskMethods } from "./dispatch/tasks.js";
 import type { SessionStore } from "./db/sessions.js";
 import type { MessageStore } from "./db/messages.js";
 import type { ToolCallStore } from "./db/tool-calls.js";
+import type { TaskStore } from "./tasks/store.js";
 
 export interface GatewayDeps {
   config: Config;
@@ -23,6 +25,7 @@ export interface GatewayDeps {
   sessions: SessionStore;
   messages: MessageStore;
   toolCalls: ToolCallStore;
+  tasks: TaskStore;
   toolRegistry: ToolRegistry;
   startedAt: number;
   version: string;
@@ -117,6 +120,7 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
     defaultModel: deps.config.llm.default_model,
     ...(deps.clientOverride !== undefined ? { clientOverride: deps.clientOverride } : {}),
   });
+  registerTaskMethods(d, deps.tasks, deps.broadcast);
   registerAdminMethods(d, {
     sessions: deps.sessions,
     startedAt: deps.startedAt,

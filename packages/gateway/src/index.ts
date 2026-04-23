@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { ToolRegistry } from "@squad/tools";
+import { ToolRegistry, registerTaskTools } from "@squad/tools";
 import { logger } from "./logger.js";
 import { loadConfig, resolveTokenSecrets, type Config } from "./config.js";
 import { Authenticator } from "./auth.js";
@@ -8,6 +8,8 @@ import { openDb } from "./db/index.js";
 import { SessionStore } from "./db/sessions.js";
 import { MessageStore } from "./db/messages.js";
 import { ToolCallStore } from "./db/tool-calls.js";
+import { TaskStore } from "./tasks/store.js";
+import { taskBackendFor } from "./tasks/backend.js";
 import type { LLMClient } from "@squad/llm";
 import { createGatewayServer, type GatewayHandle } from "./server.js";
 
@@ -20,6 +22,8 @@ export { openDb } from "./db/index.js";
 export { SessionStore } from "./db/sessions.js";
 export { MessageStore } from "./db/messages.js";
 export { ToolCallStore } from "./db/tool-calls.js";
+export { TaskStore } from "./tasks/store.js";
+export { taskBackendFor } from "./tasks/backend.js";
 export { Dispatcher } from "./dispatch/index.js";
 export { runChatTurn } from "./runs.js";
 
@@ -38,6 +42,7 @@ export interface BootedGateway {
     sessions: SessionStore;
     messages: MessageStore;
     toolCalls: ToolCallStore;
+    tasks: TaskStore;
   };
   broadcast: Broadcast;
   close: () => Promise<void>;
@@ -56,7 +61,13 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   const broadcast = new Broadcast();
   const tokens = resolveTokenSecrets(config);
   const authenticator = new Authenticator(tokens);
+  const tasks = new TaskStore(db, sessions, {
+    onCreated: (task) => broadcast.publish(`tasks.created/${task.taskListId}`, { task }),
+    onUpdated: (task) => broadcast.publish(`tasks.updated/${task.taskListId}`, { task }),
+    onDeleted: (task) => broadcast.publish(`tasks.deleted/${task.taskListId}`, { task }),
+  });
   const toolRegistry = opts.toolRegistry ?? new ToolRegistry();
+  registerTaskTools(toolRegistry, taskBackendFor(tasks));
 
   const handle = createGatewayServer({
     config,
@@ -66,6 +77,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     sessions,
     messages,
     toolCalls,
+    tasks,
     toolRegistry,
     startedAt,
     version: VERSION,
@@ -74,7 +86,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
 
   return {
     handle,
-    stores: { sessions, messages, toolCalls },
+    stores: { sessions, messages, toolCalls, tasks },
     broadcast,
     close: async () => {
       await handle.close();

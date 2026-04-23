@@ -92,6 +92,7 @@ export async function runChatTurn(
     toolRegistry: options.toolRegistry,
     timeout: { total: 300 },
     session,
+    context: { sessionId: options.sessionId },
     ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
     ...(options.clientOverride !== undefined ? { clientOverride: options.clientOverride } : {}),
     onTextChunk: (delta) => {
