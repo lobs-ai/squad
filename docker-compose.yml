@@ -1,15 +1,21 @@
 services:
-  # The Squad gateway — the central hub
+  # The Squad gateway — WebSocket + HTTP server, agent loop, plugin host,
+  # dashboard static assets, SQLite storage. The hub of the stack.
   gateway:
     build:
       context: .
       dockerfile: Dockerfile
+      target: gateway
     ports:
-      - "8080:8080"
+      - "8080:8080"            # HTTP + WebSocket + dashboard
     environment:
       - SQUAD_CONFIG=/app/config.yaml
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - SQUAD_DASHBOARD_TOKEN=${SQUAD_DASHBOARD_TOKEN:-dev-dashboard-token}
+      - SQUAD_DISCORD_TOKEN=${SQUAD_DISCORD_TOKEN:-dev-discord-token}
     volumes:
       - ./config.yaml:/app/config.yaml:ro
+      - ./extensions:/app/extensions:ro
       - squad-data:/app/data
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
@@ -19,48 +25,22 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # Ollama runtime (optional — comment out if using cloud API)
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama-data:/root/.ollama
-    restart: unless-stopped
-    profiles:
-      - local-ai
-
-  # CLI connector for testing
-  cli:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: ["--connector", "cli"]
-    environment:
-      - SQUAD_GATEWAY_URL=ws://gateway:8080
-      - SQUAD_AUTH_API_KEY=${SQUAD_AUTH_API_KEY:-dev-key}
-    profiles:
-      - cli
-    depends_on:
-      gateway:
-        condition: service_healthy
-
-  # Discord connector (configure with your bot token)
+  # Discord connector — runs a discord.js bot in its own process so a bot
+  # crash doesn't take the gateway down. Speaks the same wire protocol as
+  # the dashboard.
   discord:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["--connector", "discord"]
+      target: connector-discord
     environment:
       - SQUAD_GATEWAY_URL=ws://gateway:8080
-      - SQUAD_AUTH_API_KEY=${SQUAD_AUTH_API_KEY:-dev-key}
+      - SQUAD_DISCORD_TOKEN=${SQUAD_DISCORD_TOKEN:-dev-discord-token}
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
-    profiles:
-      - discord
     depends_on:
       gateway:
         condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   squad-data:
-  ollama-data:

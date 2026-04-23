@@ -1,79 +1,59 @@
 # Squad
 
-**The open-source, gateway-centric multi-agent platform.**
+**A self-hostable agent platform that plugs into any communication channel, with a proper dashboard and a plugin system.**
 
-Squad makes it easy to build, deploy, and manage AI agents that connect to everything. A central gateway handles sessions, routing, and authentication — while connectors bring agents to Discord, Slack, your API, and more.
+Squad runs one gateway process that owns sessions, the agent loop, plugins, and storage. Channels — Discord, Slack, Telegram, SMS, email, voice, IDE bridges — all connect to it over the same WebSocket protocol. The dashboard is just another client of that same protocol. Drop in plugins to add tools, LLM providers, skills, or new channels.
 
-## Quick Start
+**Discord is the first channel we ship.** The channel contract is built for anything, but we're proving it end-to-end with Discord first and adding more channels as plugins after v1.
 
-### Docker (Recommended)
+v1 is deliberately narrow where it counts: one shipped channel (Discord), one database (SQLite), one deployment (Docker Compose). For LLMs we ship **every provider agentic supports** out of the box — Anthropic, OpenAI, Google, Groq, DeepSeek, Mistral, OpenRouter, Together, xAI, Perplexity, Fireworks, Cerebras, Cohere, SambaNova, Novita, Hyperbolic, Lambda, Ollama, LM Studio, llama.cpp, vLLM, and a few more — so you can run your agent on whatever model you prefer from day one. Everything beyond the core is a plugin.
 
-```bash
-docker run -p 8080:8080 \
-  -e SQUAD_AUTH_API_KEY=your-key-here \
-  squad-ai/squad-gateway
-```
-
-### Docker Compose
+## Quick start
 
 ```bash
 git clone https://github.com/lobs-ai/squad.git
 cd squad
+cp examples/config.yaml ./config.yaml
+cp examples/.env.example ./.env          # ANTHROPIC_API_KEY, DISCORD_BOT_TOKEN, ...
 docker compose up
 ```
 
-### Build from Source
+Open the dashboard at http://localhost:8080 and your agent is live in the Discord channel you configured.
 
-```bash
-pnpm install
-pnpm build
-pnpm start --config config.yaml
-```
-
-## How It Works
+## How it works
 
 ```
-Connector (Discord, Slack, API...) → Gateway → Agent Runtime (Ollama, OpenAI...)
+Channels (Discord, Slack, Email, SMS, ...) ─┐
+                                            ├──WS──▶  Gateway  ──▶  Runner (agent loop)  ──▶  LLM + Tools
+                                  Dashboard ─┘                   ──▶  SQLite (sessions, approvals, routines)
+                                                                 ──▶  Plugin host
 ```
 
-- **Gateway** — The brain. Manages sessions, routes messages, enforces auth.
-- **Connectors** — Adapters for each platform. One agent, many faces.
-- **Runtimes** — Where the AI actually runs. Swap models without changing anything else.
+- **Gateway** — one long-running process. Owns the wire protocol, sessions, storage, and plugin loading. Channel-agnostic.
+- **Runner** — the agent loop, vendored from [`lobs/agentic`](https://github.com/lobs-ai/agentic). Copied into `packages/runner`, not imported.
+- **Channels** — each communication medium implements the same channel contract. Discord is the first-party reference channel; others come as plugins.
+- **Dashboard** — React + Vite. Lives at `/` on the gateway. Live chat, session search, tool-approval queue, plugin manager, channel status, routine scheduler.
+- **Plugins** — tools, providers, channels, skills, and routines all register through one `definePlugin({...})` contract.
 
-## Architecture
+See [SPEC.md](SPEC.md) for the full design.
 
-Squad is built around one core principle: **the gateway is the center of everything**.
+## What's in v1
 
-- Connectors connect to the gateway, not to agents directly
-- The gateway manages all session state
-- Runtimes are pluggable — use Ollama, OpenAI, or roll your own
-- Everything communicates over a clean WebSocket/HTTP protocol
+- A channel-agnostic gateway with the full channel contract
+- **Discord as the first shipped channel** (see the [Discord Implementation Plan](SPEC.md#discord-implementation-plan))
+- **Every LLM provider agentic supports** — Anthropic (default), OpenAI, Google, OpenRouter, Groq, DeepSeek, Mistral, Together, xAI, Perplexity, Fireworks, Cerebras, Cohere, SambaNova, Novita, Hyperbolic, Lambda, Ollama, LM Studio, llama.cpp, vLLM, z-ai, Minimax, Kimi, opencode, plus an `openai-compatible` escape hatch
+- A minimal built-in tool set (read/write/list/fetch/search)
+- SQLite session persistence with FTS5 search
+- Approval queue for tools tagged `write` / `exec` / `network`
+- Cron-scheduled routines
+- Plugin API for tools, providers, channels, skills, routines
 
-This means you can:
-- Run a Discord bot and a Slack bot with the same agent
-- Swap Discord for Slack by swapping the connector
-- Deploy connectors anywhere — same machine or different servers
-- Build new connectors without touching the core
-
-## Features
-
-- **Gateway-centric design** — Session management, routing, and auth in one place
-- **Docker-first** — One command to run everything
-- **Connector ecosystem** — Discord, Slack, HTTP, CLI, and more
-- **Pluggable runtimes** — Ollama, OpenAI-compatible APIs, custom runtimes
-- **Open protocol** — Build connectors in any language
-- **Self-hostable** — Your infrastructure, your data
+Explicitly **not** in v1: other first-party channels (Slack, Telegram, email, voice, ...), Kubernetes, multi-user, plugin sandboxing, a marketplace. See the [SPEC](SPEC.md#what-v1-is-not) for why.
 
 ## Status
 
-Early development. Gateway core and basic connectors in progress.
-
-See [SPEC.md](SPEC.md) for the full design specification.
+Early development. The current repo is the design; packages under `packages/` are being scaffolded.
 
 ## Contributing
 
-Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## License
-
-MIT
+See [CONTRIBUTING.md](CONTRIBUTING.md).
