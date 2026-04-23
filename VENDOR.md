@@ -28,30 +28,47 @@ Filled in as we import. Track the source commit here the moment a file is copied
 
 ### `packages/runner/src/`
 
-| File                  | Source path in agentic                  | Commit | Synced |
-|-----------------------|------------------------------------------|--------|--------|
-| `agent-loop.ts`       | `packages/runner/src/agent-loop.ts`      | _TBD_  | _TBD_  |
-| `types.ts`            | `packages/runner/src/types.ts`           | _TBD_  | _TBD_  |
-| `hooks.ts`            | `packages/runner/src/hooks.ts`           | _TBD_  | _TBD_  |
-| `context-engine.ts`   | `packages/runner/src/context-engine.ts`  | _TBD_  | _TBD_  |
-| `loop-detector.ts`    | `packages/runner/src/loop-detector.ts`   | _TBD_  | _TBD_  |
+| File                      | Source path in agentic                       | Commit    | Synced     |
+|---------------------------|-----------------------------------------------|-----------|------------|
+| `agent-loop.ts`           | `packages/runner/src/agent-loop.ts`           | `7daf6df` | 2026-04-23 |
+| `types.ts`                | `packages/runner/src/types.ts`                | `7daf6df` | 2026-04-23 |
+| `hooks.ts`                | `packages/runner/src/hooks.ts`                | `7daf6df` | 2026-04-23 |
+| `context-engine.ts`       | `packages/runner/src/context-engine.ts`       | `7daf6df` | 2026-04-23 |
+| `context-manager.ts`      | `packages/runner/src/context-manager.ts`      | `7daf6df` | 2026-04-23 |
+| `loop-detector.ts`        | `packages/runner/src/loop-detector.ts`        | `7daf6df` | 2026-04-23 |
+| `tool-registry.ts`        | `packages/runner/src/tool-registry.ts`        | `7daf6df` | 2026-04-23 |
+| `session.ts`              | `packages/runner/src/session.ts`              | `7daf6df` | 2026-04-23 |
+| `session-transcript.ts`   | `packages/runner/src/session-transcript.ts`   | `7daf6df` | 2026-04-23 |
+
+`session.ts` and `session-transcript.ts` are the runner's **in-memory** session
+abstractions — not Squad's SQLite session store. They are required for
+`agent-loop.ts` to run. Squad's `packages/gateway/src/sessions/` persists its
+own `sessions` / `messages` / `tool_calls` rows via runner hooks and is the
+source of truth across restarts.
+
+**Local edit:** `agent-loop.ts` imports `createClient` instead of
+`createResilientClient`. Squad does not vendor agentic's resilient-client /
+circuit-breaker / key-manager machinery — retries and fallbacks live outside
+the runner. See the header comment in that file.
 
 ### `packages/llm/src/`
 
-| File                              | Source path in agentic                                   | Commit | Synced |
-|-----------------------------------|-----------------------------------------------------------|--------|--------|
-| `types.ts`                        | `packages/llm/src/types.ts`                              | _TBD_  | _TBD_  |
-| `client.ts`                       | `packages/llm/src/client.ts`                             | _TBD_  | _TBD_  |
-| `providers/anthropic.ts`          | `packages/llm/src/providers/anthropic.ts`                | _TBD_  | _TBD_  |
-| `providers/openai.ts`             | `packages/llm/src/providers/openai.ts`                   | _TBD_  | _TBD_  |
-| `providers/openai-compatible.ts`  | `packages/llm/src/providers/openai-compatible.ts`        | _TBD_  | _TBD_  |
+| File                              | Source path in agentic                              | Commit    | Synced     |
+|-----------------------------------|------------------------------------------------------|-----------|------------|
+| `types.ts`                        | `packages/llm/src/types.ts`                          | `7daf6df` | 2026-04-23 |
+| `client.ts`                       | `packages/llm/src/client.ts`                         | `7daf6df` | 2026-04-23 |
+| `utils.ts`                        | `packages/llm/src/utils.ts`                          | `7daf6df` | 2026-04-23 |
+| `providers/anthropic.ts`          | `packages/llm/src/providers/anthropic.ts`            | `7daf6df` | 2026-04-23 |
+| `providers/openai.ts`             | `packages/llm/src/providers/openai.ts`               | `7daf6df` | 2026-04-23 |
+| `providers/openai-compatible.ts`  | `packages/llm/src/providers/openai-compatible.ts`    | `7daf6df` | 2026-04-23 |
 
 ### `packages/tools/src/`
 
-| File              | Source path in agentic                | Commit | Synced |
-|-------------------|-----------------------------------------|--------|--------|
-| `base-tool.ts`    | `packages/tools/src/base-tool.ts`      | _TBD_  | _TBD_  |
-| `registry.ts`     | `packages/tools/src/registry.ts`       | _TBD_  | _TBD_  |
+| File              | Source path in agentic                | Commit    | Synced     |
+|-------------------|-----------------------------------------|-----------|------------|
+| `types.ts`        | `packages/tools/src/types.ts`          | `7daf6df` | 2026-04-23 |
+| `base-tool.ts`    | `packages/tools/src/base-tool.ts`      | `7daf6df` | 2026-04-23 |
+| `registry.ts`     | `packages/tools/src/registry.ts`       | `7daf6df` | 2026-04-23 |
 
 ## Files we deliberately do NOT vendor
 

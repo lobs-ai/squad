@@ -1,2 +1,3 @@
-// Vendor entry point — populated in Phase 2.
-export {};
+export * from "./types.js";
+export * from "./base-tool.js";
+export * from "./registry.js";
