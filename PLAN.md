@@ -1,130 +1,149 @@
 # Squad — Implementation Plan
 
-Concrete, phased build plan for Squad v1. Each phase ends at a demoable state and gets its own commit (or small stack of commits). See `SPEC.md` for the design and `AGENTS.md` for architectural rules.
+Concrete build plan for Squad v1. Each phase ends at a demoable state
+and gets its own commit (or small stack of commits). See `SPEC.md` for
+the design and `AGENTS.md` for architectural rules.
+
+## Snapshot
+
+All ten phases of the original v1 plan are shipped on `main`. One
+post-plan feature — configurable chat delivery (interrupt vs queue) —
+is also in. `pnpm -r build` and `pnpm -r test` are green (49 tests
+across 9 packages).
 
 ---
 
-## Phase 0 — Workspace scaffold
+## Shipped
 
-- `pnpm-workspace.yaml`; root `package.json` with `dev` / `build` / `test` / `lint` / `format`.
-- `tsconfig.base.json` (strict ESM, NodeNext, composite refs).
-- `.eslintrc`, `.prettierrc`, `.nvmrc` (Node 20+).
-- Empty package skeletons at the paths `AGENTS.md` fixes:
-  `protocol`, `runner`, `llm`, `tools`, `plugin-sdk`, `channel-sdk`, `channel-discord`, `client-cli`, `dashboard`, `gateway`.
-- `Dockerfile` (multi-stage: pnpm build → slim runtime with `better-sqlite3`).
-- Wire `docker compose up` to fail fast on missing `ANTHROPIC_API_KEY`.
-- Update `CONTRIBUTING.md` to describe the real package layout (currently describes the old `runtime/` + `connectors/`).
+### Phase 0 — Workspace scaffold ✓
+pnpm workspace, `tsconfig.base.json`, ESLint 9 flat config, Prettier,
+Dockerfile, ten package skeletons.
 
-**Done when:** `pnpm install && pnpm -r build` succeeds on an empty workspace.
+### Phase 1 — `@squad/protocol` ✓
+Frame types + every namespace (session, chat, subagents, tasks,
+questions, approvals, plugins, channels, routines, admin). Central
+`methodRegistry` + `eventRegistry`. `parseFrame` /
+`parseFrameString` with typed error envelopes.
 
-## Phase 1 — `@squad/protocol`
+### Phase 2 — Vendor from `lobs/agentic` ✓
+`runner/{agent-loop,types,hooks,context-engine,context-manager,loop-detector,tool-registry,session,session-transcript}`,
+`llm/{types,client,utils,providers/*}`, `tools/{types,base-tool,registry}`.
+Pinned at `7daf6df` in `VENDOR.md`. One local edit in `agent-loop.ts`
+swaps `createResilientClient` for `createClient`.
 
-Every downstream package imports these, so do this first.
+### Phase 3 — Gateway skeleton ✓
+HTTP + WS server, dispatch table, bearer-token auth, SQLite (WAL +
+FTS5), `chat.send` → `runAgent()` → streamed events. Integration test
+uses a scripted LLM client against the real WS loop.
 
-- Frame types: `request`, `response`, `event`, `subscribe` / `unsubscribe`. One Zod schema per method + event.
-- Namespaces, schemas only (no handlers yet): `session.*`, `chat.*`, `subagents.*`, `tasks.*`, `questions.*`, `approvals.*`, `plugins.*`, `channels.*`, `routines.*`, `admin.*`.
-- Error envelope type.
-- `parseFrame(unknown) → Frame | ProtocolError` for both gateway and client use.
+### Phase 4 — Tasks primitive ✓
+`tasks` table (migration 002), `KeyedMutex<taskListId>`,
+`create_task` / `update_task` / `list_tasks` / `get_task` tools with
+status-discipline prompts, `tasks.*` dispatch + events, concurrent-
+claim race test.
 
-**Done when:** every method/event in `SPEC.md` §Wire Protocol has a schema and a TS type, validated both directions in unit tests.
+### Phase 5 — Ask-user primitive ✓
+`questions` table (003), store with answered/cancelled/timed_out
+resolution, `ask_user` tool, full `questions.*` protocol, integration
+tests for both answer and timeout paths.
 
-## Phase 2 — Vendor from `lobs/agentic`
+### Phase 6 — `@squad/client-cli` ✓
+`ProtocolClient` typed against `methodRegistry`, interactive CLI that
+renders streaming chat, live task list, and select-style ask prompts.
+Doubles as the reference "any client on top of the protocol".
 
-`VENDOR.md` lists the exact files. One commit per package; each adds header comments + commit SHA in the same commit.
+### Phase 7 — Channel SDK + Discord ✓ (D0 + D1; D2 scaffolded)
+- `@squad/channel-sdk`: reconnecting WS client with backoff,
+  persistent SessionMap, renderer contract.
+- `@squad/channel-discord`: discord.js bot with guild/channel/DM
+  routing, stream-edit replies, 2000-char chunking. Standalone entry
+  + `examples/compose.split-channels.yml`.
+- **Not yet end-to-end:** D2 (ask-user buttons, pinned task embed,
+  reaction approvals, attachments) — code paths scaffolded, needs a
+  live test guild to verify.
 
-- `@squad/runner`: `agent-loop.ts`, `types.ts`, `hooks.ts`, `context-engine.ts`, `loop-detector.ts`. Skip `session.ts`.
-- `@squad/llm`: `types.ts`, `client.ts`, `providers/{anthropic,openai,openai-compatible}.ts`. Validate `KNOWN_PROVIDERS` covers every entry in `SPEC.md` §`@squad/llm`.
-- `@squad/tools`: `base-tool.ts`, `registry.ts`. No built-ins yet — those come in phases 3 / 4 / 7.
+### Phase 8 — Subagents ✓
+`subagent_defs` table (004), `SubagentPool` with bounded concurrency
+(8 global / 4 per parent, depth 3) and per-tool filtering,
+`spawn_subagent` tool, `subagents.*` dispatch + events, cancellation
+propagation. `examples/subagents/code-reviewer/` reference.
 
-**Risk:** agentic's `session.ts` is intertwined with its runtime layer. Expect the runner files to reference session types we are not taking — the vendoring step will need small cuts / shims.
+### Phase 9 — Dashboard ✓
+React + Vite served by the gateway at `/`. `BrowserProtocolClient`
+mirrors the CLI's client. Views: Chat (with inline ask-user cards and
+active-task sidebar), Tasks, Sessions.
 
-**Done when:** a trivial `runAgent({messages, tools: [], model})` works against a real Anthropic key (gated on env).
+### Phase 10 — Plugin host, approvals, routines ✓
+- `@squad/plugin-sdk`: `definePlugin()` + `GatewayAPI`, six kinds.
+- `PluginHost` dynamically imports `config.plugins`, scoped API,
+  cleanup on reload/disable.
+- Approval policy engine: `tagMatchPolicy` + `cascade`, allow/deny
+  for testing.
+- `RoutineScheduler`: 60-second tick, 5-field cron matcher, no
+  external cron dep.
+- `extensions/example-subagent-plugin/` as the reference plugin.
 
-## Phase 3 — Gateway skeleton
+### Post-plan — Configurable chat delivery ✓
+Per-session `deliveryMode` column (migration 005). Config accepts
+three shorthand forms (`chat.delivery: "interrupt"`,
+`chat.delivery_mode: "interrupt"`, or the full object with
+`max_queued` / `collapse_duplicates`), all normalizing to one
+internal shape. Default is `interrupt`.
 
-- HTTP server (health, static asset handler placeholder).
-- WebSocket server with dispatch table keyed on `method`.
-- Auth: single shared token (config-declared), scope check stub.
-- SQLite bootstrap via `better-sqlite3`: migrations for `sessions`, `messages`, `tool_calls` (other tables land with their features). FTS5 index on `messages`.
-- One working method: `chat.send` → create/reuse session → `runAgent()` → stream `chat.text_delta` / `chat.assistant_message` → persist → return.
-- Hook wiring: `after_tool_call` persists; `before_tool_call` is a pass-through for now.
-- Integration test using a raw `ws` client (no mocks) that does `session.start` → `chat.send` → asserts streamed deltas arrive in order.
+`RunCoordinator` + `DeliveryQueue` own the per-session state. When
+`chat.send` hits an active run:
+- **interrupt**: queued and injected into the live agent via a
+  `before_llm_call` hook (drains `session._ref()` once per turn-gap).
+  Leftovers after the run fire a follow-up turn so nothing is stranded.
+- **queue**: held until `after_agent_end`, then one message is drained
+  and fires a fresh turn via the same chat path.
 
-**Done when:** `pnpm dev` + a `ws` script can hold a conversation through the gateway.
+`chat.send` result now includes `status: "running" | "queued"` and
+optional `queuePosition`. Covered by config-parsing unit tests and
+end-to-end integration tests that gate the scripted LLM to force the
+race.
 
-## Phase 4 — Tasks primitive
+---
 
-Tasks before subagents and before Discord — cheap, high-value, and subagents need them.
+## Remaining before v1 is truly feature-complete
 
-- Migrations: `tasks` table + `task_list_id` resolution to session-tree root.
-- `packages/gateway/src/tasks/` store with a per-list `AsyncMutex`; every mutation is read-compute-write inside the lock.
-- Tools in `packages/tools/src/tasks/`: `create_task`, `update_task`, `list_tasks`, `get_task`. Each has a `*prompt.ts` sibling with the guidance from `SPEC.md` §Tasks.
-- Protocol handlers: `tasks.create` / `update` / `get` / `list` / `delete` / `claim` / `watch`; events `tasks.created` / `updated` / `deleted`.
-- Tests: concurrent-claim race test (two "subagents" racing, one wins cleanly).
+### Discord D2
+Ask-user buttons + modal, pinned task embed that edits in place,
+reaction-based approvals, attachment upload/download. All protocol +
+SDK scaffolding is in; needs the actual discord.js integration plus a
+live bot token + test guild for the integration test.
 
-**Done when:** CLI / ws script can call the task tools through an agent run and watch the task list update live over a subscription.
+### Approval escalation wiring
+The policy engine cascade exists. What's missing: a `before_tool_call`
+hook in the gateway that runs the cascade, inserts an `approvals` row
+on "escalate", broadcasts `approvals.pending`, awaits the decision
+via `approvals.decide`, and returns an error `ToolResult` on deny.
 
-## Phase 5 — Ask-user primitive
+### Routine execution
+`RoutineScheduler` fires on schedule, but the runner currently just
+creates a session. It needs to push `r.prompt` through the chat path
+(same `runChatTurn` used by `chat.send`) and, on completion, dispatch
+the output to `r.delivery` (silent / dashboard / Discord channel).
 
-- Migration: `questions` table.
-- `packages/gateway/src/questions/` store keyed by correlation id.
-- `ask_user` tool in `packages/tools/src/`.
-- Protocol: `questions.ask` / `answer` / `cancel` / `list` / `history`; events `questions.asked` / `answered` / `cancelled` / `timed_out`.
-- `channels.capabilities` schema + gateway rejection logic for over-option'd asks (never silently drop).
+### FTS5 session search
+The index is populated from day one. `session.search` is a stub —
+wire it to `messages_fts` with snippet extraction, then add a
+dashboard panel.
 
-**Done when:** an agent can call `ask_user` and any subscribed client can resolve it.
-
-## Phase 6 — `@squad/client-cli`
-
-- Minimal terminal client: auth → subscribe → send `chat.send` → render streaming text.
-- Renders tasks (checklist with spinner) and `ask_user` (interactive select + "Other…" editor prompt).
-- This is the reference client and our integration-test harness.
-
-**Release gate:** end-to-end without Discord.
-
-## Phase 7 — Channel SDK + Discord (D0 → D1 → D2)
-
-- `@squad/channel-sdk`: WS client with reconnect, session map (file-persisted), renderer contract (`renderTaskList`, `handleTaskAction`, `renderAsk`, etc.), in-process adapter.
-- `@squad/channel-discord` follows the phasing in `SPEC.md` §Discord Implementation Plan:
-  - **D0**: inbound text → agent → outbound text. Single channel, no streaming.
-  - **D1**: streaming edits, typing indicators, 2000-char chunking, DMs.
-  - **D2**: ask-user buttons + modal, pinned task embed, reaction approvals, attachments.
-- Gateway loads Discord as an in-process plugin by default; `examples/compose.split-channels.yml` flips it to standalone.
-- Integration test gated on `DISCORD_BOT_TOKEN` and `DISCORD_TEST_GUILD`.
-
-## Phase 8 — Subagents
-
-- Migrations: `sessions.parent_session_id`, `sessions.subagent_def_id`, `subagent_defs`.
-- `packages/gateway/src/subagents/pool.ts`: bounded concurrency (8 global / 4 per parent), depth cap (3), per-definition token / tool-call limits enforced before run.
-- `spawn_subagent` built-in tool; subagents inherit the tree's task list automatically.
-- `subagents.*` protocol: events on their own topic; `subagents.tree` query.
-- Cancellation propagation (parent cancel → descendants).
-- First example plugin: `examples/subagents/code-reviewer/` using `read_file` only.
-- CLI + Discord renderers for subagent trees.
-
-## Phase 9 — Dashboard
-
-React + Vite served statically by the gateway at `/`.
-
-- Views in order of value: Chat (with inline `ask_user` cards) → Tasks → Sessions (tree view with FTS5 search) → Approvals → Plugins → Channels → Routines → Logs → Settings.
-- No dashboard-only gateway endpoints — if something needs one, fill the protocol gap.
-
-## Phase 10 — Plugin host hardening, approvals, routines
-
-- Plugin host: `extensions/` discovery + npm-package plugins, `register(api)` with scoped `GatewayAPI`, cleanup on unload / reload.
-- Approval policy engine: `tag-match` default, plugin-supplied policies, cascade.
-- Routines: 60-second tick, `routines` table, `[SILENT]` / Discord / dashboard delivery.
-- One example plugin per kind (tool, provider, channel, skill, routine, subagent).
+### Subagent tree in dashboard
+`subagents.tree` returns the tree; the dashboard currently only lists
+top-level sessions. A hierarchical Sessions view + per-subagent
+transcript surface would round out the demo.
 
 ---
 
 ## Cross-cutting
 
-- **Testing:** integration tests use the real WS loop + real SQLite (temp file); tool tests use the real registry. No protocol-layer mocks.
-- **Vendor hygiene:** every vendored-file edit updates the header + `VENDOR.md` in the same commit.
+- **Testing:** integration tests use the real WS loop + real SQLite
+  (temp file); tool tests use the real registry. No protocol-layer
+  mocks.
+- **Vendor hygiene:** every vendored-file edit updates the header +
+  `VENDOR.md` in the same commit.
 - **Logging:** `pino` everywhere; no `console.log` in library code.
-- **Sequencing:** do not start Discord before the CLI works end-to-end.
-
-## Commit cadence
-
-One commit per phase, or per logical sub-part of a phase (e.g., one commit per vendored package in phase 2). No PRs in v1 — land on `main`.
+- **Commit cadence:** one commit per logical sub-part. No PRs — land
+  on `main`.

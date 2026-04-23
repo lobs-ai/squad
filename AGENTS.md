@@ -187,18 +187,36 @@ If a script you need doesn't exist, add it to the appropriate `package.json` rat
 
 ## Status
 
-Early development. Priority order:
+The ten-phase v1 plan in `PLAN.md` is shipped on `main`. Each package
+compiles and tests pass (`pnpm -r build`, `pnpm -r test`). Current
+snapshot:
 
-1. `@squad/protocol` (unblocks everything else — includes `subagents.*`, `tasks.*`, `questions.*` from the start)
-2. `@squad/runner` + `@squad/llm` + `@squad/tools` (vendor from agentic; update `VENDOR.md`)
-3. `@squad/gateway` skeleton (WS server, dispatch, SQLite, one method: `chat.send`)
-4. Task store + task tools (`create_task` / `update_task` / `list_tasks` / `get_task`) — cheap to ship, visible value immediately
-5. Question store + `ask_user` tool (renderers per channel follow)
-6. `@squad/client-cli` (the smallest possible protocol client — renders chat, tasks, and asks; our integration-test harness)
-7. `@squad/channel-sdk` + `@squad/channel-discord` (prove the end-to-end loop; in-process first; buttons + task embed in D2)
-8. Subagent pool + `spawn_subagent` tool + one example subagent (`code-reviewer`) using the shared task list
-9. `@squad/dashboard` (chat + inline question cards → tasks panel → subagent tree view → approvals → the rest)
-10. Plugin host + one example plugin per kind
-11. Routines
+- `@squad/protocol` — every namespace (`session.*`, `chat.*`,
+  `subagents.*`, `tasks.*`, `questions.*`, `approvals.*`, `plugins.*`,
+  `channels.*`, `routines.*`, `admin.*`) has a Zod schema and a TS type.
+- `@squad/runner` / `@squad/llm` / `@squad/tools` — vendored from
+  agentic `7daf6df`. See `VENDOR.md`.
+- `@squad/gateway` — HTTP + WS + SQLite (migrations 001–005), the full
+  dispatch layer, delivery coordinator, subagent pool, plugin host,
+  approval policy engine, cron routines, dashboard statics.
+- `@squad/client-cli` — reference terminal client + `ProtocolClient`
+  reusable shape.
+- `@squad/channel-sdk` + `@squad/channel-discord` — SDK with
+  reconnecting client, session map, renderer contract. Discord D0+D1
+  in; D2 (buttons, task embed, reaction approvals, attachments) is
+  scaffolded but not end-to-end — it needs a live test guild.
+- `@squad/dashboard` — React + Vite, served by the gateway at `/`.
 
-Check `SPEC.md`'s Roadmap section before starting new work.
+Explicit gaps worth attention on the next pass:
+- Discord D2 (ask-user buttons, pinned task embed, reaction approvals,
+  attachments). All the protocol + SDK pieces are in place.
+- Approval escalation wiring — the policy engine + `approvals.*`
+  dispatch exist but `before_tool_call` isn't wired to escalate yet.
+- Routine execution — routines register and fire, but firing only
+  creates a session; it doesn't yet push the prompt through
+  `runChatTurn` or honor the `delivery` field.
+- FTS5 search UI — the index is populated, `session.search` is
+  stubbed.
+
+When you add work, update `PLAN.md` to reflect the new shape.
+Check `SPEC.md`'s Roadmap section before starting anything new.
