@@ -13,11 +13,14 @@ import { registerChatMethods } from "./dispatch/chat.js";
 import { registerAdminMethods } from "./dispatch/admin.js";
 import { registerTaskMethods } from "./dispatch/tasks.js";
 import { registerQuestionMethods } from "./dispatch/questions.js";
+import { registerSubagentMethods } from "./dispatch/subagents.js";
 import type { SessionStore } from "./db/sessions.js";
 import type { MessageStore } from "./db/messages.js";
 import type { ToolCallStore } from "./db/tool-calls.js";
 import type { TaskStore } from "./tasks/store.js";
 import type { QuestionStore } from "./questions/store.js";
+import type { SubagentPool } from "./subagents/pool.js";
+import type { SubagentRegistry } from "./subagents/registry.js";
 
 export interface GatewayDeps {
   config: Config;
@@ -29,6 +32,8 @@ export interface GatewayDeps {
   toolCalls: ToolCallStore;
   tasks: TaskStore;
   questions: QuestionStore;
+  subagentPool: SubagentPool;
+  subagentRegistry: SubagentRegistry;
   toolRegistry: ToolRegistry;
   startedAt: number;
   version: string;
@@ -125,6 +130,7 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
   });
   registerTaskMethods(d, deps.tasks, deps.broadcast);
   registerQuestionMethods(d, deps.questions);
+  registerSubagentMethods(d, deps.subagentPool, deps.subagentRegistry, deps.sessions);
   registerAdminMethods(d, {
     sessions: deps.sessions,
     startedAt: deps.startedAt,

@@ -1,5 +1,10 @@
 import { join } from "node:path";
-import { ToolRegistry, registerTaskTools, registerAskUserTool } from "@squad/tools";
+import {
+  ToolRegistry,
+  registerTaskTools,
+  registerAskUserTool,
+  registerSpawnSubagentTool,
+} from "@squad/tools";
 import { logger } from "./logger.js";
 import { loadConfig, resolveTokenSecrets, type Config } from "./config.js";
 import { Authenticator } from "./auth.js";
@@ -12,6 +17,9 @@ import { TaskStore } from "./tasks/store.js";
 import { taskBackendFor } from "./tasks/backend.js";
 import { QuestionStore } from "./questions/store.js";
 import { questionBackendFor } from "./questions/backend.js";
+import { SubagentRegistry } from "./subagents/registry.js";
+import { SubagentPool } from "./subagents/pool.js";
+import { subagentBackendFor } from "./subagents/backend.js";
 import type { LLMClient } from "@squad/llm";
 import { createGatewayServer, type GatewayHandle } from "./server.js";
 
@@ -28,6 +36,9 @@ export { TaskStore } from "./tasks/store.js";
 export { taskBackendFor } from "./tasks/backend.js";
 export { QuestionStore } from "./questions/store.js";
 export { questionBackendFor } from "./questions/backend.js";
+export { SubagentRegistry } from "./subagents/registry.js";
+export { SubagentPool } from "./subagents/pool.js";
+export { subagentBackendFor } from "./subagents/backend.js";
 export { Dispatcher } from "./dispatch/index.js";
 export { runChatTurn } from "./runs.js";
 
@@ -48,6 +59,10 @@ export interface BootedGateway {
     toolCalls: ToolCallStore;
     tasks: TaskStore;
     questions: QuestionStore;
+  };
+  subagents: {
+    pool: SubagentPool;
+    registry: SubagentRegistry;
   };
   broadcast: Broadcast;
   close: () => Promise<void>;
@@ -84,8 +99,25 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     config.policy.approvals.timeout_seconds,
   );
   const toolRegistry = opts.toolRegistry ?? new ToolRegistry();
+  const subagentRegistry = new SubagentRegistry();
+  const subagentPool = new SubagentPool(
+    {
+      registry: subagentRegistry,
+      sessions,
+      broadcast,
+      logger,
+      toolRegistry,
+      ...(opts.clientOverride !== undefined ? { clientOverride: opts.clientOverride } : {}),
+    },
+    {
+      maxConcurrentGlobal: config.subagents.max_concurrent_global,
+      maxConcurrentPerParent: config.subagents.max_concurrent_per_parent,
+      maxTreeDepth: config.subagents.max_tree_depth,
+    },
+  );
   registerTaskTools(toolRegistry, taskBackendFor(tasks));
   registerAskUserTool(toolRegistry, questionBackendFor(questions));
+  registerSpawnSubagentTool(toolRegistry, subagentBackendFor(subagentPool, subagentRegistry));
 
   const handle = createGatewayServer({
     config,
@@ -97,6 +129,8 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     toolCalls,
     tasks,
     questions,
+    subagentPool,
+    subagentRegistry,
     toolRegistry,
     startedAt,
     version: VERSION,
@@ -106,6 +140,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   return {
     handle,
     stores: { sessions, messages, toolCalls, tasks, questions },
+    subagents: { pool: subagentPool, registry: subagentRegistry },
     broadcast,
     close: async () => {
       await handle.close();

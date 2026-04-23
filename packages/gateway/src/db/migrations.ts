@@ -112,6 +112,19 @@ const migrations: Migration[] = [
       CREATE INDEX idx_questions_status ON questions(status);
     `,
   },
+  {
+    id: 4,
+    name: "subagent_defs",
+    up: `
+      CREATE TABLE subagent_defs (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        version TEXT NOT NULL,
+        config_json TEXT NOT NULL,
+        registered_at TEXT NOT NULL
+      );
+    `,
+  },
 ];
 
 export function runMigrations(db: DatabaseHandle): void {

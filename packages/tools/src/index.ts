@@ -3,3 +3,4 @@ export * from "./base-tool.js";
 export * from "./registry.js";
 export * from "./tasks/index.js";
 export * from "./questions/index.js";
+export * from "./subagents/index.js";
