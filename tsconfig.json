@@ -1,0 +1,14 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/protocol" },
+    { "path": "./packages/llm" },
+    { "path": "./packages/tools" },
+    { "path": "./packages/runner" },
+    { "path": "./packages/plugin-sdk" },
+    { "path": "./packages/channel-sdk" },
+    { "path": "./packages/channel-discord" },
+    { "path": "./packages/client-cli" },
+    { "path": "./packages/gateway" }
+  ]
+}

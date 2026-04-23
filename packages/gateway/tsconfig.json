@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["**/*.test.ts", "test", "dist"],
+  "references": [
+    { "path": "../protocol" },
+    { "path": "../runner" },
+    { "path": "../llm" },
+    { "path": "../tools" },
+    { "path": "../plugin-sdk" }
+  ]
+}
