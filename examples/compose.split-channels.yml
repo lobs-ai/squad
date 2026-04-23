@@ -1,0 +1,39 @@
+# Opt-in: run the Discord channel in its own container so a bot crash
+# doesn't restart the gateway. The default compose.yml runs Discord
+# in-process as a plugin; this file is only needed when you want
+# isolation or run multiple channels.
+
+services:
+  gateway:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - SQUAD_CONFIG=/app/config.yaml
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - SQUAD_DASHBOARD_TOKEN=${SQUAD_DASHBOARD_TOKEN:-dev-dashboard-token}
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ../extensions:/app/extensions:ro
+      - squad-data:/app/data
+    restart: unless-stopped
+
+  discord:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["pnpm", "--filter", "@squad/channel-discord", "start"]
+    environment:
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - SQUAD_DISCORD_CONFIG=/app/discord.yaml
+      - SQUAD_DISCORD_TOKEN=${SQUAD_DISCORD_TOKEN:-dev-discord-token}
+    volumes:
+      - ./discord.yaml:/app/discord.yaml:ro
+    depends_on:
+      - gateway
+    restart: unless-stopped
+
+volumes:
+  squad-data:
