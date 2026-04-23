@@ -25,8 +25,9 @@ docker compose up
 ### Build from Source
 
 ```bash
-go build -o squad-gateway ./cmd/gateway
-./squad-gateway --config config.yaml
+pnpm install
+pnpm build
+pnpm start --config config.yaml
 ```
 
 ## How It Works

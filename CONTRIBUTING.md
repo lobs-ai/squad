@@ -6,33 +6,30 @@ Welcome! We're glad you're interested in contributing.
 
 1. Fork the repository
 2. Clone your fork: `git clone git@github.com:your-username/squad.git`
-3. Install Go 1.23+
-4. Run `go mod tidy`
-5. Start the gateway: `go run ./cmd/gateway`
+3. Install Node.js 20+ and pnpm
+4. Run `pnpm install`
+5. Start the gateway: `pnpm dev`
 
 ## Project Structure
 
 ```
 squad/
-├── cmd/                    # Entry points
+├── packages/
 │   ├── gateway/           # Main gateway service
-│   ├── connector-discord/ # Discord connector
-│   └── connector-slack/    # Slack connector
-├── internal/              # Internal packages
-│   ├── gateway/          # Gateway implementation
-│   ├── protocol/         # Wire protocol
+│   ├── protocol/          # Wire protocol types
 │   ├── runtime/           # Agent runtime adapters
-│   └── connector/         # Connector base
-├── pkg/                   # Public packages
-│   └── models/           # Shared data structures
-├── examples/             # Example configurations
-└── docs/                 # Documentation
+│   └── connectors/
+│       ├── discord/       # Discord connector
+│       ├── slack/         # Slack connector
+│       └── cli/           # CLI connector
+├── examples/              # Example configurations
+└── docs/                  # Documentation
 ```
 
 ## Adding a Connector
 
-1. Create a new package under `cmd/connector-yourplatform/`
-2. Implement the connector interface (see `internal/connector/`)
+1. Create a new package under `packages/connectors/yourplatform/`
+2. Implement the connector interface (see `packages/protocol/`)
 3. Add Docker profile to `docker-compose.yml`
 4. Submit a PR
 
@@ -42,7 +39,7 @@ Squad uses a simple JSON protocol over WebSocket. See `SPEC.md` for the full spe
 
 ## Code Style
 
-- Run `go fmt` before committing
+- Run `pnpm lint` and `pnpm format` before committing
 - Add tests for new functionality
 - Update documentation as needed
 
