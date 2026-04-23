@@ -3,6 +3,9 @@ import { z } from "zod";
 export const sessionStatus = z.enum(["idle", "running", "ended"]);
 export type SessionStatus = z.infer<typeof sessionStatus>;
 
+export const deliveryMode = z.enum(["interrupt", "queue"]);
+export type DeliveryMode = z.infer<typeof deliveryMode>;
+
 export const sessionRecordSchema = z.object({
   id: z.string(),
   parentSessionId: z.string().nullable(),
@@ -12,6 +15,7 @@ export const sessionRecordSchema = z.object({
   remoteId: z.string().nullable(),
   model: z.string(),
   status: sessionStatus,
+  deliveryMode: deliveryMode,
   tokensIn: z.number().int().nonnegative(),
   tokensOut: z.number().int().nonnegative(),
   createdAt: z.string(),
@@ -26,6 +30,7 @@ export const sessionStartParams = z.object({
   platform: z.string().optional(),
   remoteId: z.string().optional(),
   systemPrompt: z.string().optional(),
+  deliveryMode: deliveryMode.optional(),
 });
 export const sessionStartResult = z.object({ session: sessionRecordSchema });
 

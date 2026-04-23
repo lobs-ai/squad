@@ -15,6 +15,71 @@ const providerConfigSchema = z.object({
   base_url: z.string().optional(),
 });
 
+/**
+ * How messages sent while a run is already in flight are delivered.
+ *
+ * - "interrupt" (default): the new message is queued and injected into the
+ *   running agent at the start of its next LLM turn. The user sees it
+ *   acknowledged at the end of the current tool call, not after the whole
+ *   conversation completes. Best for chat-native UX.
+ * - "queue": the new message waits until the current run fully finishes,
+ *   then triggers a fresh turn. Arriving messages are served one at a time,
+ *   in order. Best when agents should never be interrupted mid-thought.
+ */
+export const DELIVERY_MODES = ["interrupt", "queue"] as const;
+export type DeliveryMode = (typeof DELIVERY_MODES)[number];
+
+/**
+ * Delivery config accepts three shapes for ergonomics:
+ *
+ *   # Easiest — just pick the default.
+ *   chat:
+ *     delivery: interrupt
+ *
+ *   # Still simple — override one knob.
+ *   chat:
+ *     delivery_mode: interrupt
+ *
+ *   # Full form — tune every knob.
+ *   chat:
+ *     delivery:
+ *       mode: interrupt
+ *       max_queued: 50
+ *       collapse_duplicates: true
+ *
+ * All three normalize to the same internal shape after parsing.
+ */
+const deliveryObjectSchema = z
+  .object({
+    mode: z.enum(DELIVERY_MODES).default("interrupt"),
+    max_queued: z.number().int().positive().max(1000).default(50),
+    collapse_duplicates: z.boolean().default(true),
+  })
+  .default({});
+
+const chatConfigSchema = z
+  .preprocess((raw) => {
+    if (raw === undefined || raw === null) return {};
+    if (typeof raw !== "object") return raw;
+    const obj = raw as Record<string, unknown>;
+    const normalized: Record<string, unknown> = { ...obj };
+    // Support the shorthand `chat: { delivery: "interrupt" }`.
+    if (typeof normalized.delivery === "string") {
+      normalized.delivery = { mode: normalized.delivery };
+    }
+    // Support the shorthand `chat: { delivery_mode: "interrupt" }`.
+    if (typeof normalized.delivery_mode === "string") {
+      const existing =
+        typeof normalized.delivery === "object" && normalized.delivery !== null
+          ? (normalized.delivery as Record<string, unknown>)
+          : {};
+      normalized.delivery = { mode: normalized.delivery_mode, ...existing };
+      delete normalized.delivery_mode;
+    }
+    return normalized;
+  }, z.object({ delivery: deliveryObjectSchema }))
+  .default({});
+
 export const configSchema = z.object({
   server: z
     .object({
@@ -52,6 +117,7 @@ export const configSchema = z.object({
         .default({}),
     })
     .default({}),
+  chat: chatConfigSchema,
   plugins: z.array(z.string()).default([]),
   channels: z.record(z.unknown()).default({}),
 });

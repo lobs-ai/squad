@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { runAgent, Session } from "@squad/runner";
 import type { AgentSpec, AgentResult } from "@squad/runner";
 import type { ContentBlock as LLMContentBlock } from "@squad/llm";
@@ -28,11 +27,36 @@ function textBlocks(content: ContentBlock[] | string): ContentBlock[] {
 
 export interface RunOptions {
   sessionId: string;
+  /**
+   * Correlation id for this run. The delivery coordinator generates this
+   * before start() fires so it can register hooks keyed on the same id the
+   * runner sees via `context.taskId`.
+   */
+  runId: string;
+  /**
+   * Content the turn starts with. May be empty for queue-mode follow-on
+   * turns that consume an existing user message from history.
+   */
   userContent: ContentBlock[];
+  /**
+   * When true, persist `userContent` as a new user message and broadcast it.
+   * Set to false when the caller already wrote the user message (e.g., when
+   * a queued message's row was persisted at enqueue time).
+   */
+  persistUserMessage: boolean;
   model: string;
   systemPrompt?: string;
   toolRegistry: ToolRegistry;
   clientOverride?: LLMClient;
+  /** Fires once the user message row has been written to SQLite. */
+  onUserMessagePersisted?: (msg: MessageRecord) => void;
+  /**
+   * Hook the coordinator uses to register the active run *before* the agent
+   * loop starts calling hooks. Returning the Session lets the coordinator
+   * mutate history mid-run for interrupt mode.
+   */
+  onRunStart?: (ctx: { runId: string; sessionId: string; session: Session }) => void;
+  onRunEnd?: (ctx: { runId: string; sessionId: string }) => Promise<void> | void;
 }
 
 export interface RunDeps {
@@ -54,17 +78,21 @@ export interface RunDeps {
 export async function runChatTurn(
   options: RunOptions,
   deps: RunDeps,
-): Promise<{ userMessage: MessageRecord; runId: string; result: AgentResult }> {
-  const runId = randomUUID();
-  const userMessage = deps.messages.append({
-    sessionId: options.sessionId,
-    role: "user",
-    content: options.userContent,
-  });
-  deps.broadcast.publish(`chat.user_message/${options.sessionId}`, {
-    sessionId: options.sessionId,
-    message: userMessage,
-  });
+): Promise<{ userMessage: MessageRecord | null; runId: string; result: AgentResult }> {
+  const runId = options.runId;
+  let userMessage: MessageRecord | null = null;
+  if (options.persistUserMessage) {
+    userMessage = deps.messages.append({
+      sessionId: options.sessionId,
+      role: "user",
+      content: options.userContent,
+    });
+    deps.broadcast.publish(`chat.user_message/${options.sessionId}`, {
+      sessionId: options.sessionId,
+      message: userMessage,
+    });
+    options.onUserMessagePersisted?.(userMessage);
+  }
 
   // Pull the full session history and feed it to the runner.
   const history = deps.messages.listForSession(options.sessionId, 1000);
@@ -78,6 +106,7 @@ export async function runChatTurn(
   deps.sessions.setStatus(options.sessionId, "running");
 
   const session = new Session(runnerMessages);
+  options.onRunStart?.({ runId, sessionId: options.sessionId, session });
 
   const spec: AgentSpec = {
     task:
@@ -92,7 +121,8 @@ export async function runChatTurn(
     toolRegistry: options.toolRegistry,
     timeout: { total: 300 },
     session,
-    context: { sessionId: options.sessionId },
+    // taskId must equal runId so the before_llm_call hook can correlate.
+    context: { sessionId: options.sessionId, taskId: runId },
     ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
     ...(options.clientOverride !== undefined ? { clientOverride: options.clientOverride } : {}),
     onTextChunk: (delta) => {
@@ -133,6 +163,7 @@ export async function runChatTurn(
     result = await runAgent(spec);
   } finally {
     deps.sessions.setStatus(options.sessionId, "idle");
+    await options.onRunEnd?.({ runId, sessionId: options.sessionId });
   }
 
   deps.sessions.addTokens(

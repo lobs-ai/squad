@@ -38,9 +38,21 @@ export const chatSendParams = z.object({
   sessionId: z.string(),
   content: z.union([z.string(), z.array(contentBlockSchema)]),
 });
+
+/**
+ * `status` tells the caller what happened to their message:
+ * - `running`  — the message started a new agent run. `runId` is the run.
+ * - `queued`   — a run was already in flight. The message was queued; it will
+ *   be delivered according to the session's deliveryMode (interrupt =
+ *   injected at the next LLM turn, queue = after the current run finishes).
+ *   `runId` points at the **active** run; `queuePosition` tells the caller
+ *   where they landed.
+ */
 export const chatSendResult = z.object({
-  message: messageRecordSchema, // the user message that was accepted
-  runId: z.string(),             // correlation id for the agent run this message triggered
+  message: messageRecordSchema,
+  runId: z.string(),
+  status: z.enum(["running", "queued"]),
+  queuePosition: z.number().int().nonnegative().optional(),
 });
 
 // chat.history

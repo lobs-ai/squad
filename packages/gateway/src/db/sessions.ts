@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseHandle } from "./index.js";
-import type { SessionRecord, SessionStatus } from "@squad/protocol";
+import type { SessionRecord, SessionStatus, DeliveryMode } from "@squad/protocol";
 
 interface SessionRow {
   id: string;
@@ -11,6 +11,7 @@ interface SessionRow {
   remote_id: string | null;
   model: string;
   status: SessionStatus;
+  delivery_mode: DeliveryMode;
   tokens_in: number;
   tokens_out: number;
   created_at: string;
@@ -27,6 +28,7 @@ function rowToRecord(row: SessionRow): SessionRecord {
     remoteId: row.remote_id,
     model: row.model,
     status: row.status,
+    deliveryMode: row.delivery_mode,
     tokensIn: row.tokens_in,
     tokensOut: row.tokens_out,
     createdAt: row.created_at,
@@ -41,19 +43,27 @@ export interface CreateSessionInput {
   remoteId?: string;
   parentSessionId?: string;
   subagentDefId?: string;
+  deliveryMode?: DeliveryMode;
 }
 
 export class SessionStore {
-  constructor(private readonly db: DatabaseHandle) {}
+  private readonly db: DatabaseHandle;
+  constructor(
+    db: DatabaseHandle,
+    private readonly defaults: { deliveryMode: DeliveryMode } = { deliveryMode: "interrupt" },
+  ) {
+    this.db = db;
+  }
 
   create(input: CreateSessionInput): SessionRecord {
     const now = new Date().toISOString();
     const id = randomUUID();
+    const deliveryMode = input.deliveryMode ?? this.defaults.deliveryMode;
     this.db
       .prepare(
         `INSERT INTO sessions (id, parent_session_id, subagent_def_id, title, platform, remote_id,
-            model, status, tokens_in, tokens_out, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'idle', 0, 0, ?, ?)`,
+            model, status, delivery_mode, tokens_in, tokens_out, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'idle', ?, 0, 0, ?, ?)`,
       )
       .run(
         id,
@@ -63,10 +73,17 @@ export class SessionStore {
         input.platform ?? null,
         input.remoteId ?? null,
         input.model,
+        deliveryMode,
         now,
         now,
       );
     return this.get(id);
+  }
+
+  setDeliveryMode(id: string, mode: DeliveryMode): void {
+    this.db
+      .prepare("UPDATE sessions SET delivery_mode = ?, updated_at = ? WHERE id = ?")
+      .run(mode, new Date().toISOString(), id);
   }
 
   get(id: string): SessionRecord {

@@ -125,6 +125,13 @@ const migrations: Migration[] = [
       );
     `,
   },
+  {
+    id: 5,
+    name: "session_delivery_mode",
+    up: `
+      ALTER TABLE sessions ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'interrupt';
+    `,
+  },
 ];
 
 export function runMigrations(db: DatabaseHandle): void {
