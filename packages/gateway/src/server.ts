@@ -1,4 +1,8 @@
+
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
+import { readFileSync, existsSync, statSync } from "node:fs";
+import { extname, join, resolve as resolvePath, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import { ToolRegistry } from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
@@ -99,6 +103,39 @@ function extractToken(req: IncomingMessage, url: URL): string | undefined {
   return undefined;
 }
 
+const MIME: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".json": "application/json",
+  ".map": "application/json",
+};
+
+function dashboardRoot(): string | null {
+  // Resolve the dashboard dist relative to this file: gateway/dist → ../../dashboard/dist
+  const here = fileURLToPath(new URL(".", import.meta.url));
+  const candidates = [
+    resolvePath(here, "../../../dashboard/dist"),
+    resolvePath(here, "../../../../packages/dashboard/dist"),
+  ];
+  for (const c of candidates) if (existsSync(join(c, "index.html"))) return c;
+  return null;
+}
+
+const DASHBOARD_ROOT = dashboardRoot();
+
+function serveStatic(res: ServerResponse, filePath: string): boolean {
+  if (!existsSync(filePath)) return false;
+  const stats = statSync(filePath);
+  if (!stats.isFile()) return false;
+  const ext = extname(filePath);
+  res.writeHead(200, { "content-type": MIME[ext] ?? "application/octet-stream" });
+  res.end(readFileSync(filePath));
+  return true;
+}
+
 function handleHttp(req: IncomingMessage, res: ServerResponse, deps: GatewayDeps): void {
   if (req.url === "/health" && req.method === "GET") {
     res.writeHead(200, { "content-type": "application/json" });
@@ -110,6 +147,21 @@ function handleHttp(req: IncomingMessage, res: ServerResponse, deps: GatewayDeps
       }),
     );
     return;
+  }
+  // Dashboard static assets at / and /assets/*
+  if (DASHBOARD_ROOT && req.method === "GET") {
+    const url = new URL(req.url ?? "/", "http://host");
+    const urlPath = url.pathname === "/" ? "/index.html" : url.pathname;
+    const filePath = join(DASHBOARD_ROOT, urlPath);
+    // Prevent directory traversal.
+    if (!filePath.startsWith(DASHBOARD_ROOT + sep) && filePath !== join(DASHBOARD_ROOT, "index.html")) {
+      res.writeHead(403);
+      res.end("forbidden");
+      return;
+    }
+    if (serveStatic(res, filePath)) return;
+    // SPA fallback: serve index.html for unmatched routes.
+    if (serveStatic(res, join(DASHBOARD_ROOT, "index.html"))) return;
   }
   res.writeHead(404, { "content-type": "text/plain" });
   res.end("not found\n");
