@@ -2,8 +2,8 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    name: "gateway",
+    name: "client-cli",
     include: ["src/**/*.test.ts", "test/**/*.test.ts"],
-    testTimeout: 30000,
+    testTimeout: 15000,
   },
 });

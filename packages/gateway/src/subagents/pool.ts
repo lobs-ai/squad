@@ -71,7 +71,7 @@ export class SubagentPool {
     });
 
     let cancelled = false;
-    let abort: () => void = () => {
+    const abort: () => void = () => {
       cancelled = true;
     };
 

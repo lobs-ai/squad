@@ -1,0 +1,23 @@
+# Vendored packages — kept verbatim from upstream (see VENDOR.md). Do not
+# reformat here; drift against upstream should stay minimal.
+packages/llm/
+packages/runner/
+
+# Generated / built output
+**/dist/
+**/build/
+**/coverage/
+**/*.tsbuildinfo
+pnpm-lock.yaml
+
+# External vendor artefacts
+node_modules/
+
+# Long-form docs: hand-authored line wrapping; prettier would reflow prose.
+SPEC.md
+PLAN.md
+VENDOR.md
+AGENTS.md
+README.md
+CONTRIBUTING.md
+docs/

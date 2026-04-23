@@ -1,5 +1,8 @@
-import { describe, it, expect } from "vitest";
-import { configSchema } from "./config.js";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { configSchema, loadConfig, resolveTokenSecrets, type Config } from "./config.js";
 
 describe("config.chat.delivery parsing", () => {
   it("defaults to interrupt when chat is omitted", () => {
@@ -43,5 +46,84 @@ describe("config.chat.delivery parsing", () => {
     expect(() =>
       configSchema.parse({ chat: { delivery: { max_queued: 10_000 } } }),
     ).toThrow();
+  });
+});
+
+describe("loadConfig", () => {
+  let tmp: string;
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "squad-config-"));
+  });
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+  it("returns all defaults when path is undefined", () => {
+    const c = loadConfig(undefined);
+    expect(c.server.port).toBe(8080);
+    expect(c.llm.default_model).toBe("claude-sonnet-4-5");
+    expect(c.plugins).toEqual([]);
+  });
+
+  it("reads a YAML file and merges with defaults", () => {
+    const path = join(tmp, "c.yaml");
+    writeFileSync(
+      path,
+      [
+        "server:",
+        "  port: 9999",
+        "llm:",
+        "  default_model: claude-haiku-4-5",
+      ].join("\n"),
+    );
+    const c = loadConfig(path);
+    expect(c.server.port).toBe(9999);
+    expect(c.server.data_dir).toBe("./data"); // default still applied
+    expect(c.llm.default_model).toBe("claude-haiku-4-5");
+  });
+
+  it("treats an empty YAML file as {}", () => {
+    const path = join(tmp, "c.yaml");
+    writeFileSync(path, "");
+    const c = loadConfig(path);
+    expect(c.server.port).toBe(8080);
+  });
+});
+
+describe("resolveTokenSecrets", () => {
+  const base = (
+    tokens: Config["auth"]["tokens"],
+  ): Config => configSchema.parse({ auth: { tokens } });
+
+  it("passes literal keys through unchanged", () => {
+    const c = base([{ label: "cli", key: "literal-secret", scopes: ["*"] }]);
+    expect(resolveTokenSecrets(c)).toEqual([
+      { label: "cli", secret: "literal-secret", scopes: ["*"] },
+    ]);
+  });
+
+  it("reads from the environment when key_env is set", () => {
+    const orig = process.env.SQUAD_TEST_TOKEN;
+    process.env.SQUAD_TEST_TOKEN = "from-env";
+    try {
+      const c = base([
+        { label: "cli", key_env: "SQUAD_TEST_TOKEN", scopes: ["chat.*"] },
+      ]);
+      expect(resolveTokenSecrets(c)).toEqual([
+        { label: "cli", secret: "from-env", scopes: ["chat.*"] },
+      ]);
+    } finally {
+      if (orig === undefined) delete process.env.SQUAD_TEST_TOKEN;
+      else process.env.SQUAD_TEST_TOKEN = orig;
+    }
+  });
+
+  it("throws with the env var name when the secret is missing", () => {
+    delete process.env.SQUAD_MISSING_TOKEN;
+    const c = base([{ label: "cli", key_env: "SQUAD_MISSING_TOKEN", scopes: ["*"] }]);
+    expect(() => resolveTokenSecrets(c)).toThrow(/SQUAD_MISSING_TOKEN/);
+  });
+
+  it("throws when neither key nor key_env is set", () => {
+    const c = base([{ label: "cli", scopes: ["*"] }]);
+    expect(() => resolveTokenSecrets(c)).toThrow(/no secret/);
   });
 });

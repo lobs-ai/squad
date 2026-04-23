@@ -6,6 +6,9 @@ dist/
 build/
 *.tsbuildinfo
 
+# Coverage reports
+coverage/
+
 # Logs
 *.log
 npm-debug.log*

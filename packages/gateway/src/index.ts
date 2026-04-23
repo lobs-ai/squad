@@ -6,7 +6,7 @@ import {
   registerSpawnSubagentTool,
 } from "@squad/tools";
 import { logger } from "./logger.js";
-import { loadConfig, resolveTokenSecrets, configSchema, type Config } from "./config.js";
+import { resolveTokenSecrets, configSchema, type Config } from "./config.js";
 import { Authenticator } from "./auth.js";
 import { Broadcast } from "./broadcast.js";
 import { openDb } from "./db/index.js";
