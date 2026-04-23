@@ -13,6 +13,7 @@ export function registerSessionMethods(
       model: params.model ?? defaultModel,
       ...(params.platform !== undefined ? { platform: params.platform } : {}),
       ...(params.remoteId !== undefined ? { remoteId: params.remoteId } : {}),
+      ...(params.deliveryMode !== undefined ? { deliveryMode: params.deliveryMode } : {}),
     });
     return { session };
   });

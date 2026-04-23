@@ -84,7 +84,7 @@ export const configSchema = z.object({
   server: z
     .object({
       host: z.string().default("0.0.0.0"),
-      port: z.number().int().positive().default(8080),
+      port: z.number().int().nonnegative().default(8080),
       data_dir: z.string().default("./data"),
     })
     .default({}),
@@ -123,6 +123,9 @@ export const configSchema = z.object({
 });
 
 export type Config = z.infer<typeof configSchema>;
+
+/** Input shape accepted by `boot()` and `configSchema.parse()`. */
+export type ConfigInput = z.input<typeof configSchema>;
 
 export function loadConfig(path: string | undefined): Config {
   if (!path) return configSchema.parse({});

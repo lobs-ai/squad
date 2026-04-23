@@ -25,6 +25,7 @@ import type { TaskStore } from "./tasks/store.js";
 import type { QuestionStore } from "./questions/store.js";
 import type { SubagentPool } from "./subagents/pool.js";
 import type { SubagentRegistry } from "./subagents/registry.js";
+import type { RunCoordinator } from "./delivery/coordinator.js";
 
 export interface GatewayDeps {
   config: Config;
@@ -38,6 +39,7 @@ export interface GatewayDeps {
   questions: QuestionStore;
   subagentPool: SubagentPool;
   subagentRegistry: SubagentRegistry;
+  coordinator: RunCoordinator;
   toolRegistry: ToolRegistry;
   startedAt: number;
   version: string;
@@ -178,6 +180,7 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
     logger: deps.logger,
     toolRegistry: deps.toolRegistry,
     defaultModel: deps.config.llm.default_model,
+    coordinator: deps.coordinator,
     ...(deps.clientOverride !== undefined ? { clientOverride: deps.clientOverride } : {}),
   });
   registerTaskMethods(d, deps.tasks, deps.broadcast);

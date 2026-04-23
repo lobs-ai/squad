@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createInterface, Interface } from "node:readline/promises";
+import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { ProtocolClient } from "./protocol-client.js";
 import * as render from "./render.js";

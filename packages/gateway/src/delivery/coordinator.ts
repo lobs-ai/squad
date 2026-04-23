@@ -37,7 +37,9 @@ export class RunCoordinator {
    * Set via `setStarter` so coordinator can be constructed before dispatch
    * is registered.
    */
-  private starter: ((sessionId: string, content: ContentBlock[]) => Promise<void>) | null = null;
+  private starter:
+    | ((sessionId: string, content: ContentBlock[], opts: { persistUserMessage: boolean }) => Promise<void>)
+    | null = null;
   private readonly queue: DeliveryQueue;
   private readonly sessions: SessionStore;
   private readonly logger: Logger;
@@ -81,7 +83,13 @@ export class RunCoordinator {
     });
   }
 
-  setStarter(starter: (sessionId: string, content: ContentBlock[]) => Promise<void>): void {
+  setStarter(
+    starter: (
+      sessionId: string,
+      content: ContentBlock[],
+      opts: { persistUserMessage: boolean },
+    ) => Promise<void>,
+  ): void {
     this.starter = starter;
   }
 
@@ -103,18 +111,24 @@ export class RunCoordinator {
       const next = this.queue.drainOne(sessionId);
       if (next) {
         this.logger.info({ sessionId, queuedId: next.id }, "draining queued message");
-        void starter(sessionId, next.content).catch((err) => {
+        // The user message row was already persisted at chat.send time when we
+        // enqueued — don't double-insert.
+        void starter(sessionId, next.content, { persistUserMessage: false }).catch((err) => {
           this.logger.error({ err, sessionId }, "queued run failed");
         });
       }
     } else if (session.deliveryMode === "interrupt") {
       // In interrupt mode, anything still queued at the end of a run means
       // it arrived after the last before_llm_call. Fire one turn with the
-      // drain so we don't strand the user.
+      // drain so we don't strand the user. Same no-double-persist rule.
       const leftovers = this.queue.drainAll(sessionId);
       if (leftovers.length > 0) {
         const rendered = renderDrainAsUserBlock(leftovers);
-        void starter(sessionId, [{ type: "text", text: rendered }]).catch((err) => {
+        void starter(
+          sessionId,
+          [{ type: "text", text: rendered }],
+          { persistUserMessage: false },
+        ).catch((err) => {
           this.logger.error({ err, sessionId }, "leftover-drain run failed");
         });
       }

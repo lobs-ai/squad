@@ -35,21 +35,22 @@ export function registerChatMethods(dispatcher: Dispatcher, deps: ChatDeps): voi
     sessionId: string,
     content: ContentBlock[],
     runId: string,
-  ): Promise<MessageRecord> => {
+    opts: { persistUserMessage: boolean },
+  ): Promise<MessageRecord | null> => {
     const session = deps.sessions.get(sessionId);
     const model = session.model || deps.defaultModel;
-    return new Promise<MessageRecord>((resolve, reject) => {
-      let userMessageResolved = false;
+    return new Promise<MessageRecord | null>((resolve, reject) => {
+      let resolved = false;
       const run = runChatTurn(
         {
           sessionId,
           runId,
           userContent: content,
-          persistUserMessage: true,
+          persistUserMessage: opts.persistUserMessage,
           model,
           toolRegistry: deps.toolRegistry,
           onUserMessagePersisted: (msg) => {
-            userMessageResolved = true;
+            resolved = true;
             resolve(msg);
           },
           onRunStart: (ctx) => deps.coordinator.register(ctx.runId, ctx.sessionId, ctx.session),
@@ -58,16 +59,26 @@ export function registerChatMethods(dispatcher: Dispatcher, deps: ChatDeps): voi
         },
         deps,
       );
+      // When we're not persisting a user message there's no early
+      // resolution point — resolve once runChatTurn has registered the run.
+      if (!opts.persistUserMessage) {
+        queueMicrotask(() => {
+          if (!resolved) {
+            resolved = true;
+            resolve(null);
+          }
+        });
+      }
       run.catch((err) => {
         deps.logger.error({ err, sessionId }, "chat run failed");
-        if (!userMessageResolved) reject(err);
+        if (!resolved) reject(err);
       });
     });
   };
 
-  // Let the coordinator initiate queue-mode follow-on turns through the same path.
-  deps.coordinator.setStarter(async (sessionId, content) => {
-    await startTurn(sessionId, content, randomUUID());
+  // Let the coordinator initiate follow-on turns through the same path.
+  deps.coordinator.setStarter(async (sessionId, content, opts) => {
+    await startTurn(sessionId, content, randomUUID(), opts);
   });
 
   dispatcher.register("chat.send", async (params) => {
@@ -81,7 +92,15 @@ export function registerChatMethods(dispatcher: Dispatcher, deps: ChatDeps): voi
     const decision = deps.coordinator.decide(params.sessionId, content, proposedRunId);
 
     if (decision.status === "running") {
-      const userMessage = await startTurn(params.sessionId, content, decision.runId);
+      const userMessage = await startTurn(params.sessionId, content, decision.runId, {
+        persistUserMessage: true,
+      });
+      if (!userMessage) {
+        throw new ProtocolError(
+          ErrorCode.internal_error,
+          "run started without a persisted user message",
+        );
+      }
       return {
         message: userMessage,
         runId: decision.runId,

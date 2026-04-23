@@ -6,7 +6,7 @@ import {
   registerSpawnSubagentTool,
 } from "@squad/tools";
 import { logger } from "./logger.js";
-import { loadConfig, resolveTokenSecrets, type Config } from "./config.js";
+import { loadConfig, resolveTokenSecrets, configSchema, type Config } from "./config.js";
 import { Authenticator } from "./auth.js";
 import { Broadcast } from "./broadcast.js";
 import { openDb } from "./db/index.js";
@@ -20,6 +20,8 @@ import { questionBackendFor } from "./questions/backend.js";
 import { SubagentRegistry } from "./subagents/registry.js";
 import { SubagentPool } from "./subagents/pool.js";
 import { subagentBackendFor } from "./subagents/backend.js";
+import { DeliveryQueue } from "./delivery/queue.js";
+import { RunCoordinator } from "./delivery/coordinator.js";
 import { PluginHost } from "./plugins/host.js";
 import { RoutineScheduler } from "./routines/scheduler.js";
 import { tagMatchPolicy, cascade } from "./approvals/policy.js";
@@ -43,6 +45,8 @@ export { questionBackendFor } from "./questions/backend.js";
 export { SubagentRegistry } from "./subagents/registry.js";
 export { SubagentPool } from "./subagents/pool.js";
 export { subagentBackendFor } from "./subagents/backend.js";
+export { DeliveryQueue } from "./delivery/queue.js";
+export { RunCoordinator } from "./delivery/coordinator.js";
 export { PluginHost } from "./plugins/host.js";
 export { RoutineScheduler, matchesCron } from "./routines/scheduler.js";
 export { tagMatchPolicy, allowAllPolicy, denyAllPolicy, cascade } from "./approvals/policy.js";
@@ -73,18 +77,25 @@ export interface BootedGateway {
   };
   plugins: PluginHost;
   routines: RoutineScheduler;
+  coordinator: RunCoordinator;
+  deliveryQueue: DeliveryQueue;
   broadcast: Broadcast;
   close: () => Promise<void>;
 }
 
 export async function boot(opts: BootOptions): Promise<BootedGateway> {
   const startedAt = Date.now();
-  const config = opts.config;
+  // Re-parse through configSchema so callers that pass partial literals get
+  // sensible defaults (chat.delivery, etc.). Idempotent for already-parsed
+  // values.
+  const config = configSchema.parse(opts.config) as Config;
 
   const dbPath = join(config.server.data_dir, "squad.db");
   const db = openDb({ path: dbPath });
 
-  const sessions = new SessionStore(db);
+  const sessions = new SessionStore(db, {
+    deliveryMode: config.chat.delivery.mode,
+  });
   const messages = new MessageStore(db);
   const toolCalls = new ToolCallStore(db);
   const broadcast = new Broadcast();
@@ -127,6 +138,16 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   registerTaskTools(toolRegistry, taskBackendFor(tasks));
   registerAskUserTool(toolRegistry, questionBackendFor(questions));
   registerSpawnSubagentTool(toolRegistry, subagentBackendFor(subagentPool, subagentRegistry));
+
+  const deliveryQueue = new DeliveryQueue({
+    maxQueued: config.chat.delivery.max_queued,
+    collapseDuplicates: config.chat.delivery.collapse_duplicates,
+  });
+  const coordinator = new RunCoordinator({
+    queue: deliveryQueue,
+    sessions,
+    logger,
+  });
 
   const providers = new Map<string, LLMClient>();
   const routinesList: RoutineDescriptor[] = [];
@@ -182,6 +203,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     questions,
     subagentPool,
     subagentRegistry,
+    coordinator,
     toolRegistry,
     startedAt,
     version: VERSION,
@@ -194,6 +216,8 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     subagents: { pool: subagentPool, registry: subagentRegistry },
     plugins,
     routines,
+    coordinator,
+    deliveryQueue,
     broadcast,
     close: async () => {
       routines.stop();
