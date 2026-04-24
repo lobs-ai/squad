@@ -15,6 +15,8 @@ import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout, argv, env, exit } from "node:process";
 import { randomBytes } from "node:crypto";
+import { execSync } from "node:child_process";
+import { homedir } from "node:os";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "..");
@@ -42,6 +44,156 @@ function yellow(s) {
 }
 function red(s) {
   return `\x1b[31m${s}\x1b[0m`;
+}
+function cyan(s) {
+  return `\x1b[36m${s}\x1b[0m`;
+}
+
+/**
+ * Step header. Printed before each section so the user can see progress and
+ * whether the section is required or optional.
+ */
+function stepHeader(n, total, title, required) {
+  const tag = required ? green("required") : dim("optional");
+  console.log(
+    `\n${cyan(`── Step ${n}/${total}`)} ${bold(title)}  ${tag}`,
+  );
+}
+
+/**
+ * Single-select picker with ↑/↓ navigation. Returns the chosen option label.
+ * Falls back to `options[defaultIdx]` when non-TTY or NON_INTERACTIVE.
+ *
+ * Zero-deps on purpose — this script runs before `pnpm install`, so we can't
+ * rely on enquirer/inquirer/prompts.
+ */
+async function pickOne(title, options, defaultIdx = 0) {
+  if (NON_INTERACTIVE || !stdin.isTTY) {
+    return options[Math.max(0, Math.min(defaultIdx, options.length - 1))];
+  }
+  rl.pause();
+  stdin.setRawMode(true);
+  stdin.resume();
+
+  let cursor = Math.max(0, Math.min(defaultIdx, options.length - 1));
+  const totalLines = options.length + 2; // title + hint + rows
+
+  const paint = (first) => {
+    if (!first) process.stdout.write(`\x1b[${totalLines}A`);
+    process.stdout.write(`${title}\x1b[K\n`);
+    process.stdout.write(dim("  ↑/↓ to move, enter to select") + "\x1b[K\n");
+    for (let i = 0; i < options.length; i++) {
+      const marker = i === cursor ? cyan("❯") : " ";
+      const label = i === cursor ? bold(options[i]) : options[i];
+      process.stdout.write(`${marker} ${label}\x1b[K\n`);
+    }
+  };
+  paint(true);
+
+  return new Promise((resolveP) => {
+    const onData = (buf) => {
+      const s = buf.toString();
+      if (s === "\r" || s === "\n") {
+        stdin.removeListener("data", onData);
+        stdin.setRawMode(false);
+        stdin.pause();
+        rl.resume();
+        resolveP(options[cursor]);
+      } else if (s === "\x03") {
+        stdin.setRawMode(false);
+        process.exit(130);
+      } else if (s === "\x1b[A" || s === "k") {
+        cursor = (cursor - 1 + options.length) % options.length;
+        paint(false);
+      } else if (s === "\x1b[B" || s === "j") {
+        cursor = (cursor + 1) % options.length;
+        paint(false);
+      }
+    };
+    stdin.on("data", onData);
+  });
+}
+
+/**
+ * Multi-select picker. Space toggles the current row, `a` toggles all, enter
+ * confirms. Returns a Set of chosen indices (0-based). Falls back to the
+ * preselected set in non-TTY mode.
+ */
+async function pickMany(title, options, preselected = new Set()) {
+  if (NON_INTERACTIVE || !stdin.isTTY) {
+    return new Set(preselected);
+  }
+  rl.pause();
+  stdin.setRawMode(true);
+  stdin.resume();
+
+  let cursor = 0;
+  const selected = new Set(preselected);
+  const totalLines = options.length + 2;
+
+  const paint = (first) => {
+    if (!first) process.stdout.write(`\x1b[${totalLines}A`);
+    process.stdout.write(`${title}\x1b[K\n`);
+    process.stdout.write(
+      dim("  ↑/↓ to move, space to toggle, a to toggle all, enter to confirm") +
+        "\x1b[K\n",
+    );
+    for (let i = 0; i < options.length; i++) {
+      const cur = i === cursor ? cyan("❯") : " ";
+      const mark = selected.has(i) ? green("◉") : dim("◯");
+      const label = i === cursor ? bold(options[i]) : options[i];
+      process.stdout.write(`${cur} ${mark} ${label}\x1b[K\n`);
+    }
+  };
+  paint(true);
+
+  return new Promise((resolveP) => {
+    const onData = (buf) => {
+      const s = buf.toString();
+      if (s === "\r" || s === "\n") {
+        stdin.removeListener("data", onData);
+        stdin.setRawMode(false);
+        stdin.pause();
+        rl.resume();
+        resolveP(selected);
+      } else if (s === "\x03") {
+        stdin.setRawMode(false);
+        process.exit(130);
+      } else if (s === "\x1b[A" || s === "k") {
+        cursor = (cursor - 1 + options.length) % options.length;
+        paint(false);
+      } else if (s === "\x1b[B" || s === "j") {
+        cursor = (cursor + 1) % options.length;
+        paint(false);
+      } else if (s === " ") {
+        if (selected.has(cursor)) selected.delete(cursor);
+        else selected.add(cursor);
+        paint(false);
+      } else if (s === "a" || s === "A") {
+        if (selected.size === options.length) selected.clear();
+        else for (let i = 0; i < options.length; i++) selected.add(i);
+        paint(false);
+      }
+    };
+    stdin.on("data", onData);
+  });
+}
+
+/**
+ * Ask whether to skip an optional step. Returns `true` for skip. Honors a
+ * `previouslyConfigured` hint so re-runs default to "keep configuring it".
+ */
+async function skipPrompt(previouslyConfigured) {
+  if (NON_INTERACTIVE) return !previouslyConfigured;
+  const defSkip = !previouslyConfigured;
+  const suffix = defSkip ? "[Y/n]" : "[y/N]";
+  while (true) {
+    const raw = (await rl.question(`  Skip this step? ${suffix} `)).trim().toLowerCase();
+    if (!raw) return defSkip;
+    if (["y", "yes", "s", "skip"].includes(raw)) return true;
+    if (["n", "no"].includes(raw)) return false;
+    console.log(red("  please answer yes or no"));
+  }
 }
 
 async function ask(prompt, { default: def, secret = false } = {}) {
@@ -88,6 +240,91 @@ function generateToken(bytes = 32) {
   return randomBytes(bytes).toString("base64url");
 }
 
+/**
+ * Read a git config value from the host (best-effort, used to pre-fill the
+ * committer name/email prompts). Returns "" if git is absent or unset.
+ */
+function detectGitHost(key) {
+  try {
+    return execSync(`git config --global --get ${key}`, {
+      stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf8",
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function ghInstalled() {
+  try {
+    execSync("gh --version", { stdio: ["ignore", "ignore", "ignore"] });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Squad keeps its own gh config sandbox under docker/data/gh/ so signing in
+ * for the squad container doesn't overwrite the user's personal `gh auth` on
+ * the host.
+ */
+const SQUAD_GH_DIR = join(DATA_DIR, "gh");
+
+function ghEnv(configDir) {
+  // Strip GITHUB_TOKEN / GH_TOKEN from the inherited env when calling gh —
+  // otherwise gh sees the host's token and refuses to start the login flow.
+  const e = { ...env };
+  delete e.GITHUB_TOKEN;
+  delete e.GH_TOKEN;
+  if (configDir) e.GH_CONFIG_DIR = configDir;
+  return e;
+}
+
+function detectGhToken(configDir) {
+  try {
+    return execSync("gh auth token", {
+      stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf8",
+      env: ghEnv(configDir),
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function detectGhUser(configDir) {
+  try {
+    return execSync("gh api user --jq .login", {
+      stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf8",
+      env: ghEnv(configDir),
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Drive `gh auth login` against the squad-only sandbox dir. The host's
+ * personal gh auth is left untouched. Returns { token, user }.
+ */
+function runGhAuthLoginSandboxed() {
+  mkdirSync(SQUAD_GH_DIR, { recursive: true });
+  try {
+    execSync(
+      "gh auth login --hostname github.com --git-protocol https --web",
+      { stdio: "inherit", env: ghEnv(SQUAD_GH_DIR) },
+    );
+  } catch {
+    return { token: "", user: "" };
+  }
+  return {
+    token: detectGhToken(SQUAD_GH_DIR),
+    user: detectGhUser(SQUAD_GH_DIR),
+  };
+}
+
 // Minimal .env parser — KEY=VALUE per line, ignores comments and blanks.
 function parseEnv(text) {
   const out = {};
@@ -111,53 +348,280 @@ function loadEnvFile(path) {
   return parseEnv(readFileSync(path, "utf8"));
 }
 
+/**
+ * Merge keys into ~/.squad/config (preserving any existing entries the user
+ * may have hand-edited) so the global `squad` CLI can auto-resolve the
+ * gateway URL + auth token from any cwd, without env vars.
+ */
+function syncGlobalConfig(updates) {
+  const home = env.HOME || env.USERPROFILE || homedir();
+  if (!home) return;
+  const dir = join(home, ".squad");
+  const cfg = join(dir, "config");
+  mkdirSync(dir, { recursive: true });
+  const existing = existsSync(cfg) ? parseEnv(readFileSync(cfg, "utf8")) : {};
+  const merged = { ...existing, ...updates };
+  const lines = [
+    "# Generated by squad onboard. Used by the global `squad` CLI to find",
+    "# the gateway from any cwd. Hand-edits to other keys are preserved.",
+    ...Object.entries(merged).map(([k, v]) => `${k}=${v}`),
+  ];
+  writeFileSync(cfg, lines.join("\n") + "\n");
+  try {
+    chmodSync(cfg, 0o600);
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * Known LLM providers the wizard can configure. Each maps to the env var that
+ * holds the API key and a sensible default model to propose as the primary.
+ * `keyUrl` is shown to the user so they know where to grab a key.
+ *
+ * The LLM package (packages/llm/src/client.ts) supports more providers than
+ * these — listing every niche one here would be overwhelming. Users can still
+ * add any provider by hand-editing docker/config.json after setup.
+ */
+const PROVIDERS = {
+  anthropic: {
+    label: "Anthropic (Claude)",
+    envVar: "ANTHROPIC_API_KEY",
+    defaultModel: "anthropic/claude-sonnet-4-5",
+    keyUrl: "https://console.anthropic.com",
+  },
+  openai: {
+    label: "OpenAI (GPT)",
+    envVar: "OPENAI_API_KEY",
+    defaultModel: "openai/gpt-4o",
+    keyUrl: "https://platform.openai.com/api-keys",
+  },
+  openrouter: {
+    label: "OpenRouter (~24 providers via one key)",
+    envVar: "OPENROUTER_API_KEY",
+    defaultModel: "openrouter/anthropic/claude-sonnet-4-5",
+    keyUrl: "https://openrouter.ai/keys",
+  },
+  google: {
+    label: "Google (Gemini)",
+    envVar: "GOOGLE_API_KEY",
+    defaultModel: "google/gemini-2.5-flash",
+    keyUrl: "https://aistudio.google.com/apikey",
+  },
+  groq: {
+    label: "Groq (fast inference)",
+    envVar: "GROQ_API_KEY",
+    defaultModel: "groq/llama-3.3-70b-versatile",
+    keyUrl: "https://console.groq.com/keys",
+  },
+  deepseek: {
+    label: "DeepSeek",
+    envVar: "DEEPSEEK_API_KEY",
+    defaultModel: "deepseek/deepseek-chat",
+    keyUrl: "https://platform.deepseek.com/api_keys",
+  },
+  xai: {
+    label: "xAI (Grok)",
+    envVar: "XAI_API_KEY",
+    defaultModel: "xai/grok-4",
+    keyUrl: "https://console.x.ai",
+  },
+  together: {
+    label: "Together.ai (open-weight models)",
+    envVar: "TOGETHER_API_KEY",
+    defaultModel: "together/meta-llama/Llama-3.3-70B-Instruct",
+    keyUrl: "https://api.together.ai/settings/api-keys",
+  },
+  mistral: {
+    label: "Mistral",
+    envVar: "MISTRAL_API_KEY",
+    defaultModel: "mistral/mistral-large-latest",
+    keyUrl: "https://console.mistral.ai/api-keys/",
+  },
+  perplexity: {
+    label: "Perplexity",
+    envVar: "PPLX_API_KEY",
+    defaultModel: "perplexity/sonar-pro",
+    keyUrl: "https://www.perplexity.ai/settings/api",
+  },
+  fireworks: {
+    label: "Fireworks",
+    envVar: "FIREWORKS_API_KEY",
+    defaultModel: "fireworks/accounts/fireworks/models/llama-v3p3-70b-instruct",
+    keyUrl: "https://fireworks.ai/account/api-keys",
+  },
+  cerebras: {
+    label: "Cerebras (very fast inference)",
+    envVar: "CEREBRAS_API_KEY",
+    defaultModel: "cerebras/llama-3.3-70b",
+    keyUrl: "https://cloud.cerebras.ai",
+  },
+  cohere: {
+    label: "Cohere",
+    envVar: "COHERE_API_KEY",
+    defaultModel: "cohere/command-r-plus",
+    keyUrl: "https://dashboard.cohere.com/api-keys",
+  },
+  sambanova: {
+    label: "SambaNova",
+    envVar: "SAMBANOVA_API_KEY",
+    defaultModel: "sambanova/Meta-Llama-3.3-70B-Instruct",
+    keyUrl: "https://cloud.sambanova.ai/apis",
+  },
+  novita: {
+    label: "Novita",
+    envVar: "NOVITA_API_KEY",
+    defaultModel: "novita/meta-llama/llama-3.3-70b-instruct",
+    keyUrl: "https://novita.ai/settings/key-management",
+  },
+  hyperbolic: {
+    label: "Hyperbolic",
+    envVar: "HYPERBOLIC_API_KEY",
+    defaultModel: "hyperbolic/meta-llama/Llama-3.3-70B-Instruct",
+    keyUrl: "https://app.hyperbolic.xyz/settings",
+  },
+  lambda: {
+    label: "Lambda Labs",
+    envVar: "LAMBDA_API_KEY",
+    defaultModel: "lambda/llama3.3-70b-instruct-fp8",
+    keyUrl: "https://cloud.lambda.ai/api-keys",
+  },
+  "z-ai": {
+    label: "Z.AI (GLM)",
+    envVar: "ZAI_API_KEY",
+    defaultModel: "z-ai/glm-4.6",
+    keyUrl: "https://docs.z.ai/guides/manage-api-key",
+  },
+  minimax: {
+    label: "MiniMax",
+    envVar: "MINIMAX_API_KEY",
+    defaultModel: "minimax/minimax-m2.7",
+    keyUrl: "https://www.minimax.io/platform/user-center/basic-information/interface-key",
+  },
+  kimi: {
+    label: "Kimi (Moonshot)",
+    envVar: "KIMI_API_KEY",
+    defaultModel: "kimi/kimi-k2.5",
+    keyUrl: "https://platform.moonshot.cn/console/api-keys",
+  },
+  "opencode-zen": {
+    label: "OpenCode Zen (frontier subscription)",
+    envVar: "OPENCODE_API_KEY",
+    defaultModel: "opencode-zen/claude-sonnet-4",
+    keyUrl: "https://opencode.ai",
+  },
+  "opencode-go": {
+    label: "OpenCode Go (open-weight subscription)",
+    envVar: "OPENCODE_API_KEY",
+    defaultModel: "opencode-go/kimi-k2.5",
+    keyUrl: "https://opencode.ai",
+  },
+};
+
+// Deduped — multiple providers can share an env var (e.g. opencode-zen and
+// opencode-go both use OPENCODE_API_KEY).
+const PROVIDER_ENV_VARS = [
+  ...new Set(Object.values(PROVIDERS).map((p) => p.envVar)),
+];
+
+/**
+ * Render a single KEY=VALUE line. Quotes the value when it contains anything
+ * that would confuse `bash` when the file is sourced (`set -a; . file`) —
+ * spaces, quotes, $, etc. Empty values render as `KEY=` (no quotes).
+ */
+function envLine(key, value) {
+  const v = value ?? "";
+  if (v === "") return `${key}=`;
+  if (/[\s"'$`\\!&|;<>(){}*?#~]/.test(v)) {
+    // Single-quote and escape any embedded single quotes via the standard
+    // POSIX trick: end-quote, escape, re-open: '\''.
+    return `${key}='${v.replace(/'/g, "'\\''")}'`;
+  }
+  return `${key}=${v}`;
+}
+
 function renderEnv(values) {
   const lines = [
-    "# Generated by scripts/setup.mjs — re-run `pnpm setup` to change.",
+    "# Generated by scripts/setup.mjs — re-run `squad onboard` to change.",
     "# This file holds secrets. It is gitignored. Do NOT commit it.",
     "",
-    "# --- Required ---",
-    `ANTHROPIC_API_KEY=${values.ANTHROPIC_API_KEY ?? ""}`,
+    "# --- Server ---",
+    "# Port the gateway listens on. docker-compose maps host:container 1:1, and",
+    "# the squad CLI uses this to build its default SQUAD_URL.",
+    envLine("SQUAD_PORT", values.SQUAD_PORT ?? "8080"),
     "",
+    "# --- Dashboard auth ---",
     "# Bearer token for the dashboard + any first-party clients. Treat as a password.",
-    `SQUAD_DASHBOARD_TOKEN=${values.SQUAD_DASHBOARD_TOKEN ?? ""}`,
+    envLine("SQUAD_DASHBOARD_TOKEN", values.SQUAD_DASHBOARD_TOKEN),
     "",
-    "# --- Optional LLM providers ---",
+    "# --- LLM providers (at least one required) ---",
   ];
-  for (const k of ["OPENAI_API_KEY", "OPENROUTER_API_KEY"]) {
-    const v = values[k];
-    lines.push(v ? `${k}=${v}` : `# ${k}=`);
+  for (const key of PROVIDER_ENV_VARS) {
+    const v = values[key];
+    lines.push(v ? envLine(key, v) : `# ${key}=`);
   }
-  lines.push("", "# --- Optional Discord channel ---");
+  lines.push(
+    "",
+    "# --- Git identity (used by container for commits + gh cli) ---",
+    envLine("GIT_USER_NAME", values.GIT_USER_NAME),
+    envLine("GIT_USER_EMAIL", values.GIT_USER_EMAIL),
+    values.GITHUB_TOKEN ? envLine("GITHUB_TOKEN", values.GITHUB_TOKEN) : "# GITHUB_TOKEN=",
+    "",
+    "# --- Optional Discord channel ---",
+  );
   for (const k of ["DISCORD_BOT_TOKEN", "SQUAD_DISCORD_TOKEN"]) {
     const v = values[k];
-    lines.push(v ? `${k}=${v}` : `# ${k}=`);
+    lines.push(v ? envLine(k, v) : `# ${k}=`);
   }
   // Carry over any unknown keys the user added by hand.
   const known = new Set([
-    "ANTHROPIC_API_KEY",
+    "SQUAD_PORT",
     "SQUAD_DASHBOARD_TOKEN",
-    "OPENAI_API_KEY",
-    "OPENROUTER_API_KEY",
+    "GIT_USER_NAME",
+    "GIT_USER_EMAIL",
+    "GITHUB_TOKEN",
     "DISCORD_BOT_TOKEN",
     "SQUAD_DISCORD_TOKEN",
+    ...PROVIDER_ENV_VARS,
   ]);
   const extras = Object.entries(values).filter(([k, v]) => !known.has(k) && v);
   if (extras.length) {
     lines.push("", "# --- Other ---");
-    for (const [k, v] of extras) lines.push(`${k}=${v}`);
+    for (const [k, v] of extras) lines.push(envLine(k, v));
   }
   lines.push("");
   return lines.join("\n");
 }
 
-function renderConfig(opts) {
-  const providers = { anthropic: { api_key_env: "ANTHROPIC_API_KEY" } };
-  if (opts.haveOpenai)     providers.openai     = { api_key_env: "OPENAI_API_KEY" };
-  if (opts.haveOpenrouter) providers.openrouter = { api_key_env: "OPENROUTER_API_KEY" };
+/**
+ * Merge wizard-collected values into the existing config (or a fresh shell on
+ * first run). Anything the wizard doesn't manage — subagents, policy,
+ * plugins, custom auth tokens, custom channels, hand-edited extensions — is
+ * preserved as-is.
+ */
+function renderConfig(existing, opts) {
+  const cfg = existing
+    ? { ...existing }
+    : {
+        $comment:
+          "Generated by scripts/setup.mjs — re-run `squad onboard` to change. Safe to edit by hand; the wizard preserves unknown keys on re-run.",
+      };
 
+  // server: keep host + data_dir if present; just update port.
+  cfg.server = {
+    host: "0.0.0.0",
+    data_dir: "./docker/data",
+    ...(cfg.server ?? {}),
+    port: opts.port,
+  };
+
+  // auth.tokens: preserve user-added tokens; upsert dashboard + discord-connector.
+  const existingTokens = (cfg.auth?.tokens ?? []).filter(
+    (t) => t.label !== "dashboard" && t.label !== "discord-connector",
+  );
   const tokens = [
     { label: "dashboard", key_env: "SQUAD_DASHBOARD_TOKEN", scopes: ["*"] },
+    ...existingTokens,
   ];
   if (opts.discord) {
     tokens.push({
@@ -166,39 +630,47 @@ function renderConfig(opts) {
       scopes: ["channel:discord", "chat.*", "session.*"],
     });
   }
+  cfg.auth = { ...(cfg.auth ?? {}), tokens };
 
-  const channels = opts.discord
-    ? { discord: { token_env: "DISCORD_BOT_TOKEN" } }
-    : {};
+  cfg.chat = { ...(cfg.chat ?? {}), delivery: opts.delivery };
 
-  const cfg = {
-    $comment: "Generated by scripts/setup.mjs — re-run `pnpm setup` to change. Safe to edit by hand; the wizard preserves unknown keys on re-run.",
-    server: {
-      host: "0.0.0.0",
-      port: opts.port,
-      data_dir: "./docker/data",
+  // channels: preserve any user-added channel; only touch discord.
+  const channels = { ...(cfg.channels ?? {}) };
+  if (opts.discord) {
+    channels.discord = { token_env: "DISCORD_BOT_TOKEN" };
+  }
+  // If user didn't choose discord, leave any existing channels.discord alone.
+  cfg.channels = channels;
+
+  // Subagents / policy / plugins: keep user's customizations if present;
+  // otherwise seed sensible defaults. Wizard never collects these.
+  cfg.subagents = cfg.subagents ?? {
+    max_concurrent_global: 8,
+    max_concurrent_per_parent: 4,
+    max_tree_depth: 3,
+  };
+  cfg.policy = cfg.policy ?? {
+    approvals: {
+      default: "tag-match",
+      require_for_tags: ["write", "exec", "network"],
+      timeout_seconds: 120,
     },
-    auth: { tokens },
-    chat: { delivery: opts.delivery },
-    llm: {
-      primary: { model: opts.primaryModel },
-      fallbacks: opts.fallbacks.map((m) => ({ model: m })),
-      providers,
-    },
-    subagents: {
-      max_concurrent_global: 8,
-      max_concurrent_per_parent: 4,
-      max_tree_depth: 3,
-    },
-    policy: {
-      approvals: {
-        default: "tag-match",
-        require_for_tags: ["write", "exec", "network"],
-        timeout_seconds: 120,
-      },
-    },
-    plugins: [],
-    channels,
+  };
+  cfg.plugins = cfg.plugins ?? [];
+
+  // llm.providers — replace fully (this is the wizard's domain). Unticked
+  // providers are intentionally dropped from the active list.
+  const providers = {};
+  for (const name of opts.providers ?? []) {
+    const spec = PROVIDERS[name];
+    if (spec) providers[name] = { api_key_env: spec.envVar };
+  }
+
+  cfg.llm = {
+    ...(cfg.llm ?? {}),
+    primary: { model: opts.primaryModel },
+    fallbacks: opts.fallbacks.map((m) => ({ model: m })),
+    providers,
   };
 
   return JSON.stringify(cfg, null, 2) + "\n";
@@ -225,127 +697,419 @@ async function main() {
   if ((Object.keys(existingEnv).length || configExists) && !FORCE) {
     console.log(
       yellow(
-        `\nFound existing setup in docker/. Wizard will offer current values as defaults; press Enter to keep them, or pass --force to start clean.\n`,
+        `Found existing setup in docker/. Each step pre-fills the current value; press Enter to keep it, or pass --force to start clean.`,
+      ),
+    );
+  }
+  console.log(
+    dim(
+      `Optional steps can be skipped. You can re-run this wizard any time to fill them in later.`,
+    ),
+  );
+
+  const TOTAL = 8;
+  const summary = [];
+  const providerKeys = {}; // env var name -> secret value, for configured providers
+  const configuredProviders = []; // provider names (keys of PROVIDERS)
+
+  // ── Step 1: LLM providers (required — at least one) ──────────────────
+  stepHeader(1, TOTAL, "LLM providers", true);
+  console.log(
+    dim("  Pick one or more providers. You can add more later by re-running onboard."),
+  );
+  const providerList = Object.entries(PROVIDERS);
+  const labels = providerList.map(([_n, spec]) =>
+    existingEnv[spec.envVar] ? `${spec.label} ${green("✓ set")}` : spec.label,
+  );
+  const preselectedIdx = new Set(
+    providerList
+      .map(([_n, spec], i) => (existingEnv[spec.envVar] ? i : -1))
+      .filter((i) => i >= 0),
+  );
+  // No pre-check on first run — the user picks explicitly with space.
+  const pickedIdx = await pickMany("  Providers:", labels, preselectedIdx);
+  if (pickedIdx.size === 0) {
+    console.log(red("\n✗ at least one provider is required. Aborting."));
+    exit(1);
+  }
+  // For each picked provider, reuse the existing key silently if there is
+  // one — re-prompting would force the user to re-paste secrets to make any
+  // unrelated edit. Only prompt for *newly added* providers.
+  for (const n of [...pickedIdx].sort((a, b) => a - b)) {
+    const [name, spec] = providerList[n];
+    const existing = existingEnv[spec.envVar] || "";
+    if (existing) {
+      providerKeys[spec.envVar] = existing;
+      configuredProviders.push(name);
+      continue;
+    }
+    const key = await ask(
+      `  ${bold(spec.label)} ${dim(spec.keyUrl)}`,
+      { secret: true },
+    );
+    if (key) {
+      providerKeys[spec.envVar] = key;
+      configuredProviders.push(name);
+    } else {
+      console.log(dim(`  (skipped — no key provided for ${spec.label})`));
+    }
+  }
+  if (configuredProviders.length === 0) {
+    console.log(red("\n✗ no provider keys provided. Aborting."));
+    exit(1);
+  }
+
+  // Note: any provider env var the user *unchecked* this run stays in .env
+  // — onboard is non-destructive. To remove a key entirely, edit .env by hand.
+  const droppedFromConfig = providerList
+    .filter(([name]) => !configuredProviders.includes(name))
+    .filter(([_n, spec]) => existingEnv[spec.envVar])
+    .map(([name]) => name);
+  if (droppedFromConfig.length) {
+    console.log(
+      dim(
+        `  (kept in .env but removed from config.json llm.providers: ${droppedFromConfig.join(", ")})`,
       ),
     );
   }
 
-  const anthropicKey = await ask(
-    `${bold("Anthropic API key")} ${dim("(required — get one at console.anthropic.com)")}`,
-    { default: env.ANTHROPIC_API_KEY || existingEnv.ANTHROPIC_API_KEY, secret: true },
+  summary.push(`providers: ${configuredProviders.join(", ")}`);
+
+  // ── Step 2: Primary model + fallbacks (required) ─────────────────────
+  stepHeader(2, TOTAL, "Primary model + fallbacks", true);
+  console.log(
+    dim(
+      "  Primary is the model the runner tries first. Fallbacks are used in order if the primary errors.",
+    ),
   );
-  if (!anthropicKey) {
-    console.log(red("\n✗ ANTHROPIC_API_KEY is required. Aborting."));
-    exit(1);
+
+  let defaultPrimary = null;
+  if (existingEnv.__previousPrimary) defaultPrimary = existingEnv.__previousPrimary;
+  const defaultProvider =
+    configuredProviders[0] ?? "anthropic";
+  const suggestedPrimary = PROVIDERS[defaultProvider]?.defaultModel ?? "anthropic/claude-sonnet-4-5";
+
+  const primaryProvider =
+    configuredProviders.length === 1
+      ? configuredProviders[0]
+      : await pickOne(
+          `  ${bold("Default provider")} ${dim("(used to suggest the primary model)")}`,
+          configuredProviders,
+          configuredProviders.indexOf(defaultProvider),
+        );
+  const primaryModel = await ask(`  ${bold("Primary model")}`, {
+    default: defaultPrimary || PROVIDERS[primaryProvider].defaultModel,
+  });
+
+  // Offer fallbacks from any other configured providers.
+  const fallbackSuggestions = configuredProviders
+    .filter((p) => p !== primaryProvider)
+    .map((p) => PROVIDERS[p].defaultModel)
+    .join(", ");
+  const fallbacksRaw = await ask(
+    `  ${bold("Fallbacks")} ${dim("(comma-separated, blank for none)")}`,
+    { default: fallbackSuggestions },
+  );
+  const fallbacks = fallbacksRaw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  summary.push(
+    `primary ${primaryModel}${fallbacks.length ? ", " + fallbacks.length + " fallback(s)" : ""}`,
+  );
+
+  // ── Step 3: Server basics (required, good defaults) ─────────────────
+  stepHeader(3, TOTAL, "Server port + dashboard token", true);
+  console.log(dim("  Port the gateway exposes; bearer token for the web UI."));
+  const port = await ask(`  ${bold("Port")}`, {
+    default: env.SQUAD_PORT || existingEnv.SQUAD_PORT || "8080",
+  });
+  const dashboardDefault =
+    existingEnv.SQUAD_DASHBOARD_TOKEN && existingEnv.SQUAD_DASHBOARD_TOKEN !== "dev-dashboard-token"
+      ? existingEnv.SQUAD_DASHBOARD_TOKEN
+      : generateToken();
+  const dashboardToken = await ask(`  ${bold("Dashboard token")}`, {
+    default: dashboardDefault,
+    secret: true,
+  });
+  summary.push(`server :${port}, dashboard token`);
+
+  // ── Step 4: Chat delivery mode (required, default interrupt) ─────────
+  stepHeader(4, TOTAL, "Chat delivery mode", true);
+  console.log(
+    dim(
+      "  interrupt: inject new messages at the next LLM turn. queue: wait for the current run to finish.",
+    ),
+  );
+  const delivery = await pickOne(
+    `  ${bold("Delivery mode")}`,
+    ["interrupt", "queue"],
+    0,
+  );
+  summary.push(`delivery=${delivery}`);
+
+  // ── Step 5: Git identity (optional) ─────────────────────────────────
+  stepHeader(5, TOTAL, "Git committer identity", false);
+  console.log(
+    dim(
+      "  Used when agents run `git commit` inside the container. Pre-filled from your host git config if present.",
+    ),
+  );
+  const gitPrev = Boolean(existingEnv.GIT_USER_NAME || existingEnv.GIT_USER_EMAIL);
+  let gitUserName = "";
+  let gitUserEmail = "";
+  if (await skipPrompt(gitPrev)) {
+    gitUserName = existingEnv.GIT_USER_NAME ?? "";
+    gitUserEmail = existingEnv.GIT_USER_EMAIL ?? "";
+    summary.push(dim("git identity: skipped"));
+  } else {
+    const hostName = detectGitHost("user.name");
+    const hostEmail = detectGitHost("user.email");
+    gitUserName = await ask(`  ${bold("Name")}`, {
+      default: existingEnv.GIT_USER_NAME || hostName || "",
+    });
+    gitUserEmail = await ask(`  ${bold("Email")}`, {
+      default: existingEnv.GIT_USER_EMAIL || hostEmail || "",
+    });
+    summary.push(`git as ${gitUserName || "(unset)"} <${gitUserEmail || "(unset)"}>`);
   }
 
-  const haveOpenai = await askYesNo(
-    `Add an OpenAI API key? ${dim("(optional, lets you use OpenAI models)")}`,
-    Boolean(existingEnv.OPENAI_API_KEY),
+  // ── Step 6: GitHub token (optional) ─────────────────────────────────
+  stepHeader(6, TOTAL, "GitHub token", false);
+  console.log(
+    dim(
+      "  Enables `gh` CLI + HTTPS git auth inside the container. Squad keeps its own gh login under docker/data/gh/ — your host's personal `gh auth` stays untouched.",
+    ),
   );
-  const openaiKey = haveOpenai
-    ? await ask("  OpenAI API key", { default: existingEnv.OPENAI_API_KEY, secret: true })
-    : "";
+  let githubToken = "";
+  const ghPrev = Boolean(existingEnv.GITHUB_TOKEN);
+  const hasGh = ghInstalled();
 
-  const haveOpenrouter = await askYesNo(
-    `Add an OpenRouter API key? ${dim("(optional, opens up ~24 OpenAI-compatible providers)")}`,
-    Boolean(existingEnv.OPENROUTER_API_KEY),
-  );
-  const openrouterKey = haveOpenrouter
-    ? await ask("  OpenRouter API key", {
-        default: existingEnv.OPENROUTER_API_KEY,
-        secret: true,
-      })
-    : "";
+  // Three possible sources of an existing token, listed top → bottom by
+  // preference for "this is the squad account, not your personal one":
+  //   1. Saved squad gh sandbox at docker/data/gh/   (squad-owned)
+  //   2. Host's default gh auth                       (your personal account)
+  //   3. A PAT you'll paste                           (manual)
+  const squadGhToken = hasGh ? detectGhToken(SQUAD_GH_DIR) : "";
+  const squadGhUser = squadGhToken ? detectGhUser(SQUAD_GH_DIR) : "";
+  const hostGhToken = hasGh ? detectGhToken(undefined) : "";
+  const hostGhUser = hostGhToken ? detectGhUser(undefined) : "";
 
-  const wantDiscord = await askYesNo(
-    `Wire up the Discord channel? ${dim("(optional)")}`,
-    Boolean(existingEnv.DISCORD_BOT_TOKEN),
+  if (await skipPrompt(ghPrev || squadGhToken || hostGhToken)) {
+    githubToken = existingEnv.GITHUB_TOKEN ?? "";
+    summary.push(dim("GitHub token: skipped"));
+  } else {
+    const choices = [];
+    if (squadGhToken) {
+      const tag = squadGhUser ? `@${squadGhUser}` : mask(squadGhToken);
+      choices.push({
+        key: "squad",
+        label: `Use squad's saved gh login (${tag})`,
+      });
+    }
+    if (hasGh) {
+      choices.push({
+        key: "login",
+        label: squadGhToken
+          ? "Sign in again as a different account (replaces saved login)"
+          : "Sign in to GitHub now via `gh auth login` (web/device flow)",
+      });
+    }
+    if (hostGhToken && hostGhUser !== squadGhUser) {
+      const tag = hostGhUser
+        ? `@${hostGhUser} ${dim("— your personal host account")}`
+        : mask(hostGhToken);
+      choices.push({ key: "host", label: `Use host gh token (${tag})` });
+    }
+    choices.push({ key: "pat", label: "Paste a personal access token" });
+
+    const pickedLabel = await pickOne(
+      `  ${bold("How would you like to set GITHUB_TOKEN?")}`,
+      choices.map((c) => c.label),
+      0,
+    );
+    const choice = choices.find((c) => c.label === pickedLabel)?.key ?? "pat";
+
+    if (choice === "squad") {
+      githubToken = squadGhToken;
+    } else if (choice === "host") {
+      githubToken = hostGhToken;
+    } else if (choice === "login") {
+      console.log(
+        dim(
+          "\n  → starting gh auth login (writes to docker/data/gh/). Follow the prompts; complete the device code in your browser.\n",
+        ),
+      );
+      const { token, user } = runGhAuthLoginSandboxed();
+      if (token) {
+        githubToken = token;
+        const tag = user ? `@${user}` : mask(token);
+        console.log(green(`  ✓ signed in as ${tag}`));
+      } else {
+        console.log(red("  ✗ gh auth login did not produce a token; skipping."));
+      }
+    } else {
+      githubToken = await ask(
+        `  ${bold("GITHUB_TOKEN")} ${dim("(create at github.com/settings/tokens)")}`,
+        { default: existingEnv.GITHUB_TOKEN, secret: true },
+      );
+    }
+    summary.push(
+      githubToken ? "GitHub token set" : dim("GitHub token: (empty, skipping)"),
+    );
+  }
+
+  // ── Step 7: SSH key for GitHub (optional) ───────────────────────────
+  stepHeader(7, TOTAL, "SSH key for GitHub", false);
+  console.log(
+    dim(
+      `  Generates an ed25519 keypair under docker/data/ssh/id_ed25519 that the container mounts. Used for \`git clone git@github.com:...\` and pushes.`,
+    ),
   );
-  let discordBotToken = "";
-  let discordWireToken = existingEnv.SQUAD_DISCORD_TOKEN || "";
-  if (wantDiscord) {
+  const sshDir = join(DATA_DIR, "ssh");
+  const sshKeyPath = join(sshDir, "id_ed25519");
+  const sshExists = existsSync(sshKeyPath);
+  if (await skipPrompt(sshExists)) {
+    summary.push(sshExists ? "SSH key (existing)" : dim("SSH key: skipped"));
+  } else {
+    mkdirSync(sshDir, { recursive: true, mode: 0o700 });
+    let overwrite = false;
+    if (sshExists) {
+      overwrite = await askYesNo(
+        `  Key already exists at ${sshKeyPath}. Regenerate?`,
+        false,
+      );
+    }
+    if (!sshExists || overwrite) {
+      if (overwrite) {
+        try {
+          execSync(`rm -f ${sshKeyPath} ${sshKeyPath}.pub`);
+        } catch {
+          // best effort
+        }
+      }
+      try {
+        execSync(
+          `ssh-keygen -t ed25519 -f ${sshKeyPath} -N "" -C "squad-container" -q`,
+          { stdio: ["ignore", "ignore", "pipe"] },
+        );
+        try {
+          chmodSync(sshKeyPath, 0o600);
+        } catch {
+          // best-effort
+        }
+        console.log(green(`  ✓ generated ${sshKeyPath}`));
+      } catch (err) {
+        console.log(red(`  ✗ ssh-keygen failed: ${err.message}. Install ssh and re-run.`));
+      }
+    }
+    if (existsSync(`${sshKeyPath}.pub`)) {
+      const pub = readFileSync(`${sshKeyPath}.pub`, "utf8").trim();
+      console.log(bold("\n  Public key — paste into GitHub → Settings → SSH keys:\n"));
+      console.log("  " + pub);
+      console.log(dim("\n  https://github.com/settings/ssh/new\n"));
+      summary.push("SSH key ready");
+    } else {
+      summary.push(dim("SSH key: not generated"));
+    }
+  }
+
+  // ── Step 8: Discord channel (optional) ──────────────────────────────
+  stepHeader(8, TOTAL, "Discord channel", false);
+  console.log(
+    dim("  Wires up the Discord bot channel so a bot can mention @squad in your server."),
+  );
+  // Default to existing values — skipping this step must NOT blank them out.
+  let discordBotToken = existingEnv.DISCORD_BOT_TOKEN ?? "";
+  let discordWireToken = existingEnv.SQUAD_DISCORD_TOKEN ?? "";
+  let wantDiscord = Boolean(discordBotToken);
+  if (await skipPrompt(wantDiscord)) {
+    summary.push(
+      wantDiscord
+        ? "Discord: kept existing"
+        : dim("Discord: skipped"),
+    );
+  } else {
+    wantDiscord = true;
     discordBotToken = await ask(
-      `  Discord bot token ${dim("(from the Discord developer portal)")}`,
+      `  ${bold("DISCORD_BOT_TOKEN")} ${dim("(from the Discord developer portal)")}`,
       { default: existingEnv.DISCORD_BOT_TOKEN, secret: true },
     );
     if (!discordWireToken) {
       discordWireToken = generateToken(24);
       console.log(dim(`  generated SQUAD_DISCORD_TOKEN (used between gateway and bot)`));
     }
+    wantDiscord = Boolean(discordBotToken);
+    summary.push(discordBotToken ? "Discord wired" : dim("Discord: (empty bot token)"));
   }
 
-  const dashboardDefault =
-    existingEnv.SQUAD_DASHBOARD_TOKEN && existingEnv.SQUAD_DASHBOARD_TOKEN !== "dev-dashboard-token"
-      ? existingEnv.SQUAD_DASHBOARD_TOKEN
-      : generateToken();
-  const dashboardToken = await ask(
-    `${bold("Dashboard auth token")} ${dim("(bearer for the web UI; default is freshly generated)")}`,
-    { default: dashboardDefault, secret: true },
-  );
+  // ── Write files ─────────────────────────────────────────────────────
+  // Non-destructive merge: start from existing, only overwrite values the
+  // wizard collected this run.
+  const mergedEnv = { ...existingEnv, ...providerKeys };
+  mergedEnv.SQUAD_PORT = String(Number(port) || 8080);
+  mergedEnv.SQUAD_DASHBOARD_TOKEN = dashboardToken;
+  mergedEnv.GIT_USER_NAME = gitUserName;
+  mergedEnv.GIT_USER_EMAIL = gitUserEmail;
+  mergedEnv.GITHUB_TOKEN = githubToken;
+  // Discord values flow through whatever the step decided; if the user
+  // skipped, those defaults are existingEnv values, not blanks.
+  mergedEnv.DISCORD_BOT_TOKEN = discordBotToken;
+  mergedEnv.SQUAD_DISCORD_TOKEN = discordWireToken;
 
-  const port = await ask(`Port to expose ${dim("(default 8080)")}`, {
-    default: env.SQUAD_PORT || "8080",
-  });
-
-  const delivery = await askChoice(
-    `Chat delivery mode when a message arrives mid-run:`,
-    ["interrupt", "queue"],
-    "interrupt",
-  );
-
-  const primaryModel = await ask(`Primary model`, { default: "anthropic/claude-sonnet-4-5" });
-
-  const fallbacksRaw = await ask(
-    `Fallback models ${dim("(comma-separated, in order — leave blank for none)")}`,
-    { default: openaiKey ? "openai/gpt-4o" : "" },
-  );
-  const fallbacks = fallbacksRaw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  // Write env.
-  const mergedEnv = {
-    ...existingEnv,
-    ANTHROPIC_API_KEY: anthropicKey,
-    SQUAD_DASHBOARD_TOKEN: dashboardToken,
-    OPENAI_API_KEY: openaiKey,
-    OPENROUTER_API_KEY: openrouterKey,
-    DISCORD_BOT_TOKEN: discordBotToken,
-    SQUAD_DISCORD_TOKEN: wantDiscord ? discordWireToken : "",
-  };
   writeFileSync(ENV_PATH, renderEnv(mergedEnv));
   try {
     chmodSync(ENV_PATH, 0o600);
   } catch {
     // Best-effort on Windows.
   }
-  console.log(green(`\n✓ wrote ${ENV_PATH}`));
 
-  // Write config.
+  const existingConfig = (() => {
+    if (!existsSync(CONFIG_PATH)) return null;
+    try {
+      return JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+    } catch {
+      return null;
+    }
+  })();
+
   writeFileSync(
     CONFIG_PATH,
-    renderConfig({
+    renderConfig(existingConfig, {
       port: Number(port) || 8080,
       delivery,
       primaryModel,
       fallbacks,
-      haveOpenai: Boolean(openaiKey),
-      haveOpenrouter: Boolean(openrouterKey),
+      providers: configuredProviders,
       discord: wantDiscord && Boolean(discordBotToken),
     }),
   );
+
+  // Sync ~/.squad/config so the global `squad` binary auto-resolves the
+  // gateway URL + auth token from any cwd — no env vars to set, no need to
+  // be inside the repo.
+  syncGlobalConfig({
+    SQUAD_REPO: REPO_ROOT,
+    SQUAD_PORT: String(Number(port) || 8080),
+    SQUAD_TOKEN: dashboardToken,
+    SQUAD_URL: `ws://localhost:${Number(port) || 8080}/ws`,
+  });
+
+  console.log(`\n${bold("Summary")}`);
+  for (const line of summary) console.log(`  • ${line}`);
+  console.log("");
+  console.log(green(`✓ wrote ${ENV_PATH}`));
   console.log(green(`✓ wrote ${CONFIG_PATH}`));
 
   console.log(`
 ${bold("Next steps")}
 
-  ${green("Docker:")}    pnpm start:docker        ${dim("# build + up (foreground)")}
-  ${green("Local:")}     pnpm start:local         ${dim("# install + build + run via node")}
-  ${green("Dashboard:")} http://localhost:${port}/    ${dim("# bearer token: see docker/.env")}
+  ${green("Install CLI:")}  scripts/install.sh             ${dim("# once; global 'squad' binary")}
+  ${green("Start:")}        squad start                    ${dim("# docker if available, else local")}
+  ${green("Chat:")}         squad repl                     ${dim("# or: squad chat 'hello'")}
+  ${green("Dashboard:")}    http://localhost:${port}/      ${dim("# bearer token: docker/.env")}
 
-Re-run ${bold("pnpm setup")} any time to add a provider, change ports, or rotate the dashboard token.
+Re-run ${bold("squad onboard")} any time to fill in a skipped step or rotate a value.
 `);
   rl.close();
 }

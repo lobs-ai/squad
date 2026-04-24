@@ -101,6 +101,18 @@ export const configSchema = z.object({
       host: z.string().default("0.0.0.0"),
       port: z.number().int().nonnegative().default(8080),
       data_dir: z.string().default("./data"),
+      /**
+       * Persistent home directory the agent runs in. The runner sets this as
+       * the cwd for every chat turn and every subagent, so file/exec tools
+       * land here instead of wherever the gateway was launched from. Shared
+       * across sessions on purpose — agents accumulate state here. Created
+       * on boot if it doesn't exist.
+       *
+       * Empty string (the default) means "derive from data_dir" — boot picks
+       * `<data_dir>/workspace` so test fixtures pointing data_dir at a tmpdir
+       * automatically isolate their workspace too.
+       */
+      workspace_dir: z.string().default(""),
     })
     .default({}),
   auth: z

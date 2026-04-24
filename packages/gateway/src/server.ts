@@ -41,6 +41,8 @@ export interface GatewayDeps {
   subagentRegistry: SubagentRegistry;
   coordinator: RunCoordinator;
   toolRegistry: ToolRegistry;
+  /** Persistent agent home directory; used as cwd for chat turns. */
+  workspaceDir: string;
   startedAt: number;
   version: string;
   /** Testing seam: inject an LLMClient to bypass real provider calls. */
@@ -176,6 +178,8 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
   registerSessionMethods(d, deps.sessions, {
     defaultModel: primaryModel,
     defaultFallbacks: fallbackModels,
+    messages: deps.messages,
+    toolCalls: deps.toolCalls,
   });
   registerChatMethods(d, {
     sessions: deps.sessions,
@@ -187,6 +191,7 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
     defaultModel: primaryModel,
     defaultFallbacks: fallbackModels,
     coordinator: deps.coordinator,
+    workspaceDir: deps.workspaceDir,
     ...(deps.clientOverride !== undefined ? { clientOverride: deps.clientOverride } : {}),
   });
   registerTaskMethods(d, deps.tasks, deps.broadcast);

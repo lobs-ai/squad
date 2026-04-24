@@ -71,10 +71,55 @@ export const sessionSearchHit = z.object({
 });
 export const sessionSearchResult = z.object({ hits: z.array(sessionSearchHit) });
 
+// session.rename — change a session's title
+export const sessionRenameParams = z.object({
+  sessionId: z.string(),
+  title: z.string().min(1).max(200),
+});
+export const sessionRenameResult = z.object({ session: sessionRecordSchema });
+
+// session.setModel — swap the primary model (and optionally fallbacks) on an
+// existing session. Sticky for subsequent runs; does not retroactively rewrite
+// history. Fallbacks is optional; omitting leaves the chain untouched.
+export const sessionSetModelParams = z.object({
+  sessionId: z.string(),
+  model: z.string().min(1),
+  fallbacks: z.array(z.string()).optional(),
+});
+export const sessionSetModelResult = z.object({ session: sessionRecordSchema });
+
+// session.stats — detailed breakdown: turn count, token totals, estimated
+// context fill, message counts. Used by /usage and /compress.
+export const sessionStatsParams = z.object({ sessionId: z.string() });
+export const sessionStatsResult = z.object({
+  session: sessionRecordSchema,
+  messageCount: z.number().int().nonnegative(),
+  turnCount: z.number().int().nonnegative(),
+  toolCallCount: z.number().int().nonnegative(),
+  estimatedTokens: z.number().int().nonnegative(),
+  contextWindow: z.number().int().nonnegative().nullable(),
+  contextFillPct: z.number().nullable(),
+});
+
+// session.compact — request the next run to compress history. Returns stats
+// reflecting the current state; the runner observes a `compactAtStart` flag
+// and drops older turns on the subsequent chat.send.
+export const sessionCompactParams = z.object({ sessionId: z.string() });
+export const sessionCompactResult = z.object({
+  session: sessionRecordSchema,
+  queued: z.boolean(),
+  beforeMessageCount: z.number().int().nonnegative(),
+  beforeEstimatedTokens: z.number().int().nonnegative(),
+});
+
 export const sessionMethods = {
   "session.start": { params: sessionStartParams, result: sessionStartResult },
   "session.resume": { params: sessionResumeParams, result: sessionResumeResult },
   "session.end": { params: sessionEndParams, result: sessionEndResult },
   "session.list": { params: sessionListParams, result: sessionListResult },
   "session.search": { params: sessionSearchParams, result: sessionSearchResult },
+  "session.rename": { params: sessionRenameParams, result: sessionRenameResult },
+  "session.setModel": { params: sessionSetModelParams, result: sessionSetModelResult },
+  "session.stats": { params: sessionStatsParams, result: sessionStatsResult },
+  "session.compact": { params: sessionCompactParams, result: sessionCompactResult },
 } as const;

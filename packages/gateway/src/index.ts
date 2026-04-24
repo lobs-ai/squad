@@ -1,6 +1,8 @@
-import { join } from "node:path";
+import { join, isAbsolute, resolve as resolvePath } from "node:path";
+import { mkdirSync } from "node:fs";
 import {
   ToolRegistry,
+  BUILTIN_TOOLS,
   registerTaskTools,
   registerAskUserTool,
   registerSpawnSubagentTool,
@@ -107,6 +109,16 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   const dbPath = join(config.server.data_dir, "squad.db");
   const db = openDb({ path: dbPath });
 
+  // Resolve the agent's persistent home directory and ensure it exists.
+  // Empty config value means "derive from data_dir" so test fixtures that
+  // tmpdir their data_dir get an isolated workspace for free.
+  const rawWorkspace = config.server.workspace_dir || join(config.server.data_dir, "workspace");
+  const workspaceDir = isAbsolute(rawWorkspace)
+    ? rawWorkspace
+    : resolvePath(process.cwd(), rawWorkspace);
+  mkdirSync(workspaceDir, { recursive: true });
+  logger.info({ workspaceDir }, "agent workspace ready");
+
   const sessions = new SessionStore(db, {
     deliveryMode: config.chat.delivery.mode,
   });
@@ -132,7 +144,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     },
     config.policy.approvals.timeout_seconds,
   );
-  const toolRegistry = opts.toolRegistry ?? new ToolRegistry();
+  const toolRegistry = opts.toolRegistry ?? new ToolRegistry().registerAll([...BUILTIN_TOOLS]);
   const subagentRegistry = new SubagentRegistry();
   const subagentPool = new SubagentPool(
     {
@@ -141,6 +153,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
       broadcast,
       logger,
       toolRegistry,
+      workspaceDir,
       ...(opts.clientOverride !== undefined ? { clientOverride: opts.clientOverride } : {}),
     },
     {
@@ -230,6 +243,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     subagentRegistry,
     coordinator,
     toolRegistry,
+    workspaceDir,
     startedAt,
     version: VERSION,
     ...(opts.clientOverride !== undefined ? { clientOverride: opts.clientOverride } : {}),

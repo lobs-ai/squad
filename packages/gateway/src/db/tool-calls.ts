@@ -75,4 +75,18 @@ export class ToolCallStore {
     if (!row) throw new Error(`tool call ${id} not found`);
     return rowToRecord(row);
   }
+
+  countForSession(sessionId: string): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM tool_calls WHERE session_id = ?")
+      .get(sessionId) as { n: number };
+    return row.n;
+  }
+
+  countDistinctRunsForSession(sessionId: string): number {
+    const row = this.db
+      .prepare("SELECT COUNT(DISTINCT run_id) AS n FROM tool_calls WHERE session_id = ?")
+      .get(sessionId) as { n: number };
+    return row.n;
+  }
 }

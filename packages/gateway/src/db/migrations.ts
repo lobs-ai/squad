@@ -139,6 +139,13 @@ const migrations: Migration[] = [
       ALTER TABLE sessions ADD COLUMN fallbacks_json TEXT NOT NULL DEFAULT '[]';
     `,
   },
+  {
+    id: 7,
+    name: "session_compact_flag",
+    up: `
+      ALTER TABLE sessions ADD COLUMN compact_at_start INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
 ];
 
 export function runMigrations(db: DatabaseHandle): void {

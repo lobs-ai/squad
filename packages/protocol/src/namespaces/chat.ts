@@ -99,10 +99,19 @@ export const chatToolResultEvent = z.object({
   isError: z.boolean().optional(),
 });
 
+export const chatErrorEvent = z.object({
+  sessionId: z.string(),
+  runId: z.string(),
+  message: z.string(),
+  /** Optional structured payload — e.g. provider, model, status code. */
+  data: z.unknown().optional(),
+});
+
 export const chatEvents = {
   "chat.user_message": chatUserMessageEvent,
   "chat.assistant_message": chatAssistantMessageEvent,
   "chat.text_delta": chatTextDeltaEvent,
   "chat.tool_call": chatToolCallEvent,
   "chat.tool_result": chatToolResultEvent,
+  "chat.error": chatErrorEvent,
 } as const;

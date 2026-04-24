@@ -95,4 +95,36 @@ describe("SessionStore", () => {
     const store = new SessionStore(db);
     expect(() => store.rootId("nope")).toThrow(/not found/);
   });
+
+  it("setTitle + setModel persist the change", () => {
+    const store = new SessionStore(db);
+    const s = store.create({ model: "m", title: "old" });
+    store.setTitle(s.id, "new title");
+    store.setModel(s.id, "replacement-model");
+    const after = store.get(s.id);
+    expect(after.title).toBe("new title");
+    expect(after.model).toBe("replacement-model");
+    expect(after.fallbacks).toEqual([]);
+  });
+
+  it("setModel with fallbacks replaces the chain; setModel without leaves it alone", () => {
+    const store = new SessionStore(db);
+    const s = store.create({ model: "m", fallbacks: ["a", "b"] });
+    store.setModel(s.id, "n");
+    expect(store.get(s.id).fallbacks).toEqual(["a", "b"]);
+    store.setModel(s.id, "n2", ["c"]);
+    expect(store.get(s.id).fallbacks).toEqual(["c"]);
+    store.setModel(s.id, "n3", []);
+    expect(store.get(s.id).fallbacks).toEqual([]);
+  });
+
+  it("compact_at_start is arm + get + clear", () => {
+    const store = new SessionStore(db);
+    const s = store.create({ model: "m" });
+    expect(store.getCompactAtStart(s.id)).toBe(false);
+    store.setCompactAtStart(s.id, true);
+    expect(store.getCompactAtStart(s.id)).toBe(true);
+    store.clearCompactAtStart(s.id);
+    expect(store.getCompactAtStart(s.id)).toBe(false);
+  });
 });

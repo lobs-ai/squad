@@ -1,4 +1,4 @@
-import { runAgent, Session } from "@squad/runner";
+import { runAgent, Session, compactMessages } from "@squad/runner";
 import type { AgentSpec, AgentResult } from "@squad/runner";
 import type { ContentBlock as LLMContentBlock } from "@squad/llm";
 import { ToolRegistry } from "@squad/tools";
@@ -27,6 +27,12 @@ function textBlocks(content: ContentBlock[] | string): ContentBlock[] {
 
 export interface RunOptions {
   sessionId: string;
+  /**
+   * Absolute path the runner uses as cwd. Persistent across sessions —
+   * the gateway resolves and mkdirs it once at boot. Tools that touch the
+   * filesystem or shell out land here.
+   */
+  cwd: string;
   /**
    * Correlation id for this run. The delivery coordinator generates this
    * before start() fires so it can register hooks keyed on the same id the
@@ -98,12 +104,24 @@ export async function runChatTurn(
 
   // Pull the full session history and feed it to the runner.
   const history = deps.messages.listForSession(options.sessionId, 1000);
-  const runnerMessages = history
+  let runnerMessages = history
     .filter((m) => m.role === "user" || m.role === "assistant")
     .map((m) => ({
       role: m.role as "user" | "assistant",
       content: toLLMContent(m.content),
     }));
+
+  // Manual /compact armed the session — drop older turns before handing the
+  // history to the runner, then clear the flag. The runner's per-turn auto-
+  // compact still kicks in on top of this for long-running sessions.
+  if (deps.sessions.getCompactAtStart(options.sessionId)) {
+    runnerMessages = compactMessages(runnerMessages);
+    deps.sessions.clearCompactAtStart(options.sessionId);
+    deps.logger.info(
+      { sessionId: options.sessionId, before: history.length, after: runnerMessages.length },
+      "session compacted on /compact request",
+    );
+  }
 
   deps.sessions.setStatus(options.sessionId, "running");
 
@@ -119,7 +137,7 @@ export async function runChatTurn(
     agent: "default",
     model: options.model,
     fallbacks: options.fallbacks ?? [],
-    cwd: process.cwd(),
+    cwd: options.cwd,
     tools: options.toolRegistry.names(),
     toolRegistry: options.toolRegistry,
     timeout: { total: 300 },
@@ -164,6 +182,15 @@ export async function runChatTurn(
   let result: AgentResult;
   try {
     result = await runAgent(spec);
+  } catch (err) {
+    // Tell every subscriber the run failed — otherwise CLI/dashboard sit
+    // waiting for a chat.assistant_message that will never arrive.
+    deps.broadcast.publish(`chat.error/${options.sessionId}`, {
+      sessionId: options.sessionId,
+      runId,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
   } finally {
     deps.sessions.setStatus(options.sessionId, "idle");
     await options.onRunEnd?.({ runId, sessionId: options.sessionId });

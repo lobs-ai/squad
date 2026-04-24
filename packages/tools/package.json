@@ -21,7 +21,17 @@
     "@squad/llm": "workspace:*",
     "zod": "^3.23.8"
   },
+  "peerDependencies": {
+    "playwright": "^1.49.0",
+    "pptxgenjs": "^4.0.1"
+  },
+  "peerDependenciesMeta": {
+    "playwright": { "optional": true },
+    "pptxgenjs": { "optional": true }
+  },
   "devDependencies": {
+    "playwright": "^1.49.0",
+    "pptxgenjs": "^4.0.1",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
   }

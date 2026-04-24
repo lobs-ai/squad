@@ -15,6 +15,7 @@ interface SessionRow {
   delivery_mode: DeliveryMode;
   tokens_in: number;
   tokens_out: number;
+  compact_at_start: number;
   created_at: string;
   updated_at: string;
 }
@@ -153,6 +154,48 @@ export class SessionStore {
     this.db
       .prepare("UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?")
       .run(status, new Date().toISOString(), id);
+  }
+
+  setTitle(id: string, title: string): void {
+    this.db
+      .prepare("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?")
+      .run(title, new Date().toISOString(), id);
+  }
+
+  setModel(id: string, model: string, fallbacks?: string[]): void {
+    if (fallbacks !== undefined) {
+      this.db
+        .prepare(
+          "UPDATE sessions SET model = ?, fallbacks_json = ?, updated_at = ? WHERE id = ?",
+        )
+        .run(model, JSON.stringify(fallbacks), new Date().toISOString(), id);
+    } else {
+      this.db
+        .prepare("UPDATE sessions SET model = ?, updated_at = ? WHERE id = ?")
+        .run(model, new Date().toISOString(), id);
+    }
+  }
+
+  /**
+   * Arm the next run to compact history before the LLM call. The runner
+   * checks this flag on session load and clears it via {@link clearCompactAtStart}
+   * once the compaction has happened.
+   */
+  setCompactAtStart(id: string, armed: boolean): void {
+    this.db
+      .prepare("UPDATE sessions SET compact_at_start = ?, updated_at = ? WHERE id = ?")
+      .run(armed ? 1 : 0, new Date().toISOString(), id);
+  }
+
+  clearCompactAtStart(id: string): void {
+    this.setCompactAtStart(id, false);
+  }
+
+  getCompactAtStart(id: string): boolean {
+    const row = this.db
+      .prepare("SELECT compact_at_start FROM sessions WHERE id = ?")
+      .get(id) as { compact_at_start: number } | undefined;
+    return !!row?.compact_at_start;
   }
 
   addTokens(id: string, tokensIn: number, tokensOut: number): void {

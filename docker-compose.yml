@@ -14,7 +14,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8080:8080" # HTTP + WebSocket + dashboard
+      - "${SQUAD_PORT:-8080}:${SQUAD_PORT:-8080}" # HTTP + WebSocket + dashboard
     env_file:
       - ./docker/.env
     environment:
@@ -23,7 +23,7 @@ services:
       - ./docker:/app/docker
       - ./extensions:/app/extensions:ro
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:${SQUAD_PORT:-8080}/health"]
       interval: 30s
       timeout: 3s
       retries: 3

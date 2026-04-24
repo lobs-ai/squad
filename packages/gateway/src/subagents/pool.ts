@@ -39,6 +39,8 @@ export interface SubagentPoolDeps {
   broadcast: Broadcast;
   logger: Logger;
   toolRegistry: ToolRegistry;
+  /** Persistent agent home directory shared with the parent. */
+  workspaceDir: string;
   clientOverride?: LLMClient;
 }
 
@@ -216,7 +218,7 @@ export class SubagentPool {
       task,
       agent: def.name,
       model: input.modelOverride ?? def.model,
-      cwd: process.cwd(),
+      cwd: this.deps.workspaceDir,
       tools: def.tools,
       toolRegistry: filtered,
       timeout: { total: def.limits?.timeoutMs ? Math.ceil(def.limits.timeoutMs / 1000) : 300 },

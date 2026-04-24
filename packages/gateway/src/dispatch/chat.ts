@@ -21,6 +21,8 @@ export interface ChatDeps {
   defaultModel: string;
   defaultFallbacks: string[];
   coordinator: RunCoordinator;
+  /** Persistent agent home directory. Used as cwd for every chat turn. */
+  workspaceDir: string;
   /** Testing seam: inject a stub LLMClient to bypass real provider calls. */
   clientOverride?: LLMClient;
 }
@@ -55,6 +57,7 @@ export function registerChatMethods(dispatcher: Dispatcher, deps: ChatDeps): voi
           model,
           fallbacks,
           toolRegistry: deps.toolRegistry,
+          cwd: deps.workspaceDir,
           onUserMessagePersisted: (msg) => {
             resolved = true;
             resolve(msg);

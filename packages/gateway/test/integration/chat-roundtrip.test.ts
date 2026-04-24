@@ -173,4 +173,46 @@ describe("gateway chat roundtrip", () => {
     const text = assistant.message.content.map((b) => (b.type === "text" ? b.text : "")).join("");
     expect(text).toContain("hello from the test");
   }, 20000);
+
+  it("session.rename / setModel / stats / compact round-trip over the wire", async () => {
+    harness = await bootHarness(["reply"]);
+    const { request } = harness;
+
+    const { session } = await request<{ session: { id: string; model: string; title: string | null } }>(
+      "session.start",
+      { title: "original" },
+    );
+    expect(session.title).toBe("original");
+
+    // rename
+    const renamed = await request<{ session: { title: string } }>("session.rename", {
+      sessionId: session.id,
+      title: "renamed",
+    });
+    expect(renamed.session.title).toBe("renamed");
+
+    // setModel — provider list is empty so any id is accepted
+    const switched = await request<{ session: { model: string; fallbacks: string[] } }>(
+      "session.setModel",
+      { sessionId: session.id, model: "new-model", fallbacks: ["fb1", "fb2"] },
+    );
+    expect(switched.session.model).toBe("new-model");
+    expect(switched.session.fallbacks).toEqual(["fb1", "fb2"]);
+
+    // stats before any chat
+    const stats = await request<{
+      messageCount: number;
+      estimatedTokens: number;
+    }>("session.stats", { sessionId: session.id });
+    expect(stats.messageCount).toBe(0);
+    expect(stats.estimatedTokens).toBe(0);
+
+    // compact — should arm the flag even with no history
+    const compacted = await request<{
+      queued: boolean;
+      beforeMessageCount: number;
+    }>("session.compact", { sessionId: session.id });
+    expect(compacted.queued).toBe(true);
+    expect(compacted.beforeMessageCount).toBe(0);
+  }, 20000);
 });

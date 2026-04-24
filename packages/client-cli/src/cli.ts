@@ -1,124 +1,255 @@
 #!/usr/bin/env node
-import { createInterface } from "node:readline/promises";
-import { stdin, stdout } from "node:process";
-import { ProtocolClient } from "./protocol-client.js";
 import * as render from "./render.js";
-import type { Task, QuestionRecord } from "@squad/protocol";
+import { runRepl } from "./commands/repl.js";
+import { runChat } from "./commands/chat.js";
+import { listSessions, newSession, renameSession, sessionTree } from "./commands/sessions.js";
+import { listTasks } from "./commands/tasks.js";
+import { answerQuestion, listQuestions } from "./commands/ask.js";
+import { showStatus } from "./commands/status.js";
+import { startGateway, stopGateway, gatewayLogs, runOnboard } from "./commands/lifecycle.js";
+import {
+  generateKey,
+  showKey,
+  listKeys,
+  removeKey,
+  runWizard as runKeyWizard,
+  testKey,
+} from "./commands/key.js";
+import { printCompactHeader, currentVersion } from "./ui/banner.js";
+import { C, color, fg } from "./ui/colors.js";
+import { roleColor } from "./ui/skin.js";
 
-interface Env {
-  url: string;
-  token: string;
+function helpText(): string {
+  const accent = fg(roleColor("accent"));
+  const muted = fg(roleColor("muted"));
+  const brand = fg(roleColor("brand"));
+  const H = (s: string) => `${C.BOLD}${accent}${s}${C.RESET}`;
+  const K = (s: string) => `${brand}${s}${C.RESET}`;
+  const D = (s: string) => `${muted}${s}${C.RESET}`;
+  return [
+    "",
+    `  ${H("Usage")}  ${K("squad")} ${D("<command>")} ${D("[args]")}`,
+    "",
+    `  ${H("Lifecycle")}`,
+    `    ${K("onboard")} ${D("[--force|--yes]")}      ${D("step-by-step setup wizard (first run)")}`,
+    `    ${K("start")}   ${D("[--docker|--local]")}   ${D("start the gateway in the background")}`,
+    `    ${K("stop")}                        ${D("stop the gateway")}`,
+    `    ${K("status")}                      ${D("gateway liveness + current session")}`,
+    `    ${K("logs")}    ${D("[-f]")}                 ${D("tail gateway logs")}`,
+    "",
+    `  ${H("Chat")}`,
+    `    ${K("repl")}    ${D("[--resume]")}           ${D("interactive REPL (default)")}`,
+    `    ${K("chat")}    ${D("<message>")}            ${D("one-shot: send, stream reply, exit")}`,
+    "",
+    `  ${H("Sessions · Tasks · Questions")}`,
+    `    ${K("sessions")}        ${D("[--all] [--search q]  list recent sessions")}`,
+    `    ${K("sessions new")} ${D("[title]")}          ${D("create a new session (becomes current)")}`,
+    `    ${K("sessions rename")} ${D("<id> <title>")}  ${D("rename an existing session")}`,
+    `    ${K("sessions tree")} ${D("[id]")}            ${D("show parent → subagent hierarchy")}`,
+    `    ${K("sessions search")} ${D("<q>")}           ${D("FTS search across session transcripts")}`,
+    `    ${K("tasks")}       ${D("[--session <id>]")}  ${D("list tasks in current session")}`,
+    `    ${K("questions")}   ${D("[--session <id>]")}  ${D("list open ask-user questions")}`,
+    `    ${K("ask")} ${D("<questionId> <answer>")}     ${D("answer a pending question")}`,
+    "",
+    `  ${H("SSH keys")} ${D("— docker/data/ssh/; agents git-push with these")}`,
+    `    ${K("key wizard")}                  ${D("interactive generate + paste-to-GitHub")}`,
+    `    ${K("key new")} ${D("[--label X] [--type ed25519|rsa] [--force]")}`,
+    `    ${K("key show")} ${D("[--label X] [--path]")}  ${D("print the public key")}`,
+    `    ${K("key list")}                    ${D("list keys")}`,
+    `    ${K("key test")} ${D("[--label X]")}          ${D("ssh -T git@github.com")}`,
+    `    ${K("key rm")}   ${D("[--label X]")}          ${D("delete a keypair")}`,
+    "",
+    `  ${H("Environment")}`,
+    `    ${D("SQUAD_URL     ws://host:8080/ws      default ws://localhost:8080/ws")}`,
+    `    ${D("SQUAD_TOKEN   bearer token           auto-loaded from docker/.env")}`,
+    `    ${D("SQUAD_SKIN    default|mono|slate|…  theme (see /skin list in the REPL)")}`,
+    `    ${D("NO_COLOR=1                          disable ANSI colors")}`,
+    "",
+  ].join("\n");
 }
 
-function readEnv(): Env {
-  const url = process.env.SQUAD_URL ?? "ws://127.0.0.1:8080/ws";
-  const token = process.env.SQUAD_TOKEN;
-  if (!token) {
-    render.renderError("SQUAD_TOKEN is required");
-    process.exit(1);
-  }
-  return { url, token };
+function popFlag(args: string[], name: string): string | undefined {
+  const i = args.indexOf(name);
+  if (i === -1) return undefined;
+  const val = args[i + 1];
+  args.splice(i, 2);
+  return val;
+}
+
+function hasFlag(args: string[], name: string): boolean {
+  const i = args.indexOf(name);
+  if (i === -1) return false;
+  args.splice(i, 1);
+  return true;
 }
 
 async function main(): Promise<void> {
-  const env = readEnv();
-  const client = new ProtocolClient({ url: env.url, token: env.token });
-  await client.connect();
+  const argv = process.argv.slice(2);
+  const cmd = argv.shift() ?? "repl";
 
-  const { session } = await client.request("session.start", { title: "cli" });
-  await client.subscribe([
-    `chat.*/${session.id}`,
-    `tasks.*/${session.id}`,
-    `questions.*/${session.id}`,
-  ]);
+  switch (cmd) {
+    case "help":
+    case "--help":
+    case "-h":
+      printCompactHeader();
+      process.stdout.write(helpText());
+      return;
+    case "--version":
+    case "-V":
+    case "version":
+      process.stdout.write(`squad v${currentVersion()}\n`);
+      return;
 
-  let pendingQuestion: QuestionRecord | null = null;
+    case "onboard":
+    case "setup":
+      await runOnboard(argv);
+      return;
+    case "start":
+      await startGateway(argv);
+      return;
+    case "stop":
+      await stopGateway();
+      return;
+    case "status":
+      await showStatus();
+      return;
+    case "logs":
+      await gatewayLogs(argv);
+      return;
 
-  client.onEvent((topic, data) => {
-    if (topic.startsWith("chat.text_delta/")) {
-      render.renderDelta((data as { delta: string }).delta);
-    } else if (topic.startsWith("chat.assistant_message/")) {
-      render.renderNewline();
-    } else if (topic.startsWith("chat.tool_call/")) {
-      const d = data as { name: string; input: unknown };
-      render.renderToolCall(d.name, d.input);
-    } else if (topic.startsWith("tasks.")) {
-      void refreshTasks(client, session.id);
-    } else if (topic.startsWith("questions.asked/")) {
-      pendingQuestion = (data as { question: QuestionRecord }).question;
-      process.stdout.write(render.renderAskPrompt(pendingQuestion));
-    } else if (topic.startsWith("questions.answered/")) {
-      pendingQuestion = null;
+    case "repl": {
+      const resume = hasFlag(argv, "--resume");
+      await runRepl({ resume });
+      return;
     }
-  });
+    case "chat": {
+      const session = popFlag(argv, "--session");
+      const fresh = hasFlag(argv, "--new");
+      const msg = argv.join(" ").trim();
+      await runChat(msg, { sessionId: session, newSession: fresh });
+      return;
+    }
 
-  const rl = createInterface({ input: stdin, output: stdout });
-
-  render.renderNewline();
-  process.stdout.write(`Connected. Session ${session.id}.\n`);
-  process.stdout.write(`Type a message and press enter. Ctrl+C to exit.\n`);
-
-  const loop = async (): Promise<void> => {
-    while (true) {
-      render.renderUserLine(">");
-      const line = await rl.question("");
-      if (!line.trim()) continue;
-
-      if (pendingQuestion) {
-        await handleAnswer(client, pendingQuestion, line);
-        pendingQuestion = null;
-        continue;
+    case "sessions": {
+      const sub = argv.shift();
+      const all = hasFlag(argv, "--all");
+      const search = popFlag(argv, "--search") ?? popFlag(argv, "-s");
+      if (!sub || sub === "list") {
+        await listSessions({ all, ...(search !== undefined ? { search } : {}) });
+        return;
       }
+      if (sub === "new") {
+        await newSession(argv.join(" ").trim() || undefined);
+        return;
+      }
+      if (sub === "rename") {
+        const id = argv.shift();
+        const title = argv.join(" ").trim();
+        if (!id || !title) throw new Error('usage: squad sessions rename <id> "new title"');
+        await renameSession(id, title);
+        return;
+      }
+      if (sub === "tree") {
+        await sessionTree(argv.shift());
+        return;
+      }
+      if (sub === "search") {
+        const q = argv.join(" ").trim();
+        if (!q) throw new Error("usage: squad sessions search <query>");
+        await listSessions({ search: q });
+        return;
+      }
+      throw new Error(`unknown: sessions ${sub}`);
+    }
 
-      try {
-        await client.request("chat.send", {
-          sessionId: session.id,
-          content: line,
-        });
-      } catch (err) {
-        render.renderError(err instanceof Error ? err.message : String(err));
+    case "tasks": {
+      const session = popFlag(argv, "--session");
+      await listTasks(session);
+      return;
+    }
+
+    case "questions": {
+      const session = popFlag(argv, "--session");
+      await listQuestions(session);
+      return;
+    }
+
+    case "ask": {
+      const session = popFlag(argv, "--session");
+      const qid = argv.shift();
+      const answer = argv.join(" ").trim();
+      if (!qid || !answer) throw new Error("usage: squad ask <questionId> <answer>");
+      await answerQuestion(qid, answer, session);
+      return;
+    }
+
+    case "key": {
+      const sub = argv.shift() ?? "wizard";
+      const label = popFlag(argv, "--label");
+      switch (sub) {
+        case "wizard":
+          await runKeyWizard();
+          return;
+        case "new": {
+          const type = popFlag(argv, "--type");
+          const comment = popFlag(argv, "--comment");
+          const force = hasFlag(argv, "--force");
+          await generateKey({ label, type, comment, force });
+          return;
+        }
+        case "show": {
+          const showPath = hasFlag(argv, "--path");
+          await showKey({ label, path: showPath });
+          return;
+        }
+        case "list":
+        case "ls":
+          await listKeys();
+          return;
+        case "test":
+          await testKey(label);
+          return;
+        case "rm":
+        case "remove":
+        case "delete":
+          await removeKey(label);
+          return;
+        default:
+          throw new Error(`unknown: key ${sub}`);
       }
     }
-  };
 
-  await loop();
-  rl.close();
-  client.close();
+    default:
+      render.renderError(`unknown command: ${cmd}`);
+      process.stderr.write(helpText());
+      process.exitCode = 2;
+  }
 }
 
-async function handleAnswer(
-  client: ProtocolClient,
-  question: QuestionRecord,
-  input: string,
-): Promise<void> {
-  const q = question.input.questions[0]!;
-  let chosen: string | null = null;
-  const lower = input.trim().toLowerCase();
-  const n = Number.parseInt(lower, 10);
-  if (!Number.isNaN(n) && n >= 1 && n <= q.options.length) {
-    chosen = q.options[n - 1]!.label;
-  } else if (lower === "o") {
-    chosen = input.slice(input.indexOf(" ") + 1).trim() || "Other";
-  } else {
-    chosen = input.trim();
-  }
-  await client.request("questions.answer", {
-    sessionId: question.sessionId,
-    questionId: question.id,
-    answers: { [q.question]: chosen },
-  });
-}
-
-async function refreshTasks(client: ProtocolClient, sessionId: string): Promise<void> {
-  try {
-    const { tasks } = await client.request("tasks.list", { sessionId, includeDeleted: false });
-    render.renderTaskList(tasks as Task[]);
-  } catch {
-    // Best-effort refresh.
-  }
+/**
+ * Detect "the gateway isn't running / is unreachable" and rewrite the error
+ * into something actionable. Raw ws/fetch errors are cryptic.
+ */
+function humanizeConnectError(msg: string): string | null {
+  const hay = msg.toLowerCase();
+  const looksOffline =
+    hay.includes("econnrefused") ||
+    hay.includes("unexpected server response") ||
+    hay.includes("socket hang up") ||
+    hay.includes("enotfound") ||
+    hay.includes("etimedout") ||
+    hay.includes("not connected");
+  if (!looksOffline) return null;
+  return (
+    `can't reach the gateway (${msg}).\n` +
+    `  • is it running?   squad status\n` +
+    `  • start it:        squad start\n` +
+    `  • wrong url/token? set SQUAD_URL / SQUAD_TOKEN, or re-run squad onboard`
+  );
 }
 
 main().catch((err) => {
-  render.renderError(err instanceof Error ? err.message : String(err));
-  process.exit(1);
+  const raw = err instanceof Error ? err.message : String(err);
+  render.renderError(humanizeConnectError(raw) ?? raw);
+  process.exitCode = 1;
 });

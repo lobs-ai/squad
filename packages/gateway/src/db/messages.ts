@@ -82,4 +82,25 @@ export class MessageStore {
     // Reverse so callers get chronological order.
     return rows.reverse().map(rowToRecord);
   }
+
+  countForSession(sessionId: string): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM messages WHERE session_id = ?")
+      .get(sessionId) as { n: number };
+    return row.n;
+  }
+
+  /**
+   * Cheap token estimate: sum content character length divided by 4. The
+   * runner uses the same heuristic for its threshold check (see
+   * runner/context-manager.ts). Good enough for /usage and /compress display.
+   */
+  estimateTokensForSession(sessionId: string): number {
+    const rows = this.db
+      .prepare("SELECT content_json FROM messages WHERE session_id = ?")
+      .all(sessionId) as Array<{ content_json: string }>;
+    let chars = 0;
+    for (const r of rows) chars += r.content_json.length;
+    return Math.ceil(chars / 4);
+  }
 }
