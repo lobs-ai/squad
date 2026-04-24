@@ -12,7 +12,7 @@ import { discordConfigSchema } from "./config.js";
  *   {
  *     "plugins": [
  *       {
- *         "path": "@squad/channel-discord/plugin",
+ *         "path": "../channel-discord/dist/plugin.js",
  *         "config": {
  *           "bot_token_env": "DISCORD_BOT_TOKEN",
  *           "gateway_token_env": "SQUAD_DISCORD_TOKEN",
@@ -21,6 +21,10 @@ import { discordConfigSchema } from "./config.js";
  *       }
  *     ]
  *   }
+ *
+ * The path is resolved against the gateway's cwd (`packages/gateway/`).
+ * Absolute paths work too, and bare module specifiers are attempted through
+ * Node's resolver for plugins that live in `node_modules`.
  */
 export default definePlugin({
   id: "channel-discord",

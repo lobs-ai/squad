@@ -7,6 +7,7 @@ import { listTasks } from "./commands/tasks.js";
 import { answerQuestion, listQuestions } from "./commands/ask.js";
 import { showStatus } from "./commands/status.js";
 import { startGateway, stopGateway, gatewayLogs, runOnboard } from "./commands/lifecycle.js";
+import { runPair, runUnpair, runPairList } from "./commands/pair.js";
 import {
   generateKey,
   showKey,
@@ -50,6 +51,11 @@ function helpText(): string {
     `    ${K("tasks")}       ${D("[--session <id>]")}  ${D("list tasks in current session")}`,
     `    ${K("questions")}   ${D("[--session <id>]")}  ${D("list open ask-user questions")}`,
     `    ${K("ask")} ${D("<questionId> <answer>")}     ${D("answer a pending question")}`,
+    "",
+    `  ${H("Channel pairing")} ${D("— who can DM the bot on each channel")}`,
+    `    ${K("pair")} ${D("<channel> <user-id>")}      ${D("add a user to the channel's DM allow list")}`,
+    `    ${K("unpair")} ${D("<channel> <user-id>")}    ${D("remove a user from the allow list")}`,
+    `    ${K("pair list")} ${D("[channel]")}           ${D("show the allow list(s)")}`,
     "",
     `  ${H("SSH keys")} ${D("— docker/data/ssh/; agents git-push with these")}`,
     `    ${K("key wizard")}                  ${D("interactive generate + paste-to-GitHub")}`,
@@ -180,6 +186,27 @@ async function main(): Promise<void> {
       const answer = argv.join(" ").trim();
       if (!qid || !answer) throw new Error("usage: squad ask <questionId> <answer>");
       await answerQuestion(qid, answer, session);
+      return;
+    }
+
+    case "pair": {
+      // squad pair <channel> <user-id>   — add user to channel's DM allow list
+      // squad pair list [channel]        — show the current allow list(s)
+      const sub = argv[0];
+      if (sub === "list" || sub === "ls") {
+        argv.shift();
+        runPairList(argv[0]);
+        return;
+      }
+      const channel = argv.shift();
+      const userId = argv.shift();
+      runPair(channel, userId);
+      return;
+    }
+    case "unpair": {
+      const channel = argv.shift();
+      const userId = argv.shift();
+      runUnpair(channel, userId);
       return;
     }
 

@@ -7,7 +7,12 @@ import { PluginHost, type PluginHostDeps } from "./host.js";
 import { SubagentRegistry } from "../subagents/registry.js";
 import type { LLMClient } from "@squad/llm";
 import type { Logger } from "../logger.js";
-import type { ApprovalPolicy, RoutineDescriptor, SkillDescriptor } from "@squad/plugin-sdk";
+import type {
+  ApprovalPolicy,
+  ChannelHandle,
+  RoutineDescriptor,
+  SkillDescriptor,
+} from "@squad/plugin-sdk";
 
 function noopLogger(): Logger {
   const fn = () => {};
@@ -24,6 +29,7 @@ function makeDeps(): PluginHostDeps {
     routines: [] as RoutineDescriptor[],
     skills: [] as SkillDescriptor[],
     approvalPolicies: [] as ApprovalPolicy[],
+    channels: [] as ChannelHandle[],
   };
 }
 
@@ -96,5 +102,34 @@ describe("PluginHost", () => {
   it("unload is a no-op for unknown ids", async () => {
     const host = new PluginHost(makeDeps());
     await expect(host.unload("never-loaded")).resolves.toBeUndefined();
+  });
+
+  it("collects channel handles when a plugin registers one", async () => {
+    // The gateway itself is channel-agnostic — a Channel plugin hands over
+    // start/stop lifecycles via api.channels.register. Here we verify the
+    // handle lands in the shared deps.channels array the gateway drives
+    // from boot() / close().
+    const path = writePlugin(
+      "channel",
+      `export default {
+        id: "c1", name: "C1", version: "0", kinds: ["channel"],
+        register(api) {
+          api.channels.register({
+            id: "stub",
+            start: async () => { globalThis.__started = true; },
+            stop: async () => { globalThis.__stopped = true; },
+          });
+        },
+      };`,
+    );
+    const deps = makeDeps();
+    const host = new PluginHost(deps);
+    await host.load(path);
+    expect(deps.channels).toHaveLength(1);
+    expect(deps.channels[0]?.id).toBe("stub");
+    await deps.channels[0]?.start();
+    await deps.channels[0]?.stop();
+    expect((globalThis as Record<string, unknown>).__started).toBe(true);
+    expect((globalThis as Record<string, unknown>).__stopped).toBe(true);
   });
 });

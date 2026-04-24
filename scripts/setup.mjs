@@ -711,8 +711,16 @@ function renderConfig(existing, opts) {
   // plugins: preserve user-added entries; upsert the Discord plugin iff the
   // user provided a bot token (remove it otherwise so stale tokens don't
   // linger after `pnpm setup` with Discord deselected).
-  const DISCORD_PLUGIN_PATH = "@squad/channel-discord/plugin";
+  // Relative to the gateway's cwd (packages/gateway in both docker and local
+  // modes, since `pnpm --filter @squad/gateway start` runs there).
+  const DISCORD_PLUGIN_PATH = "../channel-discord/dist/plugin.js";
   const existingPlugins = Array.isArray(cfg.plugins) ? cfg.plugins : [];
+  // Preserve the user's existing Discord plugin config on re-run (they may
+  // have hand-edited the allow-list or DM policy). Only overwrite when it's
+  // not present. Non-Discord plugin entries pass through untouched.
+  const existingDiscord = existingPlugins.find(
+    (p) => typeof p === "object" && p?.path === DISCORD_PLUGIN_PATH,
+  );
   const withoutDiscord = existingPlugins.filter((p) => {
     if (typeof p === "string") return p !== DISCORD_PLUGIN_PATH;
     return p?.path !== DISCORD_PLUGIN_PATH;
@@ -724,6 +732,11 @@ function renderConfig(existing, opts) {
         bot_token_env: "DISCORD_BOT_TOKEN",
         gateway_token_env: "SQUAD_DISCORD_TOKEN",
         gateway_url: "ws://127.0.0.1:8080/ws",
+        // Safe default: only known users can DM the bot. Admins add snowflake
+        // IDs here (or switch `dm_policy` to "open" / "blocked") after setup.
+        dm_policy: "allow_list",
+        dm_allow_list: [],
+        ...(existingDiscord?.config ?? {}),
       },
     });
   }

@@ -20,6 +20,10 @@ describe("discordConfigSchema", () => {
     expect(c.approval_tags).toEqual(["write", "exec", "network"]);
     expect(c.max_message_length).toBe(1900);
     expect(c.stream_edits).toBe(true);
+    // DMs are gated by default — an unconfigured bot should not respond to
+    // arbitrary DMs even if Discord delivers them.
+    expect(c.dm_policy).toBe("allow_list");
+    expect(c.dm_allow_list).toEqual([]);
   });
 
   it("rejects invalid max_message_length values", () => {
@@ -28,29 +32,33 @@ describe("discordConfigSchema", () => {
     expect(() => parse({ max_message_length: 1.5 })).toThrow();
   });
 
-  it("accepts guild + channel bindings and DM bindings", () => {
+  it("accepts guild + channel bindings", () => {
+    const c = parse({ bindings: [{ guild_id: "g", channel_id: "c" }] });
+    expect(c.bindings).toEqual([{ guild_id: "g", channel_id: "c" }]);
+  });
+
+  it("accepts every dm_policy value and the allow-list entries", () => {
+    expect(parse({ dm_policy: "open" }).dm_policy).toBe("open");
+    expect(parse({ dm_policy: "blocked" }).dm_policy).toBe("blocked");
     const c = parse({
-      bindings: [{ guild_id: "g", channel_id: "c" }, { dm: true }],
+      dm_policy: "allow_list",
+      dm_allow_list: ["123", "456"],
     });
-    expect(c.bindings).toEqual([
-      { guild_id: "g", channel_id: "c" },
-      { dm: true },
-    ]);
+    expect(c.dm_allow_list).toEqual(["123", "456"]);
+  });
+
+  it("rejects unknown dm_policy values", () => {
+    expect(() => parse({ dm_policy: "whitelist" })).toThrow();
   });
 });
 
 describe("bindingSchema", () => {
-  it("requires guild_id + channel_id for non-DM bindings", () => {
+  it("requires both guild_id and channel_id", () => {
     expect(() => bindingSchema.parse({ guild_id: "g" })).toThrow();
     expect(bindingSchema.parse({ guild_id: "g", channel_id: "c" })).toEqual({
       guild_id: "g",
       channel_id: "c",
     });
-  });
-
-  it("requires dm to be literally true", () => {
-    expect(() => bindingSchema.parse({ dm: false })).toThrow();
-    expect(bindingSchema.parse({ dm: true })).toEqual({ dm: true });
   });
 });
 

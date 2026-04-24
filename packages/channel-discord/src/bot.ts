@@ -7,7 +7,7 @@ import {
   type MessageCreateOptions,
   type ChatInputCommandInteraction,
 } from "discord.js";
-import type { DiscordConfig, DiscordBinding } from "./config.js";
+import type { DiscordConfig } from "./config.js";
 import { chunkMessage } from "./formatting.js";
 
 export type InboundHandler = (payload: {
@@ -52,7 +52,7 @@ export async function startBot(options: BotOptions): Promise<Client> {
 
   client.on("messageCreate", async (message) => {
     if (message.author.bot) return;
-    if (!shouldRespond(message, options.config.bindings, client.user?.id)) return;
+    if (!shouldRespond(message, options.config, client.user?.id)) return;
 
     const content = stripMention(message.content, client.user?.id);
     if (!content.trim()) return;
@@ -78,21 +78,38 @@ export async function startBot(options: BotOptions): Promise<Client> {
   return client;
 }
 
-function shouldRespond(
-  message: Message,
-  bindings: DiscordBinding[],
+/**
+ * The structural subset of discord.js's `Message` that `shouldRespond`
+ * actually reads. Kept narrow so unit tests can hand over plain objects
+ * without pulling in the full discord.js client surface.
+ */
+export interface ShouldRespondMessage {
+  guildId: string | null;
+  channelId: string;
+  author: { id: string };
+  mentions: { users: { has: (id: string) => boolean } };
+}
+
+export function shouldRespond(
+  message: ShouldRespondMessage,
+  config: Pick<DiscordConfig, "bindings" | "dm_policy" | "dm_allow_list">,
   botUserId: string | undefined,
 ): boolean {
-  // DMs always respond if a DM binding exists.
+  // DM path: pure policy decision, independent of guild bindings.
   if (!message.guildId) {
-    return bindings.some((b) => "dm" in b && b.dm);
+    switch (config.dm_policy) {
+      case "blocked":
+        return false;
+      case "open":
+        return true;
+      case "allow_list":
+        return config.dm_allow_list.includes(message.author.id);
+    }
   }
-  // Otherwise require a configured guild+channel binding or an @mention.
-  const bound = bindings.some(
-    (b) =>
-      "guild_id" in b &&
-      b.guild_id === message.guildId &&
-      b.channel_id === message.channelId,
+  // Guild channels: a configured binding pins the bot to a channel, while
+  // an @mention lets it respond from anywhere in the server it's a member of.
+  const bound = config.bindings.some(
+    (b) => b.guild_id === message.guildId && b.channel_id === message.channelId,
   );
   if (bound) return true;
   if (botUserId && message.mentions.users.has(botUserId)) return true;

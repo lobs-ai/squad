@@ -1,7 +1,13 @@
 # ---- build stage ----
 FROM node:25-bookworm-slim AS build
 
-RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
+# better-sqlite3 has no Node 25 prebuilt binary yet, so it compiles from
+# source during `pnpm install` — needs python3 + a C++ toolchain.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 make g++ \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g pnpm@9.0.0
 
 WORKDIR /app
 
@@ -16,7 +22,7 @@ RUN pnpm -r build
 # ---- runtime stage ----
 FROM node:25-bookworm-slim AS runtime
 
-RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
+RUN npm install -g pnpm@9.0.0
 
 # git + openssh for agent-driven clone/push; gh CLI for GitHub API + as git's
 # HTTPS credential helper (wired by docker/entrypoint.sh when GITHUB_TOKEN set).
