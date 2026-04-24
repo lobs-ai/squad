@@ -13,10 +13,13 @@ import type { VerboseLevel } from "./render.js";
 import { C, color, fg } from "./colors.js";
 import { roleColor, setActiveSkin, listSkins, getActiveSkin } from "./skin.js";
 import { renderStatusbar, setStatusbarEnabled, isStatusbarEnabled } from "./statusbar.js";
+import type { LineInput } from "./line-input.js";
 import type { Task, QuestionRecord } from "@squad/protocol";
 
 export interface SlashContext {
   client: ProtocolClient;
+  /** The live input instance, so handlers can drive pickers (/resume etc.). */
+  input: LineInput;
   /** Current session id. Mutable — /new and /resume replace it. */
   state: {
     sessionId: string;
@@ -124,23 +127,55 @@ reg({
 reg({
   name: "sessions",
   aliases: ["ls"],
-  summary: "list recent sessions",
-  usage: "[--all]",
+  summary: "pick a session to resume (cycle with ↑/↓, type to search)",
+  usage: "[--list] [--all]",
   async run(ctx, args) {
-    const limit = args.includes("--all") ? 200 : 20;
+    const listOnly = args.includes("--list");
+    const all = args.includes("--all");
+    const limit = all ? 200 : 50;
     const { sessions } = await ctx.client.request("session.list", { limit });
-    render.renderHeader(`Sessions (${sessions.length})`);
-    const muted = fg(roleColor("muted"));
-    const text = fg(roleColor("text"));
-    const brand = fg(roleColor("brand"));
-    for (const s of sessions) {
-      const current = s.id === ctx.state.sessionId ? color(" ← current", fg(roleColor("accent"))) : "";
-      const title = s.title ?? color("(untitled)", muted);
-      process.stdout.write(
-        `  ${brand}${s.id.slice(0, 8)}${C.RESET}  ${muted}${s.status.padEnd(7)}${C.RESET}  ${text}${title}${C.RESET}${current}\n`,
-      );
+
+    if (listOnly) {
+      render.renderHeader(`Sessions (${sessions.length})`);
+      const muted = fg(roleColor("muted"));
+      const text = fg(roleColor("text"));
+      const brand = fg(roleColor("brand"));
+      for (const s of sessions) {
+        const current = s.id === ctx.state.sessionId ? color(" ← current", fg(roleColor("accent"))) : "";
+        const title = s.title ?? color("(untitled)", muted);
+        process.stdout.write(
+          `  ${brand}${s.id.slice(0, 8)}${C.RESET}  ${muted}${s.status.padEnd(7)}${C.RESET}  ${text}${title}${C.RESET}${current}\n`,
+        );
+      }
+      process.stdout.write("\n");
+      return;
     }
-    process.stdout.write("\n");
+
+    if (sessions.length === 0) {
+      render.renderInfo("(no sessions yet — use /new to start one)");
+      return;
+    }
+    // Default: picker + resume on selection (mirrors /resume).
+    const items = sessions.map((s) => ({
+      name: s.id.slice(0, 8),
+      summary: `${s.title ?? "(untitled)"} · ${s.model} · ${relativeTime(s.createdAt)}${
+        s.id === ctx.state.sessionId ? " · current" : ""
+      }`,
+      aliases: [s.id],
+    }));
+    const choice = await ctx.input.pick({ label: "pick a session to resume", items });
+    if (!choice) {
+      render.renderInfo("(cancelled)");
+      return;
+    }
+    const picked =
+      sessions.find((s) => s.id === choice.aliases?.[0]) ??
+      sessions.find((s) => s.id.startsWith(choice.name));
+    if (!picked) {
+      render.renderError("picked session not found");
+      return;
+    }
+    await activateSession(ctx, picked.id, picked.title ?? null);
   },
 });
 
@@ -159,33 +194,80 @@ reg({
 reg({
   name: "resume",
   aliases: ["r"],
-  summary: "resume a session by id (prefix ok) or show recent",
+  summary: "pick a session to resume (cycle with ↑/↓, type to search)",
   usage: "[id|prefix]",
   async run(ctx, args) {
-    const arg = args[0];
-    if (!arg) {
-      const { sessions } = await ctx.client.request("session.list", { limit: 10 });
-      render.renderHeader("Recent — /resume <id> to switch");
-      const muted = fg(roleColor("muted"));
-      const brand = fg(roleColor("brand"));
-      for (const s of sessions) {
-        process.stdout.write(`  ${brand}${s.id.slice(0, 8)}${C.RESET}  ${muted}${s.title ?? "(untitled)"}${C.RESET}\n`);
-      }
-      return;
-    }
     const { sessions } = await ctx.client.request("session.list", { limit: 200 });
-    const match =
-      sessions.find((s) => s.id === arg) ??
-      sessions.find((s) => s.id.startsWith(arg));
-    if (!match) {
-      render.renderError(`no session matching "${arg}"`);
+
+    // Direct hit when the user types `/resume <id>` — skip the picker.
+    const arg = args[0];
+    if (arg) {
+      const match =
+        sessions.find((s) => s.id === arg) ??
+        sessions.find((s) => s.id.startsWith(arg));
+      if (!match) {
+        render.renderError(`no session matching "${arg}"`);
+        return;
+      }
+      await activateSession(ctx, match.id, match.title ?? null);
       return;
     }
-    await ctx.client.request("session.resume", { sessionId: match.id });
-    await ctx.state.onSessionChange(match.id);
-    render.renderSuccess(`resumed ${color(match.id, fg(roleColor("brand")))}${match.title ? " — " + match.title : ""}`);
+
+    if (sessions.length === 0) {
+      render.renderInfo("(no sessions yet — use /new to start one)");
+      return;
+    }
+
+    // Build menu rows. Name is the 8-char prefix (shown as the brand id);
+    // summary carries the title + model + age so the picker list reads like
+    // `squad sessions`.
+    const items = sessions.map((s) => ({
+      name: s.id.slice(0, 8),
+      summary: `${s.title ?? "(untitled)"} · ${s.model} · ${relativeTime(s.createdAt)}${
+        s.id === ctx.state.sessionId ? " · current" : ""
+      }`,
+      aliases: [s.id],
+    }));
+
+    const choice = await ctx.input.pick({ label: "resume session", items });
+    if (!choice) {
+      render.renderInfo("(cancelled)");
+      return;
+    }
+    // Match back by the 8-char prefix we stored.
+    const picked =
+      sessions.find((s) => s.id === choice.aliases?.[0]) ??
+      sessions.find((s) => s.id.startsWith(choice.name));
+    if (!picked) {
+      render.renderError("picked session not found");
+      return;
+    }
+    await activateSession(ctx, picked.id, picked.title ?? null);
   },
 });
+
+/** Helper shared by /resume (both argful and picker paths). */
+async function activateSession(
+  ctx: SlashContext,
+  sessionId: string,
+  title: string | null,
+): Promise<void> {
+  await ctx.client.request("session.resume", { sessionId });
+  await ctx.state.onSessionChange(sessionId);
+  render.renderSuccess(
+    `resumed ${color(sessionId, fg(roleColor("brand")))}${title ? " — " + title : ""}`,
+  );
+}
+
+function relativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return iso;
+  const sec = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+  return `${Math.floor(sec / 86400)}d ago`;
+}
 
 // ── status ──────────────────────────────────────────────────────────────────
 
@@ -228,11 +310,20 @@ reg({
 
 reg({
   name: "skin",
-  summary: "switch visual theme",
+  summary: "pick a visual theme (cycle with ↑/↓, type to search)",
   usage: "[name|list]",
-  async run(_ctx, args) {
+  async run(ctx, args) {
     const arg = args[0];
-    if (!arg || arg === "list") {
+    if (arg && arg !== "list") {
+      try {
+        const s = setActiveSkin(arg);
+        render.renderSuccess(`skin = ${s.name}`);
+      } catch (err) {
+        render.renderError(err instanceof Error ? err.message : String(err));
+      }
+      return;
+    }
+    if (arg === "list") {
       const active = getActiveSkin().name;
       render.renderHeader("Skins");
       for (const s of listSkins()) {
@@ -244,8 +335,19 @@ reg({
       process.stdout.write("\n");
       return;
     }
+    // Default: picker.
+    const active = getActiveSkin().name;
+    const items = listSkins().map((s) => ({
+      name: s.name,
+      summary: `${s.description}${s.name === active ? " · current" : ""}`,
+    }));
+    const choice = await ctx.input.pick({ label: "pick a skin", items });
+    if (!choice) {
+      render.renderInfo("(cancelled)");
+      return;
+    }
     try {
-      const s = setActiveSkin(arg);
+      const s = setActiveSkin(choice.name);
       render.renderSuccess(`skin = ${s.name}`);
     } catch (err) {
       render.renderError(err instanceof Error ? err.message : String(err));
@@ -291,20 +393,34 @@ reg({
 
 reg({
   name: "model",
-  summary: "list or switch the session model",
+  summary: "pick a model for the current session (cycle with ↑/↓, type to search)",
   usage: "[<id>|list]",
   async run(ctx, args) {
     const arg = args[0];
-    if (!arg || arg === "list") {
-      const res = await ctx.client.request("admin.models", {});
-      const models = res.models ?? [];
-      if (!models.length) {
-        render.renderInfo("no models reported by gateway — check provider credentials");
-        return;
+    // Direct switch: /model <id>
+    if (arg && arg !== "list") {
+      try {
+        const { session } = await ctx.client.request("session.setModel", {
+          sessionId: ctx.state.sessionId,
+          model: arg,
+        });
+        render.renderSuccess(`model = ${color(session.model, fg(roleColor("brand")), C.BOLD)}`);
+      } catch (err) {
+        render.renderError(err instanceof Error ? err.message : String(err));
       }
-      // Mark the session's current model with a bullet.
-      const { sessions } = await ctx.client.request("session.list", { limit: 200 });
-      const active = sessions.find((s) => s.id === ctx.state.sessionId)?.model;
+      return;
+    }
+
+    const res = await ctx.client.request("admin.models", {});
+    const models = res.models ?? [];
+    if (!models.length) {
+      render.renderInfo("no models reported by gateway — check provider credentials");
+      return;
+    }
+    const { sessions } = await ctx.client.request("session.list", { limit: 200 });
+    const active = sessions.find((s) => s.id === ctx.state.sessionId)?.model;
+
+    if (arg === "list") {
       render.renderHeader("Models");
       const muted = fg(roleColor("muted"));
       const accent = fg(roleColor("accent"));
@@ -323,11 +439,23 @@ reg({
       process.stdout.write("\n");
       return;
     }
-    // Switch.
+
+    // Default: picker.
+    const items = models.map((m) => ({
+      name: m.id,
+      summary: `${m.displayName} · ${m.provider}${
+        m.contextWindow ? ` · ${(m.contextWindow / 1000).toFixed(0)}K ctx` : ""
+      }${m.id === active ? " · current" : ""}${m.notes ? " · " + m.notes : ""}`,
+    }));
+    const choice = await ctx.input.pick({ label: "pick a model", items });
+    if (!choice) {
+      render.renderInfo("(cancelled)");
+      return;
+    }
     try {
       const { session } = await ctx.client.request("session.setModel", {
         sessionId: ctx.state.sessionId,
-        model: arg,
+        model: choice.name,
       });
       render.renderSuccess(`model = ${color(session.model, fg(roleColor("brand")), C.BOLD)}`);
     } catch (err) {

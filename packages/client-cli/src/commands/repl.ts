@@ -152,39 +152,52 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
     }
   };
 
-  // Tiered Ctrl+C: first press cancels input or interrupts the run; second
-  // within 2s exits.
+  // Tiered Ctrl+C: first press warns, second within 2s exits. Works during
+  // a run too — the keypress handler surfaces ctrl+c even when input is
+  // paused so the user is never stuck while the agent is thinking.
   let lastInterruptAt = 0;
+  const exitNow = (): void => {
+    // Stop every live region before writing the goodbye so it lands cleanly.
+    spinner.stop();
+    activeRunId = null;
+    input.pause();
+    process.stdout.write(
+      `\n${color(brandString("goodbye", "see you."), fg(roleColor("accent")))}\n`,
+    );
+    state.shouldExit = true;
+    input.stop();
+  };
+
   input.on("interrupt", () => {
     const now = Date.now();
     if (now - lastInterruptAt < 2000) {
-      printSafely(() => {
-        process.stdout.write(
-          `\n${color(brandString("goodbye", "see you."), fg(roleColor("accent")))}\n`,
-        );
-      });
-      state.shouldExit = true;
-      input.stop();
+      exitNow();
       return;
     }
     lastInterruptAt = now;
-    stopSpinner();
-    render.endDeltaBlock();
-    printSafely(() => {
+    if (activeRunId !== null) {
+      // Agent is thinking. Leave the run running on the gateway (we don't
+      // have a cancel method yet), but stop the spinner so the user can see
+      // the hint. The run's events will keep streaming above the hint.
+      spinner.stop();
       process.stdout.write(
-        color("(ctrl-c again within 2s to exit)\n", fg(roleColor("muted"))),
+        "\n" + color("(ctrl-c again within 2s to exit)", fg(roleColor("muted"))) + "\n",
       );
-    });
+      // Re-arm the spinner so the user can see the agent is still working.
+      spinner.setLabel("still working — ctrl-c again to exit");
+      spinner.start();
+    } else {
+      render.endDeltaBlock();
+      printSafely(() => {
+        process.stdout.write(
+          color("(ctrl-c again within 2s to exit)\n", fg(roleColor("muted"))),
+        );
+      });
+    }
   });
 
   input.on("exit", () => {
-    printSafely(() => {
-      process.stdout.write(
-        `\n${color(brandString("goodbye", "see you."), fg(roleColor("accent")))}\n`,
-      );
-    });
-    state.shouldExit = true;
-    input.stop();
+    exitNow();
   });
 
   client.onEvent((topic, data) => {
@@ -291,7 +304,7 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
 
     try {
       if (trimmed.startsWith("/")) {
-        await runSlash(trimmed, { client, state });
+        await runSlash(trimmed, { client, state, input });
       } else if (state.pendingQuestion) {
         await handleAnswer(client, state.pendingQuestion, trimmed);
         state.pendingQuestion = null;

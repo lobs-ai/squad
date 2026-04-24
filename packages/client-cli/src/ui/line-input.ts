@@ -68,9 +68,30 @@ export class LineInput extends EventEmitter {
   private menuItems: MenuItem[] = [];
   private menuOpen = false;
   private menuSelected = 0;
+  /** First visible menu index — shifts so the selection stays on screen. */
+  private menuOffset = 0;
   private extraLines = 0; // menu rows currently drawn below the input line
   private running = false;
   private paused = false;
+
+  /**
+   * Picker mode state. Non-null while {@link pick} is awaiting a selection.
+   * In picker mode the buffer is a filter, the menu shows the caller's items,
+   * Enter returns the selection, Esc returns null.
+   */
+  private pickerState: {
+    label: string;
+    items: MenuItem[];
+    restore: {
+      buffer: string;
+      cursor: number;
+      menuSelected: number;
+      menuOffset: number;
+      menuOpen: boolean;
+      menuItems: MenuItem[];
+    };
+  } | null = null;
+  private pickerResolver: ((choice: MenuItem | null) => void) | null = null;
 
   constructor(private readonly opts: LineInputOptions) {
     super();
@@ -93,6 +114,97 @@ export class LineInput extends EventEmitter {
 
   isRunning(): boolean {
     return this.running;
+  }
+
+  /**
+   * Prompt the user to pick one item from a list. Takes over the input line
+   * with a filter prompt + scrolling list until the user presses Enter (→
+   * returns the selection) or Esc / Ctrl+C (→ resolves null). Type to filter;
+   * arrow keys + Tab/Enter cycle and accept just like the slash menu.
+   */
+  pick(opts: {
+    label: string;
+    items: MenuItem[];
+    initialFilter?: string;
+  }): Promise<MenuItem | null> {
+    return new Promise((resolve) => {
+      if (!this.running) this.start();
+      // If the caller paused us (e.g. a slash handler is running with input
+      // suspended), we need to come back online to accept picker keystrokes.
+      const wasPaused = this.paused;
+      this.paused = false;
+      // Stash the normal-mode state so we can restore it on exit.
+      this.pickerState = {
+        label: opts.label,
+        items: opts.items,
+        restore: {
+          buffer: this.buffer,
+          cursor: this.cursor,
+          menuSelected: this.menuSelected,
+          menuOffset: this.menuOffset,
+          menuOpen: this.menuOpen,
+          menuItems: this.menuItems,
+        },
+      };
+      // Remember the caller's paused state so the picker restores it on exit.
+      this.pickerResolver = (choice) => {
+        this.paused = wasPaused;
+        resolve(choice);
+      };
+      this.buffer = opts.initialFilter ?? "";
+      this.cursor = this.buffer.length;
+      this.menuSelected = 0;
+      this.menuOffset = 0;
+      this.recomputePickerItems();
+      this.render();
+    });
+  }
+
+  private pickerResolve(choice: MenuItem | null): void {
+    if (!this.pickerState || !this.pickerResolver) return;
+    const resolver = this.pickerResolver;
+    const { restore } = this.pickerState;
+    // Tear down the picker render before restoring state. We don't redraw
+    // the normal input here — the resolver hands control back to the caller,
+    // which will write its own output (e.g. "resumed session…") and then
+    // call input.resume() via prePrompt, which handles redraw.
+    this.clearRender();
+    this.pickerState = null;
+    this.pickerResolver = null;
+    this.buffer = restore.buffer;
+    this.cursor = restore.cursor;
+    this.menuSelected = restore.menuSelected;
+    this.menuOffset = restore.menuOffset;
+    this.menuOpen = restore.menuOpen;
+    this.menuItems = restore.menuItems;
+    resolver(choice);
+  }
+
+  /**
+   * Visible menu items — in slash mode this is the full menu list; in picker
+   * mode it's the filtered view. Used so Enter/Up/Down always operate on the
+   * same array the renderer drew.
+   */
+  private visibleMenuItems(): MenuItem[] {
+    return this.menuItems;
+  }
+
+  private recomputePickerItems(): void {
+    if (!this.pickerState) return;
+    const q = this.buffer.toLowerCase().trim();
+    if (!q) {
+      this.menuItems = this.pickerState.items.slice();
+    } else {
+      this.menuItems = this.pickerState.items.filter(
+        (it) =>
+          it.name.toLowerCase().includes(q) ||
+          (it.summary ?? "").toLowerCase().includes(q) ||
+          (it.aliases ?? []).some((a) => a.toLowerCase().includes(q)),
+      );
+    }
+    this.menuOpen = this.menuItems.length > 0;
+    if (this.menuSelected >= this.menuItems.length) this.menuSelected = 0;
+    this.ensureSelectionVisible();
   }
 
   stop(): void {
@@ -143,14 +255,24 @@ export class LineInput extends EventEmitter {
   // ── input handling ─────────────────────────────────────────────────────
 
   private handleKeypress = (str: string | undefined, key?: Keypress): void => {
-    if (!this.running || this.paused) return;
+    if (!this.running) return;
     const k = key ?? {};
 
-    // Ctrl+C → emit interrupt (owner decides whether to exit on double-press).
+    // Ctrl+C must work even when we're paused (agent is thinking, a slash
+    // handler is awaiting, etc). Tiered interrupt is the REPL's job; we just
+    // surface the signal so it can run its double-press-to-exit logic.
     if (k.ctrl && k.name === "c") {
+      if (this.pickerState) {
+        this.pickerResolve(null);
+        return;
+      }
       this.emit("interrupt");
       return;
     }
+
+    // Everything else is suppressed while paused — the agent is working,
+    // tool output is streaming, etc.
+    if (this.paused) return;
     // Ctrl+D on empty buffer → exit.
     if (k.ctrl && k.name === "d") {
       if (this.buffer.length === 0) {
@@ -158,22 +280,44 @@ export class LineInput extends EventEmitter {
       }
       return;
     }
-    // Enter submits — accept the menu selection first if it's open.
     if (k.name === "return" || k.name === "enter") {
-      if (this.menuOpen) {
-        this.acceptMenu();
+      // Picker mode: Enter commits the current selection and exits.
+      if (this.pickerState) {
+        this.pickerResolve(this.visibleMenuItems()[this.menuSelected] ?? null);
         return;
+      }
+      // Slash mode with the menu open: if the buffer already matches an
+      // item exactly (user fully typed `/help`), submit as-is. Otherwise
+      // accept the highlighted selection first (arrow-key picked or partial
+      // match), then submit it — the user still gets one-press submit.
+      if (this.menuOpen && this.menuItems.length > 0) {
+        const exact = this.menuItems.find((it) => this.buffer === "/" + it.name);
+        if (!exact) {
+          const sel = this.menuItems[this.menuSelected];
+          if (sel) {
+            this.buffer = "/" + sel.name;
+            this.cursor = this.buffer.length;
+          }
+        }
       }
       this.submit();
       return;
     }
 
     if (k.name === "tab") {
+      if (this.pickerState) {
+        this.pickerResolve(this.visibleMenuItems()[this.menuSelected] ?? null);
+        return;
+      }
       if (this.menuOpen) this.acceptMenu();
       return;
     }
 
     if (k.name === "escape") {
+      if (this.pickerState) {
+        this.pickerResolve(null);
+        return;
+      }
       if (this.menuOpen) {
         this.menuOpen = false;
         this.render();
@@ -274,6 +418,10 @@ export class LineInput extends EventEmitter {
   // ── menu + history ─────────────────────────────────────────────────────
 
   private refreshMenu(): void {
+    if (this.pickerState) {
+      this.recomputePickerItems();
+      return;
+    }
     // Menu opens only while typing the command token itself — once the user
     // types a space (moving into args), the menu collapses so it doesn't
     // cover the args area while they're still typing.
@@ -282,17 +430,44 @@ export class LineInput extends EventEmitter {
       this.menuItems = items;
       this.menuOpen = items.length > 0;
       if (this.menuSelected >= items.length) this.menuSelected = 0;
+      this.ensureSelectionVisible();
     } else {
       this.menuOpen = false;
       this.menuItems = [];
       this.menuSelected = 0;
+      this.menuOffset = 0;
     }
+  }
+
+  /** Number of menu rows we can show in the visible area (leaves slack). */
+  private menuVisibleLimit(): number {
+    const rows = (stdout.rows ?? 24) - 4;
+    return Math.max(3, Math.min(10, rows));
+  }
+
+  /**
+   * Shift {@link menuOffset} so the selected index is on screen. Called after
+   * any selection change so arrow keys keep scrolling past the visible
+   * window rather than overshooting off-screen.
+   */
+  private ensureSelectionVisible(): void {
+    const limit = this.menuVisibleLimit();
+    if (this.menuSelected < this.menuOffset) {
+      this.menuOffset = this.menuSelected;
+    } else if (this.menuSelected >= this.menuOffset + limit) {
+      this.menuOffset = this.menuSelected - limit + 1;
+    }
+    this.menuOffset = Math.max(
+      0,
+      Math.min(this.menuOffset, Math.max(0, this.menuItems.length - limit)),
+    );
   }
 
   private moveSelection(delta: number): void {
     if (!this.menuOpen || this.menuItems.length === 0) return;
     const n = this.menuItems.length;
     this.menuSelected = (this.menuSelected + delta + n) % n;
+    this.ensureSelectionVisible();
   }
 
   private acceptMenu(): void {
@@ -354,6 +529,7 @@ export class LineInput extends EventEmitter {
     this.menuOpen = false;
     this.menuItems = [];
     this.menuSelected = 0;
+    this.menuOffset = 0;
     this.emit("line", line);
   }
 
@@ -363,35 +539,41 @@ export class LineInput extends EventEmitter {
     return stdout.columns ?? 80;
   }
 
-  private renderMenuRow(item: MenuItem, selected: boolean): string {
+  private pickerPrompt(label: string): string {
+    const accent = fg(roleColor("accent"));
     const muted = fg(roleColor("muted"));
+    return (
+      color(`? ${label} `, accent, C.BOLD) +
+      color("(type to filter · ↑↓ cycle · enter pick · esc cancel) ", muted)
+    );
+  }
+
+  private renderMenuRow(item: MenuItem, selected: boolean): string {
     const accent = fg(roleColor("accent"));
     const brand = fg(roleColor("brand"));
+    const muted = fg(roleColor("muted"));
     const text = fg(roleColor("text"));
+
+    // Truncate summary on plain text *before* wrapping it in color codes, so
+    // long rows keep their ANSI styling (earlier versions stripped ANSI
+    // during truncation, leaving wide rows rendered as bare white text).
+    const leftPlain = `  /${item.name}`; // marker width (1) + space + slash + name
+    const leftVisibleWidth = leftPlain.length;
+    const leftColWidth = Math.max(leftVisibleWidth, 20);
+    const gapWidth = 2;
+    const summaryRoom = Math.max(10, this.termCols() - leftColWidth - gapWidth - 1);
+    const summary = item.summary.length > summaryRoom
+      ? item.summary.slice(0, summaryRoom - 1) + "…"
+      : item.summary;
 
     const marker = selected ? color("▸", accent, C.BOLD) : " ";
     const name = color(`/${item.name}`, brand, C.BOLD);
-    const usage = item.usage ? color(` ${item.usage}`, muted) : "";
-    const aliasPart =
-      item.aliases && item.aliases.length > 0
-        ? color(` · ${item.aliases.map((a) => "/" + a).join(" ")}`, muted)
-        : "";
-    const desc = color(item.summary, selected ? text : muted);
+    const desc = selected
+      ? color(summary, text, C.BOLD)
+      : color(summary, muted);
 
-    // Width-aware padding: pad the left part (marker + name + usage + aliases)
-    // to a consistent column so descriptions line up.
-    const left = `${marker} ${name}${usage}${aliasPart}`;
-    const leftPad = Math.max(0, 28 - visibleWidth(left));
-    const row = `${left}${" ".repeat(leftPad)}  ${desc}`;
-
-    const trimmed = visibleWidth(row) > this.termCols()
-      ? truncateVisible(row, this.termCols() - 1)
-      : row;
-    if (selected) {
-      // Soft accent background for the selected row so arrow-key movement is obvious.
-      return color(trimmed, C.REVERSE);
-    }
-    return trimmed;
+    const leftPad = leftColWidth - leftVisibleWidth;
+    return `${marker} ${name}${" ".repeat(leftPad)}${" ".repeat(gapWidth)}${desc}`;
   }
 
   /**
@@ -404,7 +586,9 @@ export class LineInput extends EventEmitter {
     // Clear any previous render footprint first.
     this.clearRender();
 
-    const prompt = this.opts.prompt();
+    const prompt = this.pickerState
+      ? this.pickerPrompt(this.pickerState.label)
+      : this.opts.prompt();
     const promptWidth = visibleWidth(prompt);
     // Truncate displayed buffer if it's wider than the terminal minus prompt,
     // so we never wrap (keeps cursor math trivial).
@@ -424,16 +608,27 @@ export class LineInput extends EventEmitter {
 
     let extra = 0;
     if (this.menuOpen && this.menuItems.length > 0) {
-      const max = Math.min(this.menuItems.length, 8);
-      for (let i = 0; i < max; i++) {
+      const muted = fg(roleColor("muted"));
+      const limit = this.menuVisibleLimit();
+      const start = this.menuOffset;
+      const end = Math.min(start + limit, this.menuItems.length);
+      const above = start;
+      const below = this.menuItems.length - end;
+
+      if (above > 0) {
+        stdout.write("\n");
+        stdout.write(color(`  ↑ ${above} more`, muted));
+        extra++;
+      }
+      for (let i = start; i < end; i++) {
         const item = this.menuItems[i]!;
         stdout.write("\n");
         stdout.write(this.renderMenuRow(item, i === this.menuSelected));
         extra++;
       }
-      if (this.menuItems.length > max) {
+      if (below > 0) {
         stdout.write("\n");
-        stdout.write(color(`  … ${this.menuItems.length - max} more`, fg(roleColor("muted"))));
+        stdout.write(color(`  ↓ ${below} more`, muted));
         extra++;
       }
       // Move cursor back up to the input row.
