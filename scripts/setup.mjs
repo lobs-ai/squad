@@ -686,16 +686,15 @@ function renderConfig(existing, opts) {
 
   cfg.chat = { ...(cfg.chat ?? {}), delivery: opts.delivery };
 
-  // channels: preserve any user-added channel; only touch discord.
-  const channels = { ...(cfg.channels ?? {}) };
-  if (opts.discord) {
-    channels.discord = { token_env: "DISCORD_BOT_TOKEN" };
+  // Discord is a plugin, not a first-class gateway concept. Strip any legacy
+  // `channels.discord` entry from old configs and upsert the plugin record.
+  if (cfg.channels && typeof cfg.channels === "object") {
+    delete cfg.channels.discord;
+    if (Object.keys(cfg.channels).length === 0) delete cfg.channels;
   }
-  // If user didn't choose discord, leave any existing channels.discord alone.
-  cfg.channels = channels;
 
-  // Subagents / policy / plugins: keep user's customizations if present;
-  // otherwise seed sensible defaults. Wizard never collects these.
+  // Subagents / policy: keep user's customizations if present; otherwise seed
+  // sensible defaults. Wizard never collects these.
   cfg.subagents = cfg.subagents ?? {
     max_concurrent_global: 8,
     max_concurrent_per_parent: 4,
@@ -708,7 +707,27 @@ function renderConfig(existing, opts) {
       timeout_seconds: 120,
     },
   };
-  cfg.plugins = cfg.plugins ?? [];
+
+  // plugins: preserve user-added entries; upsert the Discord plugin iff the
+  // user provided a bot token (remove it otherwise so stale tokens don't
+  // linger after `pnpm setup` with Discord deselected).
+  const DISCORD_PLUGIN_PATH = "@squad/channel-discord/plugin";
+  const existingPlugins = Array.isArray(cfg.plugins) ? cfg.plugins : [];
+  const withoutDiscord = existingPlugins.filter((p) => {
+    if (typeof p === "string") return p !== DISCORD_PLUGIN_PATH;
+    return p?.path !== DISCORD_PLUGIN_PATH;
+  });
+  if (opts.discord) {
+    withoutDiscord.push({
+      path: DISCORD_PLUGIN_PATH,
+      config: {
+        bot_token_env: "DISCORD_BOT_TOKEN",
+        gateway_token_env: "SQUAD_DISCORD_TOKEN",
+        gateway_url: "ws://127.0.0.1:8080/ws",
+      },
+    });
+  }
+  cfg.plugins = withoutDiscord;
 
   // llm.providers — replace fully (this is the wizard's domain). Unticked
   // providers are intentionally dropped from the active list.

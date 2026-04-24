@@ -29,7 +29,12 @@ import { RunCoordinator } from "./delivery/coordinator.js";
 import { PluginHost } from "./plugins/host.js";
 import { RoutineScheduler } from "./routines/scheduler.js";
 import { tagMatchPolicy, cascade } from "./approvals/policy.js";
-import type { ApprovalPolicy, RoutineDescriptor, SkillDescriptor } from "@squad/plugin-sdk";
+import type {
+  ApprovalPolicy,
+  ChannelHandle,
+  RoutineDescriptor,
+  SkillDescriptor,
+} from "@squad/plugin-sdk";
 import type { LLMClient } from "@squad/llm";
 import { createGatewayServer, type GatewayHandle } from "./server.js";
 import { seedCoreFiles } from "./agent-prompt.js";
@@ -100,6 +105,13 @@ export interface BootedGateway {
   coordinator: RunCoordinator;
   deliveryQueue: DeliveryQueue;
   broadcast: Broadcast;
+  /**
+   * Start every channel lifecycle registered by a plugin. Called after the
+   * HTTP/WS server is listening — channels typically dial back to the gateway
+   * over WebSocket, so the listener must be up first. Failures are logged and
+   * swallowed so one bad channel can't keep the gateway from coming up.
+   */
+  startChannels: () => Promise<void>;
   close: () => Promise<void>;
 }
 
@@ -201,6 +213,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   const approvalPolicies: ApprovalPolicy[] = [
     tagMatchPolicy({ requireForTags: config.policy.approvals.require_for_tags }),
   ];
+  const channelHandles: ChannelHandle[] = [];
   void cascade; // exported, not wired into a ToolRegistry seam yet
 
   const plugins = new PluginHost({
@@ -211,11 +224,15 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     routines: routinesList,
     skills: skillsList,
     approvalPolicies,
+    channels: channelHandles,
   });
 
-  for (const pluginPath of config.plugins) {
+  for (const entry of config.plugins) {
+    const pluginPath = typeof entry === "string" ? entry : entry.path;
+    const pluginConfig =
+      typeof entry === "string" ? {} : (entry.config as Record<string, unknown>);
     try {
-      await plugins.load(pluginPath);
+      await plugins.load(pluginPath, pluginConfig);
     } catch (err) {
       logger.error({ err, pluginPath }, "failed to load plugin");
     }
@@ -258,6 +275,17 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     ...(opts.clientOverride !== undefined ? { clientOverride: opts.clientOverride } : {}),
   });
 
+  const startChannels = async (): Promise<void> => {
+    for (const ch of channelHandles) {
+      try {
+        await ch.start();
+        logger.info({ channel: ch.id }, "channel started");
+      } catch (err) {
+        logger.error({ err, channel: ch.id }, "channel failed to start");
+      }
+    }
+  };
+
   return {
     handle,
     stores: { sessions, messages, toolCalls, tasks, questions },
@@ -267,8 +295,16 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     coordinator,
     deliveryQueue,
     broadcast,
+    startChannels,
     close: async () => {
       routines.stop();
+      for (const ch of channelHandles) {
+        try {
+          await ch.stop();
+        } catch (err) {
+          logger.error({ err, channel: ch.id }, "channel failed to stop");
+        }
+      }
       await handle.close();
       db.close();
     },

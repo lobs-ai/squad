@@ -140,8 +140,21 @@ export const configSchema = z.object({
     })
     .default({}),
   chat: chatConfigSchema,
-  plugins: z.array(z.string()).default([]),
-  channels: z.record(z.unknown()).default({}),
+  // A plugin entry is either a bare specifier / path string or an object with
+  // a `path` and optional `config`. The gateway knows nothing about what any
+  // individual plugin does; channels, extra tools, skills, providers, and
+  // routines all arrive this way.
+  plugins: z
+    .array(
+      z.union([
+        z.string(),
+        z.object({
+          path: z.string(),
+          config: z.record(z.unknown()).default({}),
+        }),
+      ]),
+    )
+    .default([]),
 });
 
 export type Config = z.infer<typeof configSchema>;

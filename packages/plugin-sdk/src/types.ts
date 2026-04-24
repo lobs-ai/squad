@@ -36,6 +36,19 @@ export interface ApprovalPolicy {
   }): Promise<"approve" | "deny" | "escalate">;
 }
 
+/**
+ * Lifecycle handle a channel plugin hands to the gateway. `start` is invoked
+ * after the HTTP/WS server is listening so channels can open back-connections
+ * safely; `stop` runs during shutdown. The gateway itself has no knowledge of
+ * specific channel protocols (Discord, Slack, etc.) — channels arrive via
+ * plugins.
+ */
+export interface ChannelHandle {
+  id: string;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
 type AnyTool = BaseTool<Record<string, unknown>>;
 
 export interface GatewayAPI {
@@ -45,6 +58,7 @@ export interface GatewayAPI {
   routines: { register(def: RoutineDescriptor): void };
   skills: { register(skill: SkillDescriptor): void };
   approvalPolicies: { register(policy: ApprovalPolicy): void };
+  channels: { register(channel: ChannelHandle): void };
   logger: { info: (msg: string, meta?: unknown) => void; warn: (msg: string, meta?: unknown) => void; error: (msg: string, meta?: unknown) => void };
   config: Record<string, unknown>;
 }

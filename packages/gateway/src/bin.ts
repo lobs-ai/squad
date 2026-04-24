@@ -31,6 +31,10 @@ async function main(): Promise<void> {
       { host: config.server.host, port: config.server.port },
       "squad gateway listening",
     );
+    // Channel plugins (Discord, Slack, …) dial back to the gateway over WS,
+    // so they must be started AFTER the listener is up. Kicked off async —
+    // per-channel failures don't block the server.
+    void booted.startChannels();
   });
 
   const shutdown = async (signal: string): Promise<void> => {

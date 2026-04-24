@@ -6,6 +6,7 @@ import type {
   RoutineDescriptor,
   SkillDescriptor,
   ApprovalPolicy,
+  ChannelHandle,
 } from "@squad/plugin-sdk";
 import type { ToolRegistry, BaseTool } from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
@@ -27,6 +28,8 @@ export interface PluginHostDeps {
   skills: SkillDescriptor[];
   /** Approval policies registered in cascade order. */
   approvalPolicies: ApprovalPolicy[];
+  /** Channel lifecycles collected from plugins of kind "channel". */
+  channels: ChannelHandle[];
 }
 
 export interface LoadedPlugin {
@@ -40,9 +43,19 @@ export class PluginHost {
   constructor(private readonly deps: PluginHostDeps) {}
 
   async load(entryPath: string, config: Record<string, unknown> = {}): Promise<LoadedPlugin> {
-    const abs = isAbsolute(entryPath) ? entryPath : resolvePath(process.cwd(), entryPath);
-    const url = pathToFileURL(abs).href;
-    const mod = (await import(url)) as { default?: PluginDescriptor };
+    // Accept three forms:
+    //   - bare specifier ("@squad/channel-discord/plugin") → pass to import()
+    //     so Node's module resolution handles it (workspace, node_modules)
+    //   - relative path ("./extensions/foo.js") → resolve against cwd
+    //   - absolute path → use as-is
+    const looksLikePath =
+      isAbsolute(entryPath) ||
+      entryPath.startsWith("./") ||
+      entryPath.startsWith("../");
+    const specifier = looksLikePath
+      ? pathToFileURL(isAbsolute(entryPath) ? entryPath : resolvePath(process.cwd(), entryPath)).href
+      : entryPath;
+    const mod = (await import(specifier)) as { default?: PluginDescriptor };
     const descriptor = mod.default;
     if (!descriptor || typeof descriptor.register !== "function") {
       throw new Error(`plugin at ${entryPath} has no valid default export`);
@@ -105,6 +118,11 @@ export class PluginHost {
       approvalPolicies: {
         register: (policy: ApprovalPolicy) => {
           this.deps.approvalPolicies.push(policy);
+        },
+      },
+      channels: {
+        register: (channel: ChannelHandle) => {
+          this.deps.channels.push(channel);
         },
       },
       logger: {
