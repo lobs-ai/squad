@@ -442,3 +442,45 @@ export function commandNames(): string[] {
   }
   return names.sort();
 }
+
+/** All commands in registration order — used by the REPL menu. */
+export function allCommands(): readonly SlashCommand[] {
+  return COMMANDS;
+}
+
+/**
+ * Rank commands for the live menu: exact-prefix matches on name first, then
+ * prefix matches on aliases, then substring matches on name/summary.
+ * Empty query (just `/`) shows everything in registration order.
+ */
+export function matchCommands(query: string): SlashCommand[] {
+  const raw = query.startsWith("/") ? query.slice(1) : query;
+  const q = raw.toLowerCase().trim();
+  if (!q) return COMMANDS.slice();
+  const namePrefix: SlashCommand[] = [];
+  const aliasPrefix: SlashCommand[] = [];
+  const contains: SlashCommand[] = [];
+  // Only fuzzy-match against name/alias/summary once the user has typed at
+  // least three chars. Below that, prefix-only keeps the menu tight and
+  // predictable.
+  const allowFuzzy = q.length >= 3;
+  for (const c of COMMANDS) {
+    if (c.name.toLowerCase().startsWith(q)) {
+      namePrefix.push(c);
+      continue;
+    }
+    if ((c.aliases ?? []).some((a) => a.toLowerCase().startsWith(q))) {
+      aliasPrefix.push(c);
+      continue;
+    }
+    if (
+      allowFuzzy &&
+      (c.name.toLowerCase().includes(q) ||
+        c.summary.toLowerCase().includes(q) ||
+        (c.aliases ?? []).some((a) => a.toLowerCase().includes(q)))
+    ) {
+      contains.push(c);
+    }
+  }
+  return [...namePrefix, ...aliasPrefix, ...contains];
+}

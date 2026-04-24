@@ -32,6 +32,7 @@ import { tagMatchPolicy, cascade } from "./approvals/policy.js";
 import type { ApprovalPolicy, RoutineDescriptor, SkillDescriptor } from "@squad/plugin-sdk";
 import type { LLMClient } from "@squad/llm";
 import { createGatewayServer, type GatewayHandle } from "./server.js";
+import { seedCoreFiles } from "./agent-prompt.js";
 
 export { logger } from "./logger.js";
 export { loadConfig, type Config } from "./config.js";
@@ -57,6 +58,13 @@ export { RoutineScheduler, matchesCron } from "./routines/scheduler.js";
 export { tagMatchPolicy, allowAllPolicy, denyAllPolicy, cascade } from "./approvals/policy.js";
 export { Dispatcher } from "./dispatch/index.js";
 export { runChatTurn } from "./runs.js";
+export {
+  buildSquadSystemPrompt,
+  loadCoreFiles,
+  seedCoreFiles,
+  CORE_DIR,
+  CORE_FILES,
+} from "./agent-prompt.js";
 
 export const VERSION = "0.0.0";
 
@@ -117,6 +125,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     ? rawWorkspace
     : resolvePath(process.cwd(), rawWorkspace);
   mkdirSync(workspaceDir, { recursive: true });
+  seedCoreFiles(workspaceDir);
   logger.info({ workspaceDir }, "agent workspace ready");
 
   const sessions = new SessionStore(db, {

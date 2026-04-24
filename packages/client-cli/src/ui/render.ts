@@ -11,6 +11,7 @@
 import type { Task, QuestionRecord, MessageRecord } from "@squad/protocol";
 import { C, color, fg, stripAnsi, visibleWidth } from "./colors.js";
 import { brandString, roleColor } from "./skin.js";
+import { getToolFormatter } from "./tool-format.js";
 
 // ─── low-level helpers ───────────────────────────────────────────────────────
 
@@ -71,17 +72,49 @@ export function endDeltaBlock(): void {
 
 export type VerboseLevel = "compact" | "args" | "verbose";
 
+function clipValue(v: unknown, max: number): string {
+  if (v == null) return String(v);
+  if (typeof v === "string") {
+    if (v.length <= max) return JSON.stringify(v);
+    return JSON.stringify(v.slice(0, max - 1) + "…");
+  }
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  try {
+    const s = JSON.stringify(v);
+    if (s.length <= max) return s;
+    return s.slice(0, max - 1) + "…";
+  } catch {
+    return String(v);
+  }
+}
+
+/**
+ * Format tool call input. For objects, render as `key=value, key=value`
+ * with per-value truncation so long paths/content don't blow out the line.
+ * For everything else, fall back to a single-line JSON preview.
+ */
 function formatToolInput(input: unknown, level: VerboseLevel): string {
-  const s = (() => {
+  if (level === "verbose") {
     try {
-      return JSON.stringify(input);
+      return JSON.stringify(input, null, 2);
     } catch {
       return String(input);
     }
-  })();
-  if (level === "compact") return truncate(s, 60);
-  if (level === "args") return truncate(s, Math.max(60, termWidth() - 20));
-  return s;
+  }
+  const valueMax = level === "args" ? 120 : 48;
+  const totalMax = level === "args" ? Math.max(80, termWidth() - 20) : 100;
+  if (input !== null && typeof input === "object" && !Array.isArray(input)) {
+    const entries = Object.entries(input as Record<string, unknown>);
+    if (entries.length === 0) return "";
+    const parts = entries.map(([k, v]) => `${k}=${clipValue(v, valueMax)}`);
+    const joined = parts.join(", ");
+    return truncate(joined, totalMax);
+  }
+  try {
+    return truncate(JSON.stringify(input), totalMax);
+  } catch {
+    return truncate(String(input), totalMax);
+  }
 }
 
 export function renderToolCall(name: string, input: unknown, level: VerboseLevel = "compact"): void {
@@ -93,21 +126,74 @@ export function renderToolCall(name: string, input: unknown, level: VerboseLevel
   write(`  ${arrow} ${accent}${name}${C.RESET}${muted}(${C.RESET}${body}${muted})${C.RESET}\n`);
 }
 
+// Remember the most recent input by tool call id so result summaries that
+// need the original input (e.g. write shows bytes, read shows line count)
+// can reach back for it. Cleared by renderToolResult.
+const lastInputByCallId = new Map<string, { name: string; input: unknown }>();
+
 /**
  * Claude-Code-style tool call line rendered while a run is in flight.
  * Pairs with {@link renderToolResult} — the result line uses a `⎿` gutter
  * under the call so nested tool usage reads like a call-tree.
  *
- *   ⏺ read_file(path="src/foo.ts")
+ *   ⏺ read(src/foo.ts)
  *     ⎿ 142 lines
+ *
+ * Well-known tools get a per-tool smart label (see ./tool-format.ts); the
+ * rest fall back to `key=value` pairs with per-value truncation.
  */
-export function renderToolCallStart(name: string, input: unknown, level: VerboseLevel = "compact"): void {
+export function renderToolCallStart(
+  name: string,
+  input: unknown,
+  level: VerboseLevel = "compact",
+  callId?: string,
+): void {
   endDeltaBlock();
   const accent = fg(roleColor("accent", "#FFB84D"));
   const muted = fg(roleColor("muted", "#8A8A8A"));
   const glyph = color("⏺", accent, C.BOLD);
-  const argBody = formatToolInput(input, level);
-  write(`${glyph} ${C.BOLD}${name}${C.RESET}${muted}(${argBody})${C.RESET}\n`);
+
+  const fmt = getToolFormatter(name);
+  // Verbose mode bypasses per-tool formatters — the user asked for detail.
+  const argBody =
+    level !== "verbose" && fmt ? fmt.args(input) : formatToolInput(input, level);
+
+  if (callId) lastInputByCallId.set(callId, { name, input });
+
+  // Empty arg string renders as just `⏺ tool_name` without parens.
+  if (argBody) {
+    write(`${glyph} ${C.BOLD}${name}${C.RESET}${muted}(${argBody})${C.RESET}\n`);
+  } else {
+    write(`${glyph} ${C.BOLD}${name}${C.RESET}\n`);
+  }
+}
+
+/**
+ * Unwrap the runner's `{ toolUseId, content }` tool-result envelope down to
+ * the content the user actually wants to see. `content` may itself be a
+ * string, or an array of { type: "text", text } blocks (Anthropic style).
+ */
+function unwrapToolResult(result: unknown): unknown {
+  if (result == null) return result;
+  if (typeof result !== "object") return result;
+  const obj = result as Record<string, unknown>;
+  // Runner envelope from runs.ts: `{ toolUseId, content }`.
+  if ("content" in obj && ("toolUseId" in obj || "tool_use_id" in obj)) {
+    return unwrapToolResult(obj.content);
+  }
+  // Anthropic content-array: [{ type: "text", text: "..." }, ...].
+  if (Array.isArray(result)) {
+    const texts = result
+      .map((b) => {
+        if (b && typeof b === "object" && (b as { type?: string }).type === "text") {
+          return (b as { text?: string }).text ?? "";
+        }
+        return "";
+      })
+      .filter(Boolean);
+    if (texts.length > 0) return texts.join("\n");
+  }
+  return result;
 }
 
 /**
@@ -119,30 +205,50 @@ function summarizeToolResult(result: unknown, isError: boolean): string {
   const max = 140;
   const one = (s: string): string =>
     s.replace(/\s+/g, " ").trim().slice(0, max) + (s.length > max ? "…" : "");
-  if (isError) return "error: " + one(typeof result === "string" ? result : JSON.stringify(result));
-  if (result == null) return "done";
-  if (typeof result === "string") {
-    const lines = result.split(/\r?\n/).length;
-    if (lines > 1) return `${lines} lines · ${one(result)}`;
-    return one(result);
+  const unwrapped = unwrapToolResult(result);
+  if (isError) {
+    return "error: " + one(typeof unwrapped === "string" ? unwrapped : JSON.stringify(unwrapped));
   }
-  if (typeof result === "object") {
-    // Claude-style small object: one-line JSON preview; else struct summary.
-    const preview = one(JSON.stringify(result));
+  if (unwrapped == null) return "done";
+  if (typeof unwrapped === "string") {
+    const lines = unwrapped.split(/\r?\n/).length;
+    if (lines > 1) return `${lines} lines · ${one(unwrapped)}`;
+    return one(unwrapped);
+  }
+  if (typeof unwrapped === "object") {
+    const preview = one(JSON.stringify(unwrapped));
     if (preview.length < max) return preview;
-    const keys = Object.keys(result as object).slice(0, 8).join(", ");
+    const keys = Object.keys(unwrapped as object).slice(0, 8).join(", ");
     return `{${keys}}`;
   }
-  return one(String(result));
+  return one(String(unwrapped));
 }
 
-export function renderToolResult(result: unknown, isError: boolean): void {
+export function renderToolResult(
+  result: unknown,
+  isError: boolean,
+  callId?: string,
+): void {
   endDeltaBlock();
   const muted = fg(roleColor("muted", "#8A8A8A"));
   const ok = fg(roleColor("ok", "#7FD184"));
   const errColor = fg(roleColor("err", "#FF7B7B"));
   const gutter = color("  ⎿", muted);
-  const summary = summarizeToolResult(result, isError);
+
+  const unwrapped = unwrapToolResult(result);
+  const recalled = callId ? lastInputByCallId.get(callId) : undefined;
+  if (callId) lastInputByCallId.delete(callId);
+
+  const fmt = recalled ? getToolFormatter(recalled.name) : null;
+  let summary: string;
+  if (isError) {
+    summary = "error: " + (typeof unwrapped === "string" ? unwrapped : JSON.stringify(unwrapped));
+  } else if (fmt && typeof unwrapped === "string") {
+    summary = fmt.result(unwrapped, recalled?.input);
+  } else {
+    summary = summarizeToolResult(result, isError);
+  }
+
   const toneOpen = isError ? errColor : ok;
   write(`${gutter} ${toneOpen}${summary}${C.RESET}\n`);
 }

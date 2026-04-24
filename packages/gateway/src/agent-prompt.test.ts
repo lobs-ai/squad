@@ -1,0 +1,83 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  buildSquadSystemPrompt,
+  CORE_DIR,
+  CORE_FILES,
+  loadCoreFiles,
+  seedCoreFiles,
+} from "./agent-prompt.js";
+
+let workspace: string;
+
+beforeEach(() => {
+  workspace = mkdtempSync(join(tmpdir(), "squad-prompt-"));
+});
+
+afterEach(() => {
+  rmSync(workspace, { recursive: true, force: true });
+});
+
+describe("seedCoreFiles", () => {
+  it("creates the core dir and all three files when missing", () => {
+    seedCoreFiles(workspace);
+    for (const name of CORE_FILES) {
+      const body = readFileSync(join(workspace, CORE_DIR, name), "utf8");
+      expect(body.length).toBeGreaterThan(0);
+      expect(body).toContain(`# ${name}`);
+    }
+  });
+
+  it("never overwrites existing files", () => {
+    seedCoreFiles(workspace);
+    const path = join(workspace, CORE_DIR, "MEMORY.md");
+    writeFileSync(path, "user-edited content");
+    seedCoreFiles(workspace);
+    expect(readFileSync(path, "utf8")).toBe("user-edited content");
+  });
+});
+
+describe("loadCoreFiles", () => {
+  it("returns empty strings when nothing exists", () => {
+    const c = loadCoreFiles(workspace);
+    expect(c).toEqual({ soul: "", user: "", memory: "" });
+  });
+
+  it("reads and trims existing files", () => {
+    seedCoreFiles(workspace);
+    writeFileSync(join(workspace, CORE_DIR, "USER.md"), "  hello\n\n");
+    const c = loadCoreFiles(workspace);
+    expect(c.user).toBe("hello");
+    expect(c.soul.length).toBeGreaterThan(0);
+    expect(c.memory.length).toBeGreaterThan(0);
+  });
+});
+
+describe("buildSquadSystemPrompt", () => {
+  it("includes the static Squad onboarding when core files are empty", () => {
+    const prompt = buildSquadSystemPrompt({
+      workspaceDir: "/tmp/work",
+      coreFiles: { soul: "", user: "", memory: "" },
+    });
+    expect(prompt).toContain("Squad agent");
+    expect(prompt).toContain("/tmp/work");
+    expect(prompt).toContain("spawn_subagent");
+    expect(prompt).toContain("ask_user");
+    expect(prompt).toContain("interrupt");
+    expect(prompt).toContain("queue");
+    expect(prompt).not.toContain(`Loaded from ${CORE_DIR}`);
+  });
+
+  it("renders only the non-empty core files", () => {
+    const prompt = buildSquadSystemPrompt({
+      workspaceDir: "/w",
+      coreFiles: { soul: "I am calm.", user: "", memory: "no entries yet" },
+    });
+    expect(prompt).toContain(`Loaded from ${CORE_DIR}`);
+    expect(prompt).toContain("### SOUL.md\nI am calm.");
+    expect(prompt).toContain("### MEMORY.md\nno entries yet");
+    expect(prompt).not.toContain("### USER.md");
+  });
+});

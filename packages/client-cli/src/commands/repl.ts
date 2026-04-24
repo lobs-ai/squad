@@ -1,8 +1,6 @@
-import { createInterface, type Interface } from "node:readline";
 import { existsSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { stdin, stdout } from "node:process";
 import { ProtocolClient } from "../protocol-client.js";
 import * as render from "../render.js";
 import { resolveEnv } from "../env.js";
@@ -12,8 +10,9 @@ import { getRandomTip } from "../ui/tips.js";
 import { brandString, roleColor } from "../ui/skin.js";
 import { C, color, fg } from "../ui/colors.js";
 import { renderStatusbar, isStatusbarEnabled } from "../ui/statusbar.js";
-import { runSlash, commandNames } from "../ui/slash.js";
+import { runSlash, matchCommands } from "../ui/slash.js";
 import { Spinner } from "../ui/spinner.js";
+import { LineInput, type MenuItem } from "../ui/line-input.js";
 import type { Task, QuestionRecord } from "@squad/protocol";
 
 const HISTORY_PATH = join(homedir(), ".squad", "history");
@@ -22,9 +21,7 @@ const HISTORY_MAX = 1000;
 function loadHistory(): string[] {
   if (!existsSync(HISTORY_PATH)) return [];
   try {
-    const lines = readFileSync(HISTORY_PATH, "utf8").split("\n").filter(Boolean);
-    // readline expects history most-recent-first.
-    return lines.slice(-HISTORY_MAX).reverse();
+    return readFileSync(HISTORY_PATH, "utf8").split("\n").filter(Boolean).slice(-HISTORY_MAX);
   } catch {
     return [];
   }
@@ -37,38 +34,6 @@ function appendHistory(line: string): void {
   } catch {
     // best-effort
   }
-}
-
-/** Slash-command auto-completer. Only fires when the line starts with `/`. */
-function slashCompleter(line: string): [string[], string] {
-  if (!line.startsWith("/")) return [[], line];
-  const stem = line.slice(1);
-  const hits = commandNames()
-    .filter((n) => n.startsWith(stem))
-    .map((n) => "/" + n);
-  return [hits, line];
-}
-
-/** Tiered Ctrl+C: first press cancels input, second within 2s exits. */
-function installSigintHandling(
-  rl: Interface,
-  hooks: { onInterrupt: () => void; onExit: () => void },
-): void {
-  let lastAt = 0;
-  rl.on("SIGINT", () => {
-    const now = Date.now();
-    if (now - lastAt < 2000) {
-      hooks.onExit();
-      rl.close();
-      return;
-    }
-    lastAt = now;
-    hooks.onInterrupt();
-    process.stdout.write(
-      color("\n(ctrl-c again within 2s to exit)\n", fg(roleColor("muted"))),
-    );
-    rl.prompt(true);
-  });
 }
 
 function promptString(): string {
@@ -138,14 +103,12 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
     tip: getRandomTip(),
   });
 
-  // Track runs that already streamed deltas, so we don't double-render for
-  // non-streaming providers that skip chat.text_delta and ship one big
-  // chat.assistant_message.
+  // Track runs that already streamed deltas — non-streaming providers skip
+  // chat.text_delta and ship one big chat.assistant_message.
   const streamedRuns = new Set<string>();
 
-  // Spinner state. `activeRunId` is set from chat.send's response until the
-  // matching assistant_message or error arrives. While set, we suppress the
-  // REPL prompt and show an animated "thinking…" line instead.
+  // While `activeRunId` is set, input is paused and the spinner owns the
+  // bottom line. Event handlers restart the input once the run ends.
   let activeRunId: string | null = null;
   const spinner = new Spinner("thinking");
   const stopSpinner = (): void => {
@@ -153,37 +116,81 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
     activeRunId = null;
   };
 
-  const rl = createInterface({
-    input: stdin,
-    output: stdout,
-    terminal: true,
-    historySize: HISTORY_MAX,
-    prompt: promptString(),
-    completer: (line: string) => slashCompleter(line),
-  });
-  // @ts-expect-error — readline exposes `history` as an internal array.
-  rl.history = loadHistory();
+  // Live slash-command menu provider. Returns `[]` to hide the menu.
+  const menuProvider = (buffer: string): MenuItem[] => {
+    const matches = matchCommands(buffer);
+    return matches.map((c) => ({
+      name: c.name,
+      summary: c.summary,
+      ...(c.usage ? { usage: c.usage } : {}),
+      ...(c.aliases && c.aliases.length > 0 ? { aliases: c.aliases.slice() } : {}),
+    }));
+  };
 
-  installSigintHandling(rl, {
-    onInterrupt: () => {
-      stopSpinner();
-      render.endDeltaBlock();
-    },
-    onExit: () => {
-      stopSpinner();
+  const input = new LineInput({
+    prompt: promptString,
+    menuProvider,
+    initialHistory: loadHistory(),
+    historyLimit: HISTORY_MAX,
+    onHistoryAppend: appendHistory,
+  });
+
+  /**
+   * Write output that might collide with the live input area or spinner.
+   * During a run the spinner owns the bottom line; between turns the input
+   * does. Either way we need to suspend the live layer, write, restore.
+   */
+  const printSafely = (fn: () => void): void => {
+    if (activeRunId !== null) {
+      spinner.stop();
+      fn();
+      spinner.start();
+    } else {
+      input.pause();
+      fn();
+      input.resume();
+    }
+  };
+
+  // Tiered Ctrl+C: first press cancels input or interrupts the run; second
+  // within 2s exits.
+  let lastInterruptAt = 0;
+  input.on("interrupt", () => {
+    const now = Date.now();
+    if (now - lastInterruptAt < 2000) {
+      printSafely(() => {
+        process.stdout.write(
+          `\n${color(brandString("goodbye", "see you."), fg(roleColor("accent")))}\n`,
+        );
+      });
+      state.shouldExit = true;
+      input.stop();
+      return;
+    }
+    lastInterruptAt = now;
+    stopSpinner();
+    render.endDeltaBlock();
+    printSafely(() => {
+      process.stdout.write(
+        color("(ctrl-c again within 2s to exit)\n", fg(roleColor("muted"))),
+      );
+    });
+  });
+
+  input.on("exit", () => {
+    printSafely(() => {
       process.stdout.write(
         `\n${color(brandString("goodbye", "see you."), fg(roleColor("accent")))}\n`,
       );
-      state.shouldExit = true;
-    },
+    });
+    state.shouldExit = true;
+    input.stop();
   });
 
   client.onEvent((topic, data) => {
     if (topic.startsWith("chat.text_delta/")) {
       const d = data as { delta: string; runId?: string };
       if (d.runId) streamedRuns.add(d.runId);
-      // First token arrived — drop the "thinking" spinner so text starts
-      // rendering on a clean line.
       if (activeRunId && d.runId === activeRunId) stopSpinner();
       render.renderDelta(d.delta);
     } else if (topic.startsWith("chat.assistant_message/")) {
@@ -201,25 +208,32 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
       }
       streamedRuns.delete(d.runId);
       render.renderNewline();
+      activeRunId = null;
       prePrompt();
     } else if (topic.startsWith("chat.tool_call/")) {
-      const d = data as { name: string; input: unknown; runId?: string };
-      // Live view: clear the spinner, print the tool call on its own line,
-      // bump the spinner label to the running tool, restart beneath it. The
-      // ⎿ result line lands under the call, building a call-tree as the
-      // agent works.
+      const d = data as {
+        name: string;
+        input: unknown;
+        runId?: string;
+        toolCallId?: string;
+      };
       const underRun = activeRunId !== null && d.runId === activeRunId;
       if (underRun) spinner.stop();
-      render.renderToolCallStart(d.name, d.input, state.verbose);
+      render.renderToolCallStart(d.name, d.input, state.verbose, d.toolCallId);
       if (underRun) {
-        spinner.setLabel(`${d.name}`);
+        spinner.setLabel(d.name);
         spinner.start();
       }
     } else if (topic.startsWith("chat.tool_result/")) {
-      const d = data as { runId?: string; result: unknown; isError?: boolean };
+      const d = data as {
+        runId?: string;
+        result: unknown;
+        isError?: boolean;
+        toolCallId?: string;
+      };
       const underRun = activeRunId !== null && d.runId === activeRunId;
       if (underRun) spinner.stop();
-      render.renderToolResult(d.result, Boolean(d.isError));
+      render.renderToolResult(d.result, Boolean(d.isError), d.toolCallId);
       if (underRun) {
         spinner.setLabel("thinking");
         spinner.start();
@@ -233,7 +247,7 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
     } else if (topic.startsWith("questions.asked/")) {
       state.pendingQuestion = (data as { question: QuestionRecord }).question;
       state.openQuestions = (state.openQuestions ?? 0) + 1;
-      process.stdout.write(render.renderAskPrompt(state.pendingQuestion));
+      printSafely(() => process.stdout.write(render.renderAskPrompt(state.pendingQuestion!)));
       prePrompt();
     } else if (
       topic.startsWith("questions.answered/") ||
@@ -250,8 +264,7 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
   void refreshOpenQuestions(client, state);
 
   function prePrompt(): void {
-    // Don't show the prompt while a run is in flight — the spinner occupies
-    // that line and would be clobbered by readline's redraw.
+    if (state.shouldExit) return;
     if (activeRunId !== null) return;
     if (isStatusbarEnabled()) {
       renderStatusbar({
@@ -261,33 +274,32 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
         openQuestions: state.openQuestions,
       });
     }
-    rl.setPrompt(promptString());
-    rl.prompt(true);
+    if (!input.isRunning()) input.start();
+    else input.resume();
   }
 
-  prePrompt();
-
-  rl.on("line", async (raw) => {
-    const line = raw.trim();
-    if (!line) {
+  input.on("line", async (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      // Empty submit — redraw prompt.
       prePrompt();
       return;
     }
-    appendHistory(line);
+    // Pause input while we dispatch the line so concurrent event output
+    // doesn't race with the next render.
+    input.pause();
 
     try {
-      if (line.startsWith("/")) {
-        await runSlash(line, { client, state });
+      if (trimmed.startsWith("/")) {
+        await runSlash(trimmed, { client, state });
       } else if (state.pendingQuestion) {
-        await handleAnswer(client, state.pendingQuestion, line);
+        await handleAnswer(client, state.pendingQuestion, trimmed);
         state.pendingQuestion = null;
       } else {
         const res = await client.request("chat.send", {
           sessionId: state.sessionId,
-          content: line,
+          content: trimmed,
         });
-        // Start the spinner immediately. Event handlers (text_delta /
-        // assistant_message / error) will stop it.
         if (res.status === "queued") {
           render.renderInfo(
             `queued at position ${res.queuePosition ?? "?"} — will send after the current run finishes`,
@@ -295,37 +307,47 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
         } else {
           activeRunId = res.runId;
           spinner.start();
+          // Don't re-show the input until the run ends.
+          return;
         }
       }
     } catch (err) {
       render.renderError(err instanceof Error ? err.message : String(err));
     }
 
-    if (state.shouldExit) {
-      rl.close();
-      return;
-    }
+    if (state.shouldExit) return;
     prePrompt();
   });
 
+  prePrompt();
+
+  // Wait until shouldExit is tripped.
   await new Promise<void>((resolve) => {
-    rl.once("close", () => resolve());
+    const tick = (): void => {
+      if (state.shouldExit) {
+        resolve();
+        return;
+      }
+      setTimeout(tick, 100);
+    };
+    tick();
   });
+  input.stop();
   client.close();
 }
 
 async function handleAnswer(
   client: ProtocolClient,
   question: QuestionRecord,
-  input: string,
+  line: string,
 ): Promise<void> {
   const q = question.input.questions[0]!;
   let chosen: string;
-  const n = Number.parseInt(input, 10);
+  const n = Number.parseInt(line, 10);
   if (!Number.isNaN(n) && n >= 1 && n <= q.options.length) {
     chosen = q.options[n - 1]!.label;
   } else {
-    chosen = input;
+    chosen = line;
   }
   await client.request("questions.answer", {
     sessionId: question.sessionId,

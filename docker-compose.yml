@@ -19,13 +19,44 @@ services:
       - ./docker/.env
     environment:
       - SQUAD_CONFIG=/app/docker/config.json
+      # Local search, no API keys. Container-to-container hostname.
+      - SEARXNG_URL=http://searxng:8080
     volumes:
       - ./docker:/app/docker
       - ./extensions:/app/extensions:ro
+    depends_on:
+      searxng:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:${SQUAD_PORT:-8080}/health"]
       interval: 30s
       timeout: 3s
       retries: 3
       start_period: 10s
+    restart: unless-stopped
+
+  # Local SearXNG instance powering the web_search tool. Aggregates many
+  # public engines, no CAPTCHA or API keys. Port 8888 mapped to the host so
+  # local-mode gateways (`pnpm start:local`) can hit it too.
+  #
+  # Settings live at ./docker/searxng/settings.yml. `pnpm setup` seeds a
+  # minimal file if the folder is empty; mount it ro so the container can't
+  # rewrite user config on exit.
+  searxng:
+    image: searxng/searxng:latest
+    ports:
+      - "${SEARXNG_PORT:-8888}:8080"
+    environment:
+      - BASE_URL=http://localhost:${SEARXNG_PORT:-8888}/
+      - INSTANCE_NAME=squad-searxng
+    volumes:
+      - ./docker/searxng:/etc/searxng:rw
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "wget -q -O- http://localhost:8080/search?q=ping&format=json >/dev/null 2>&1 || exit 1"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped

@@ -9,6 +9,7 @@ import type { MessageStore } from "./db/messages.js";
 import type { ToolCallStore } from "./db/tool-calls.js";
 import type { Broadcast } from "./broadcast.js";
 import type { Logger } from "./logger.js";
+import { buildSquadSystemPrompt, loadCoreFiles } from "./agent-prompt.js";
 
 /**
  * Convert wire ContentBlocks into the LLM's content shape for message
@@ -128,6 +129,17 @@ export async function runChatTurn(
   const session = new Session(runnerMessages);
   options.onRunStart?.({ runId, sessionId: options.sessionId, session });
 
+  // Default system prompt: Squad onboarding + the live core files. Read core
+  // files at the top of every turn so edits the agent makes mid-session
+  // (write/edit on .squad/*.md) take effect on the next turn. Caller-supplied
+  // systemPrompt still wins — tests and bespoke flows opt out this way.
+  const systemPrompt =
+    options.systemPrompt ??
+    buildSquadSystemPrompt({
+      workspaceDir: options.cwd,
+      coreFiles: loadCoreFiles(options.cwd),
+    });
+
   const spec: AgentSpec = {
     task:
       options.userContent
@@ -142,9 +154,9 @@ export async function runChatTurn(
     toolRegistry: options.toolRegistry,
     timeout: { total: 300 },
     session,
+    systemPrompt,
     // taskId must equal runId so the before_llm_call hook can correlate.
     context: { sessionId: options.sessionId, taskId: runId },
-    ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
     ...(options.clientOverride !== undefined ? { clientOverride: options.clientOverride } : {}),
     onTextChunk: (delta) => {
       deps.broadcast.publish(`chat.text_delta/${options.sessionId}`, {

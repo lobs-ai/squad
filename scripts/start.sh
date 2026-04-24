@@ -73,6 +73,10 @@ case "$MODE" in
     fi
 
     export SQUAD_CONFIG="${SQUAD_CONFIG:-$CONFIG_FILE}"
+    # Default web_search to the searxng sidecar on 127.0.0.1:8888. Overridden
+    # by an explicit SEARXNG_URL in docker/.env. When docker isn't available
+    # the tool still falls back to DDG scraping.
+    export SEARXNG_URL="${SEARXNG_URL:-http://127.0.0.1:${SEARXNG_PORT:-8888}}"
 
     if [ ! -d node_modules ] || [ pnpm-lock.yaml -nt node_modules ]; then
       echo "→ pnpm install"
@@ -81,6 +85,16 @@ case "$MODE" in
     if [ ! -d packages/gateway/dist ]; then
       echo "→ pnpm -r build"
       pnpm -r build
+    fi
+
+    # Best-effort: start the searxng sidecar (docker) on the host port so
+    # web_search has something local to hit. Silent if docker isn't available.
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+      if ! curl -fsS "${SEARXNG_URL}/search?q=ping&format=json" >/dev/null 2>&1; then
+        echo "→ starting searxng sidecar on port ${SEARXNG_PORT:-8888}"
+        COMPOSE="$(compose_cmd)"
+        $COMPOSE --env-file "$ENV_FILE" up -d searxng >/dev/null 2>&1 || true
+      fi
     fi
 
     echo "→ starting gateway in background (logs: $LOG_FILE)"
