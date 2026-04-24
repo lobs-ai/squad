@@ -1,5 +1,5 @@
 # ---- build stage ----
-FROM node:20-bookworm-slim AS build
+FROM node:25-bookworm-slim AS build
 
 RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
 
@@ -14,7 +14,7 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
 RUN pnpm -r build
 
 # ---- runtime stage ----
-FROM node:20-bookworm-slim AS runtime
+FROM node:25-bookworm-slim AS runtime
 
 RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
 
