@@ -1,6 +1,5 @@
 import { Channel, SessionMap, SquadGatewayClient } from "@squad/channel-sdk";
-import type { Client } from "discord.js";
-import { startBot, type OutboundHandle } from "./bot.js";
+import { startBot, type BotHandle, type BotLogger, type OutboundHandle } from "./bot.js";
 import { DISCORD_CAPABILITIES } from "./capabilities.js";
 import { resolveBotToken, resolveGatewayToken, type DiscordConfig } from "./config.js";
 import { join } from "node:path";
@@ -12,6 +11,9 @@ export interface DiscordChannelOptions {
    * directory under `./data/discord-sessions.jsonl`).
    */
   dataDir?: string;
+  /** Optional logger — plumbed through to bot.ts so messageCreate decisions
+   * show up in the gateway's log stream. */
+  logger?: BotLogger;
 }
 
 /**
@@ -23,7 +25,7 @@ export class DiscordChannel extends Channel {
   readonly id = "discord";
   readonly capabilities = DISCORD_CAPABILITIES;
 
-  private bot: Client | null = null;
+  private bot: BotHandle | null = null;
   private readonly gateway: SquadGatewayClient;
   private readonly sessionMap: SessionMap;
   private readonly activeStreams: Map<string, OutboundHandle> = new Map();
@@ -54,6 +56,7 @@ export class DiscordChannel extends Channel {
     this.bot = await startBot({
       token: resolveBotToken(this.options.config),
       config: this.options.config,
+      ...(this.options.logger ? { logger: this.options.logger } : {}),
       onInbound: async (payload) => {
         const key = `${payload.guildId ?? "dm"}:${payload.channelId}:${payload.userId}`;
         let sessionId = this.sessionMap.get(key);
@@ -85,7 +88,7 @@ export class DiscordChannel extends Channel {
   }
 
   async disconnect(): Promise<void> {
-    this.bot?.destroy();
+    this.bot?.disconnect();
     this.bot = null;
     this.gateway.close();
   }

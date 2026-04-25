@@ -1,73 +1,54 @@
 #!/usr/bin/env bash
-# Shared bootstrap: locate the repo, ensure docker/config.json and docker/.env
-# exist (running the setup wizard if not), export the env file into the current
-# shell, and expose helpers that start/stop/status scripts share.
+# Shared helpers for scripts that delegate to the multi-squad manager. The
+# legacy single-squad `./docker/` install path is gone — these scripts are
+# all thin shims around `squad mgr ...`.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-DOCKER_DIR="$REPO_ROOT/docker"
-CONFIG_FILE="$DOCKER_DIR/config.json"
-ENV_FILE="$DOCKER_DIR/.env"
-DATA_DIR="$DOCKER_DIR/data"
-PID_FILE="$DATA_DIR/squad.pid"
-MODE_FILE="$DATA_DIR/squad.mode"
-LOG_FILE="$DATA_DIR/squad.log"
+SQUAD_HOME="${SQUAD_HOME:-$HOME/.squad}"
+REGISTRY_FILE="$SQUAD_HOME/squads.json"
 
-mkdir -p "$DATA_DIR"
-
-ensure_config() {
-  if [ ! -f "$CONFIG_FILE" ] || [ ! -f "$ENV_FILE" ]; then
-    echo "→ first run — generating docker/config.json and docker/.env"
-    if ! command -v node >/dev/null 2>&1; then
-      echo "✗ node not found on PATH. Install Node 20+ and re-run." >&2
-      exit 1
-    fi
-    node "$REPO_ROOT/scripts/setup.mjs"
-  fi
+# True iff at least one squad is registered in ~/.squad/squads.json.
+mgr_registered() {
+  [ -f "$REGISTRY_FILE" ] && \
+    node -e "const r=JSON.parse(require('fs').readFileSync('$REGISTRY_FILE','utf8'));process.exit((r.squads||[]).length>0?0:1)" 2>/dev/null
 }
 
-load_env() {
-  set -a
-  # shellcheck disable=SC1091
-  . "$ENV_FILE"
-  set +a
-  # Any one provider key is enough — gateway picks primary from config.json.
-  for v in ANTHROPIC_API_KEY OPENAI_API_KEY OPENROUTER_API_KEY GOOGLE_API_KEY \
-           GROQ_API_KEY DEEPSEEK_API_KEY XAI_API_KEY TOGETHER_API_KEY \
-           MISTRAL_API_KEY PPLX_API_KEY FIREWORKS_API_KEY CEREBRAS_API_KEY \
-           COHERE_API_KEY SAMBANOVA_API_KEY NOVITA_API_KEY HYPERBOLIC_API_KEY \
-           LAMBDA_API_KEY ZAI_API_KEY MINIMAX_API_KEY KIMI_API_KEY \
-           OPENCODE_API_KEY; do
-    eval "val=\${$v:-}"
-    if [ -n "$val" ]; then return; fi
-  done
-  echo "✗ no LLM provider key set in docker/.env — run 'squad onboard'" >&2
-  exit 1
-}
-
-# Detect docker compose v2 vs legacy v1; echoes the command to use.
-compose_cmd() {
-  if docker compose version >/dev/null 2>&1; then
-    echo "docker compose"
-  elif command -v docker-compose >/dev/null 2>&1; then
-    echo "docker-compose"
-  else
-    echo "✗ neither 'docker compose' nor 'docker-compose' is available" >&2
-    exit 1
-  fi
-}
-
-current_mode() {
-  if [ -f "$MODE_FILE" ]; then
-    cat "$MODE_FILE"
+# Path to a runnable squad CLI. Prefers the repo's built binary; falls back to
+# the globally-installed `squad`. Echoes the command (may be multi-word).
+mgr_cli_or_empty() {
+  local local_bin="$REPO_ROOT/packages/client-cli/dist/cli.js"
+  if [ -f "$local_bin" ]; then
+    echo "node $local_bin"
+  elif command -v squad >/dev/null 2>&1; then
+    echo "squad"
   else
     echo ""
   fi
 }
 
-is_local_running() {
-  [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
+# Like mgr_cli_or_empty, but builds the CLI if neither the dist nor a global
+# install is present. Exits 1 if even building fails.
+ensure_mgr_cli() {
+  local cli
+  cli="$(mgr_cli_or_empty)"
+  if [ -n "$cli" ]; then
+    echo "$cli"
+    return
+  fi
+  if ! command -v pnpm >/dev/null 2>&1; then
+    echo "✗ neither dist/cli.js nor 'squad' on PATH, and pnpm isn't available to build it." >&2
+    exit 1
+  fi
+  echo "→ building @squad/client-cli (one-time)" >&2
+  pnpm --filter @squad/client-cli build >&2
+  cli="$(mgr_cli_or_empty)"
+  if [ -z "$cli" ]; then
+    echo "✗ build succeeded but cli.js is still missing." >&2
+    exit 1
+  fi
+  echo "$cli"
 }

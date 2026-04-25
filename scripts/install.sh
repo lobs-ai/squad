@@ -83,14 +83,12 @@ pnpm -r build
 echo "→ linking squad globally"
 (cd "$REPO_ROOT/packages/client-cli" && pnpm link --global)
 
-# The linked binary points at dist/cli.js, which needs SQUAD_REPO to find the
-# scripts/ dir when invoked from anywhere. Write a tiny config so the user
-# doesn't need to export it themselves.
+# The linked binary uses import.meta.dirname to locate the source repo (for
+# scripts/ + the docker build context). SQUAD_REPO is a fallback for edge
+# cases like sourcing the binary through a wrapper that strips that.
 mkdir -p "$HOME/.squad"
-CFG="$HOME/.squad/config"
-if ! grep -q "^SQUAD_REPO=" "$CFG" 2>/dev/null; then
-  echo "SQUAD_REPO=$REPO_ROOT" >> "$CFG"
-  echo "→ wrote SQUAD_REPO=$REPO_ROOT to $CFG"
+if ! grep -q "^SQUAD_REPO=" "$HOME/.squad/env" 2>/dev/null; then
+  echo "SQUAD_REPO=$REPO_ROOT" >> "$HOME/.squad/env"
 fi
 
 if [ ! -x "$PNPM_BIN_DIR/squad" ]; then
@@ -131,6 +129,8 @@ EOF
 ensure_on_path_in_rc
 
 echo ""
-echo "  squad start     start the gateway (docker if available, else local)"
-echo "  squad repl      open an interactive session"
-echo "  squad --help    all commands"
+echo "  squad onboard       create your first squad (config + LLM keys)"
+echo "  squad mgr ls        list registered squads"
+echo "  squad mgr start --all   start every squad as a docker container"
+echo "  squad repl          open an interactive session against the current squad"
+echo "  squad --help        all commands"

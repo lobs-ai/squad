@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Report Squad gateway status (mode, URL, liveness). Also tails logs on request.
+# Show the squad list (delegates to `squad mgr ls`), or stream logs for the
+# only squad if there's just one.
 #
 # Usage:
-#   scripts/status.sh        # print status
-#   scripts/status.sh logs   # tail logs (docker compose logs -f or tail -f)
+#   scripts/status.sh        # list squads + running status
+#   scripts/status.sh logs   # follow logs (single squad), or list (multiple)
 
 set -euo pipefail
 
@@ -11,56 +12,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./_bootstrap.sh
 . "$SCRIPT_DIR/_bootstrap.sh"
 
-mode="$(current_mode)"
 sub="${1:-status}"
 
-if [ "$sub" = "logs" ]; then
-  case "$mode" in
-    docker)
-      COMPOSE="$(compose_cmd)"
-      exec $COMPOSE --env-file "$ENV_FILE" logs -f
-      ;;
-    local)
-      exec tail -f "$LOG_FILE"
-      ;;
-    *)
-      echo "→ no running instance recorded" >&2
-      exit 1
-      ;;
-  esac
-fi
-
-if [ -z "$mode" ]; then
-  echo "status: stopped"
+if ! mgr_registered; then
+  echo "status: no squads registered. Run 'squad onboard' to create one."
   exit 0
 fi
 
-# Load env so SQUAD_PORT is available for the URL line.
-if [ -f "$ENV_FILE" ]; then
-  set -a
-  # shellcheck disable=SC1091
-  . "$ENV_FILE"
-  set +a
-fi
-PORT="${SQUAD_PORT:-8080}"
+cli="$(ensure_mgr_cli)"
 
-case "$mode" in
-  docker)
-    COMPOSE="$(compose_cmd)"
-    if $COMPOSE --env-file "$ENV_FILE" ps --services --filter "status=running" 2>/dev/null | grep -q '^squad$'; then
-      echo "status: running (docker)"
-      echo "url:    http://localhost:$PORT"
-    else
-      echo "status: stopped (docker mode file exists but no running service)"
-    fi
-    ;;
-  local)
-    if is_local_running; then
-      echo "status: running (local, pid $(cat "$PID_FILE"))"
-      echo "url:    http://localhost:$PORT"
-      echo "logs:   $LOG_FILE"
-    else
-      echo "status: stopped (stale pid file)"
-    fi
-    ;;
-esac
+if [ "$sub" = "logs" ]; then
+  only="$(node -e "const r=JSON.parse(require('fs').readFileSync('$REGISTRY_FILE','utf8'));console.log((r.squads||[]).length===1?r.squads[0].name:'')" 2>/dev/null || true)"
+  if [ -n "$only" ]; then
+    exec $cli mgr logs "$only" -f
+  fi
+  echo "multiple squads registered. Pick one: squad mgr logs <name> -f" >&2
+  exec $cli mgr ls
+fi
+
+exec $cli mgr ls

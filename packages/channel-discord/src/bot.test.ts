@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { shouldRespond } from "./bot.js";
+import { shouldRespond, dmRejectionMessage } from "./bot.js";
 import type { DiscordConfig } from "./config.js";
 
 /**
@@ -99,5 +99,32 @@ describe("shouldRespond DM policy", () => {
       mentions: { users: { has: (id) => id === "bot-id" } },
     });
     expect(shouldRespond(mentioned, cfg, "bot-id")).toBe(true);
+  });
+});
+
+describe("dmRejectionMessage", () => {
+  it("returns a pair command for an unpaired DM under allow_list", () => {
+    const msg = mkMessage({ author: { id: "99999" } });
+    const out = dmRejectionMessage(msg, mkConfig());
+    expect(out).not.toBeNull();
+    expect(out).toContain("squad pair discord 99999");
+    expect(out).toContain("99999");
+  });
+
+  it("returns null for paired users (belt-and-suspenders)", () => {
+    const cfg = mkConfig({ dm_allow_list: ["99999"] });
+    const msg = mkMessage({ author: { id: "99999" } });
+    expect(dmRejectionMessage(msg, cfg)).toBeNull();
+  });
+
+  it("returns null when dm_policy is blocked (silent drop)", () => {
+    expect(
+      dmRejectionMessage(mkMessage({}), mkConfig({ dm_policy: "blocked" })),
+    ).toBeNull();
+  });
+
+  it("returns null for guild messages so it never fires outside DMs", () => {
+    const msg = mkMessage({ guildId: "g1", channelId: "c1" });
+    expect(dmRejectionMessage(msg, mkConfig())).toBeNull();
   });
 });

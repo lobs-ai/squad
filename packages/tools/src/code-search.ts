@@ -119,39 +119,48 @@ export async function codeSearchTool(
   const caseSensitive = params.case_sensitive as boolean | undefined;
 
   const hasRg = await commandExists("rg");
-  if (!hasRg) {
-    return "ripgrep (rg) is required for code_search. Install it with: brew install ripgrep";
+
+  let cmd: string;
+  let args: string[];
+
+  if (hasRg) {
+    cmd = "rg";
+    args = [
+      "--color=never",
+      "--line-number",
+      "--heading",
+      "-C", String(contextLines),
+      "--max-count", String(maxResults),
+    ];
+
+    if (caseSensitive === true) args.push("--case-sensitive");
+    else if (caseSensitive === false) args.push("--ignore-case");
+    else args.push("--smart-case");
+
+    if (wordMatch) args.push("--word-regexp");
+
+    if (language) {
+      const rgType = LANGUAGE_MAP[language.toLowerCase()];
+      if (rgType) args.push("--type", rgType);
+    }
+
+    args.push("--glob=!.git");
+    args.push(pattern, resolved);
+  } else {
+    // Fallback: grep -rn with context. Loses language filtering and smart-case;
+    // explicit case_sensitive=false still honored. Pattern is treated as ERE.
+    cmd = "grep";
+    args = ["-rnE", "--color=never", `-C${contextLines}`, "--exclude-dir=.git"];
+    if (caseSensitive === false) args.push("-i");
+    if (wordMatch) args.push("-w");
+    args.push(pattern, resolved);
   }
-
-  const args = [
-    "--color=never",
-    "--line-number",
-    "--heading",
-    "-C", String(contextLines),
-    "--max-count", String(maxResults),
-  ];
-
-  if (caseSensitive === true) args.push("--case-sensitive");
-  else if (caseSensitive === false) args.push("--ignore-case");
-  else args.push("--smart-case");
-
-  if (wordMatch) args.push("--word-regexp");
-
-  if (language) {
-    const rgType = LANGUAGE_MAP[language.toLowerCase()];
-    if (rgType) args.push("--type", rgType);
-  }
-
-  // Exclude .git
-  args.push("--glob=!.git");
-
-  args.push(pattern, resolved);
 
   return new Promise<string>((resolvePromise) => {
     let output = "";
     let stderr = "";
 
-    const child = spawn("rg", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
       setTimeout(() => child.kill("SIGKILL"), 2000);
@@ -166,7 +175,7 @@ export async function codeSearchTool(
 
     child.on("error", (err) => {
       clearTimeout(timer);
-      resolvePromise(`Error running rg: ${err.message}`);
+      resolvePromise(`Error running ${cmd}: ${err.message}`);
     });
 
     child.on("close", (code) => {

@@ -7,6 +7,7 @@ import { listTasks } from "./commands/tasks.js";
 import { answerQuestion, listQuestions } from "./commands/ask.js";
 import { showStatus } from "./commands/status.js";
 import { startGateway, stopGateway, gatewayLogs, runOnboard } from "./commands/lifecycle.js";
+import { runMgr } from "./commands/mgr.js";
 import { runPair, runUnpair, runPairList } from "./commands/pair.js";
 import {
   generateKey,
@@ -32,11 +33,15 @@ function helpText(): string {
     `  ${H("Usage")}  ${K("squad")} ${D("<command>")} ${D("[args]")}`,
     "",
     `  ${H("Lifecycle")}`,
-    `    ${K("onboard")} ${D("[--force|--yes]")}      ${D("step-by-step setup wizard (first run)")}`,
-    `    ${K("start")}   ${D("[--docker|--local]")}   ${D("start the gateway in the background")}`,
-    `    ${K("stop")}                        ${D("stop the gateway")}`,
-    `    ${K("status")}                      ${D("gateway liveness + current session")}`,
-    `    ${K("logs")}    ${D("[-f]")}                 ${D("tail gateway logs")}`,
+    `    ${K("onboard")} ${D("[--force|--yes] [--squad <name>]")}  ${D("setup wizard (creates a squad)")}`,
+    `    ${K("start")}                       ${D("docker compose up every registered squad")}`,
+    `    ${K("stop")}                        ${D("docker compose stop every registered squad")}`,
+    `    ${K("status")}                      ${D("current squad's gateway liveness + session")}`,
+    `    ${K("logs")}    ${D("[-f]")}                 ${D("tail current squad's logs")}`,
+    "",
+    `  ${H("Multi-squad")} ${D("— manage multiple squad containers from one host")}`,
+    `    ${K("mgr")}     ${D("<subcommand>")}         ${D("create/start/stop/ls squads (try: squad mgr help)")}`,
+    `    ${D("--squad <name>")}              ${D("target a specific squad for any command")}`,
     "",
     `  ${H("Chat")}`,
     `    ${K("repl")}    ${D("[--resume]")}           ${D("interactive REPL (default)")}`,
@@ -66,8 +71,9 @@ function helpText(): string {
     `    ${K("key rm")}   ${D("[--label X]")}          ${D("delete a keypair")}`,
     "",
     `  ${H("Environment")}`,
-    `    ${D("SQUAD_URL     ws://host:8080/ws      default ws://localhost:8080/ws")}`,
-    `    ${D("SQUAD_TOKEN   bearer token           auto-loaded from docker/.env")}`,
+    `    ${D("SQUAD_NAME    name of squad to target (overridden by --squad)")}`,
+    `    ${D("SQUAD_URL     ws://host:8080/ws      explicit override")}`,
+    `    ${D("SQUAD_TOKEN   bearer token           explicit override")}`,
     `    ${D("SQUAD_SKIN    default|mono|slate|…  theme (see /skin list in the REPL)")}`,
     `    ${D("NO_COLOR=1                          disable ANSI colors")}`,
     "",
@@ -91,6 +97,10 @@ function hasFlag(args: string[], name: string): boolean {
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
+  // Global --squad <name> applies to every subcommand. Lifted into env so the
+  // resolveEnv() chain picks it up regardless of which command runs next.
+  const squadFlag = popFlag(argv, "--squad");
+  if (squadFlag) process.env.SQUAD_NAME = squadFlag;
   const cmd = argv.shift() ?? "repl";
 
   switch (cmd) {
@@ -121,6 +131,10 @@ async function main(): Promise<void> {
       return;
     case "logs":
       await gatewayLogs(argv);
+      return;
+
+    case "mgr":
+      await runMgr(argv);
       return;
 
     case "repl": {

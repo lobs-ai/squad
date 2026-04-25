@@ -33,12 +33,22 @@ export default definePlugin({
   kinds: ["channel"],
   register(api) {
     const cfg = discordConfigSchema.parse(api.config);
-    const channel = new DiscordChannel({ config: cfg });
+    // Adapt the GatewayAPI logger (msg, meta) to the bot's (meta, msg) shape.
+    const botLogger = {
+      info: (meta: Record<string, unknown>, msg: string) => api.logger.info(msg, meta),
+      warn: (meta: Record<string, unknown>, msg: string) => api.logger.warn(msg, meta),
+      error: (meta: Record<string, unknown>, msg: string) => api.logger.error(msg, meta),
+    };
+    const channel = new DiscordChannel({ config: cfg, logger: botLogger });
     api.channels.register({
       id: channel.id,
       start: () => channel.connect(),
       stop: () => channel.disconnect(),
     });
-    api.logger.info("discord channel plugin registered");
+    api.logger.info("discord channel plugin registered", {
+      dm_policy: cfg.dm_policy,
+      dm_allow_list_size: cfg.dm_allow_list.length,
+      bindings: cfg.bindings.length,
+    });
   },
 });

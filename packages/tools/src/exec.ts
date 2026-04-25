@@ -1,9 +1,9 @@
 /**
  * Exec tool — run shell commands.
  *
- * Supports cmd, workdir, timeout, env, and run_in_background.
- * Detects cwd changes via a sentinel marker so the agent runner
- * can update its tracked working directory.
+ * Supports cmd, workdir, timeout, and env. Detects cwd changes via a
+ * sentinel marker so the agent runner can update its tracked working
+ * directory.
  */
 
 import { spawn } from "node:child_process";
@@ -20,8 +20,7 @@ export const execToolDefinition: ToolDefinition = {
   description:
     "Execute a shell command in the current working directory or an optional workdir. " +
     "Returns structured stdout, stderr, and exit status. Prefer dedicated tools like Read, Edit, Glob, and Grep when they fit the task instead of routing everything through Bash. " +
-    "Prefer targeted commands over huge output. Use timeout to limit execution time. " +
-    "Use run_in_background when you do not need the result immediately and are okay checking later.",
+    "Prefer targeted commands over huge output. Use timeout to limit execution time.",
   input_schema: {
     type: "object",
     properties: {
@@ -40,11 +39,6 @@ export const execToolDefinition: ToolDefinition = {
       timeout: {
         type: "number",
         description: "Timeout in seconds (default 30, max 300)",
-      },
-      run_in_background: {
-        type: "boolean",
-        description:
-          "Run the command in the background. Returns immediately with a note that output is unavailable.",
       },
       env: {
         type: "object",
@@ -115,7 +109,6 @@ export async function execTool(
   const workdir = (params.workdir as string) || defaultCwd;
   const timeoutRaw = typeof params.timeout === "number" ? params.timeout : DEFAULT_TIMEOUT;
   const timeout = Math.min(Math.max(timeoutRaw, 1), MAX_TIMEOUT);
-  const runInBackground = params.run_in_background === true;
   const extraEnv =
     params.env && typeof params.env === "object"
       ? (params.env as Record<string, string>)
@@ -131,18 +124,6 @@ export async function execTool(
       return { result: resolved, sideEffects: { newCwd: resolved } };
     }
     return `cd: no such directory: ${cdTarget}`;
-  }
-
-  // Background execution — fire and forget
-  if (runInBackground) {
-    const child = spawn("bash", ["-c", command], {
-      cwd: workdir,
-      env,
-      detached: true,
-      stdio: "ignore",
-    });
-    child.unref();
-    return `Command started in background (pid ${child.pid ?? "unknown"}).\nOutput is not captured for background commands.`;
   }
 
   // Foreground execution with cwd detection
@@ -189,11 +170,21 @@ export async function execTool(
 
       const stdoutText =
         cleaned.length > 0
-          ? capOutput(cleaned, MAX_OUTPUT_CHARS, MAX_OUTPUT_LINES)
+          ? capOutput(
+              cleaned,
+              MAX_OUTPUT_CHARS,
+              MAX_OUTPUT_LINES,
+              "Re-run with a more targeted command (head, tail, grep, sed -n) to inspect less output.",
+            )
           : "(empty)";
       const stderrText =
         stderr.length > 0
-          ? capOutput(stderr, MAX_OUTPUT_CHARS, MAX_OUTPUT_LINES)
+          ? capOutput(
+              stderr,
+              MAX_OUTPUT_CHARS,
+              MAX_OUTPUT_LINES,
+              "Re-run with a more targeted command to inspect less stderr output.",
+            )
           : "(empty)";
 
       const exitStatus = killed
