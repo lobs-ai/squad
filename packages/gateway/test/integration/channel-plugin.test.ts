@@ -63,7 +63,7 @@ describe("gateway channel plugin lifecycle", () => {
     const pluginPath = writeStubPlugin();
     booted = await boot({
       config: {
-        server: { host: "127.0.0.1", port: 0, data_dir: tmp },
+        server: { host: "127.0.0.1", port: 0, data_dir: tmp, memory_dir: join(tmp, "memory") },
         auth: { tokens: [{ label: "test", key: "secret", scopes: ["*"] }] },
         llm: {
           primary: { model: "claude-sonnet-4-5" },
@@ -126,7 +126,7 @@ describe("gateway channel plugin lifecycle", () => {
 
     booted = await boot({
       config: {
-        server: { host: "127.0.0.1", port: 0, data_dir: tmp },
+        server: { host: "127.0.0.1", port: 0, data_dir: tmp, memory_dir: join(tmp, "memory") },
         auth: { tokens: [{ label: "test", key: "secret", scopes: ["*"] }] },
         llm: {
           primary: { model: "claude-sonnet-4-5" },

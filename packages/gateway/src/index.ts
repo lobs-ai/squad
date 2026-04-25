@@ -7,6 +7,7 @@ import {
   registerAskUserTool,
   registerSpawnSubagentTool,
   registerConfigTools,
+  registerMemoryTools,
 } from "@squad/tools";
 import { JsonConfigBackend } from "./config-backend.js";
 import { logger } from "./logger.js";
@@ -38,6 +39,10 @@ import type {
 import type { LLMClient } from "@squad/llm";
 import { createGatewayServer, type GatewayHandle } from "./server.js";
 import { seedCoreFiles } from "./agent-prompt.js";
+import { MemoryStore } from "./memory/store.js";
+import { resolveMemoryDir } from "./memory/files.js";
+import { memoryBackendFor } from "./memory/backend.js";
+import { MemoryService } from "./memory/service.js";
 
 export { logger } from "./logger.js";
 export { loadConfig, type Config } from "./config.js";
@@ -70,6 +75,26 @@ export {
   CORE_DIR,
   CORE_FILES,
 } from "./agent-prompt.js";
+export {
+  MemoryStore,
+  MemoryService,
+  resolveMemoryDir,
+  memoryBackendFor,
+  DuplicateMemoryError,
+  MemoryValidationError,
+  MEMORY_TYPES,
+  MEMORY_SCOPES,
+  MEMORY_BODY_BUDGET,
+  EAGER_BLOCK_BUDGET,
+  type MemoryEntry,
+  type MemoryType,
+  type MemoryScope,
+  type MemoryStatus,
+  type MemoryProposeInput,
+  type MemoryUpdateInput,
+  type MemorySearchInput,
+  type MemorySearchHit,
+} from "./memory/index.js";
 
 export const VERSION = "0.0.0";
 
@@ -95,6 +120,7 @@ export interface BootedGateway {
     toolCalls: ToolCallStore;
     tasks: TaskStore;
     questions: QuestionStore;
+    memory: MemoryStore;
   };
   subagents: {
     pool: SubagentPool;
@@ -187,6 +213,16 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   registerAskUserTool(toolRegistry, questionBackendFor(questions));
   registerSpawnSubagentTool(toolRegistry, subagentBackendFor(subagentPool, subagentRegistry));
 
+  // Memory store: durable typed entries that follow the user across docker
+  // re-rolls. Lives at ~/.squad/memory/ by default — deliberately NOT under
+  // data_dir/workspace_dir.
+  const memoryDir = resolveMemoryDir(config.server.memory_dir);
+  mkdirSync(memoryDir, { recursive: true });
+  const memory = new MemoryStore(db, { memoryDir });
+  registerMemoryTools(toolRegistry, memoryBackendFor(memory));
+  const memoryService = new MemoryService(memory);
+  logger.info({ memoryDir }, "memory store ready");
+
   if (opts.configPath) {
     const configBackend = new JsonConfigBackend({
       path: opts.configPath,
@@ -270,6 +306,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     coordinator,
     toolRegistry,
     workspaceDir,
+    memory: memoryService,
     startedAt,
     version: VERSION,
     ...(opts.clientOverride !== undefined ? { clientOverride: opts.clientOverride } : {}),
@@ -288,7 +325,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
 
   return {
     handle,
-    stores: { sessions, messages, toolCalls, tasks, questions },
+    stores: { sessions, messages, toolCalls, tasks, questions, memory },
     subagents: { pool: subagentPool, registry: subagentRegistry },
     plugins,
     routines,

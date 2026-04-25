@@ -118,7 +118,7 @@ pnpm build          # build all packages
 pnpm test           # all tests
 pnpm lint           # eslint
 pnpm format         # prettier
-docker compose up   # full local stack (gateway + discord)
+pnpm start          # full local stack via `squad mgr` (gateway + discord)
 ```
 
 If a script you need doesn't exist, add it to the appropriate `package.json` rather than running raw `tsc`/`node` commands.

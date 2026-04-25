@@ -10,6 +10,7 @@ import type { ToolCallStore } from "./db/tool-calls.js";
 import type { Broadcast } from "./broadcast.js";
 import type { Logger } from "./logger.js";
 import { buildSquadSystemPrompt, loadCoreFiles } from "./agent-prompt.js";
+import type { MemoryService } from "./memory/service.js";
 
 /**
  * Convert wire ContentBlocks into the LLM's content shape for message
@@ -74,6 +75,8 @@ export interface RunDeps {
   toolCalls: ToolCallStore;
   broadcast: Broadcast;
   logger: Logger;
+  /** Optional — when set, every turn injects the eager + retrieval blocks. */
+  memory?: MemoryService;
 }
 
 /**
@@ -133,11 +136,25 @@ export async function runChatTurn(
   // files at the top of every turn so edits the agent makes mid-session
   // (write/edit on .squad/*.md) take effect on the next turn. Caller-supplied
   // systemPrompt still wins — tests and bespoke flows opt out this way.
+  // Memory blocks: eager is frozen per session (kept inside the cacheable
+  // prefix); retrieval is per-turn against the latest user input.
+  const memoryEager = deps.memory?.eagerForSession(options.sessionId) ?? [];
+  const userQuery =
+    options.userContent
+      .filter((b): b is { type: "text"; text: string } => b.type === "text")
+      .map((b) => b.text)
+      .join("\n");
+  const treeRoot = deps.sessions.rootId(options.sessionId);
+  const memoryRetrieval =
+    deps.memory?.retrievalForTurn(userQuery, { scopeKey: treeRoot }) ?? [];
+
   const systemPrompt =
     options.systemPrompt ??
     buildSquadSystemPrompt({
       workspaceDir: options.cwd,
       coreFiles: loadCoreFiles(options.cwd),
+      memoryEager,
+      memoryRetrieval,
     });
 
   const spec: AgentSpec = {

@@ -26,6 +26,7 @@ import type { QuestionStore } from "./questions/store.js";
 import type { SubagentPool } from "./subagents/pool.js";
 import type { SubagentRegistry } from "./subagents/registry.js";
 import type { RunCoordinator } from "./delivery/coordinator.js";
+import type { MemoryService } from "./memory/service.js";
 
 export interface GatewayDeps {
   config: Config;
@@ -43,6 +44,8 @@ export interface GatewayDeps {
   toolRegistry: ToolRegistry;
   /** Persistent agent home directory; used as cwd for chat turns. */
   workspaceDir: string;
+  /** Memory subsystem — eager + retrieval blocks injected per turn. */
+  memory?: MemoryService;
   startedAt: number;
   version: string;
   /** Testing seam: inject an LLMClient to bypass real provider calls. */
@@ -192,6 +195,7 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
     defaultFallbacks: fallbackModels,
     coordinator: deps.coordinator,
     workspaceDir: deps.workspaceDir,
+    ...(deps.memory !== undefined ? { memory: deps.memory } : {}),
     ...(deps.clientOverride !== undefined ? { clientOverride: deps.clientOverride } : {}),
   });
   registerTaskMethods(d, deps.tasks, deps.broadcast);

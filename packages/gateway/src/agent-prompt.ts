@@ -259,9 +259,34 @@ function readIfExists(path: string): string {
   }
 }
 
+/**
+ * One memory entry rendered into the prompt. Shape mirrors MemoryEntry just
+ * enough for prompt rendering — the gateway boot wires this through.
+ */
+export interface PromptMemoryEntry {
+  id: string;
+  type: string;
+  name: string;
+  description: string;
+  body: string;
+}
+
+/** Hit from the per-turn retrieval block. */
+export interface PromptMemoryHit {
+  id: string;
+  type: string;
+  name: string;
+  description: string;
+  snippet: string;
+}
+
 export interface BuildSquadPromptInput {
   workspaceDir: string;
   coreFiles: CoreFileContents;
+  /** Frozen-at-session-start eager block. user + feedback entries. */
+  memoryEager?: PromptMemoryEntry[];
+  /** Per-turn FTS retrieval results for project + reference entries. */
+  memoryRetrieval?: PromptMemoryHit[];
 }
 
 /**
@@ -277,7 +302,7 @@ export interface BuildSquadPromptInput {
  * files. Keep the static part tight — every token here is paid on every turn.
  */
 export function buildSquadSystemPrompt(input: BuildSquadPromptInput): string {
-  const { workspaceDir, coreFiles } = input;
+  const { workspaceDir, coreFiles, memoryEager, memoryRetrieval } = input;
   const sections: string[] = [];
 
   sections.push(`# Squad agent
@@ -345,7 +370,48 @@ wrong; don't let stale entries rot.`);
   const live = renderCoreFilesSection(coreFiles);
   if (live) sections.push(live);
 
+  // ── Persistent memory ─────────────────────────────────────────────────────
+  // Mention the system unconditionally so the agent knows the tools are
+  // available even when memory is empty.
+  sections.push(`## Persistent memory
+You have a typed, retrievable memory store at \`~/.squad/memory/\`.
+- \`memory_propose\` — save a new entry. Five types: user, feedback, project, reference, working.
+- \`memory_search\` — FTS over the store. **Search before you propose** to avoid duplicates.
+- \`memory_update\` / \`memory_archive\` — refine or retire by id.
+
+The eager block below is frozen at session start to keep the prompt cache warm.
+Project + reference entries are retrieved per-turn when they match the request.`);
+
+  const eagerBlock = renderEagerBlock(memoryEager);
+  if (eagerBlock) sections.push(eagerBlock);
+
+  const retrievalBlock = renderRetrievalBlock(memoryRetrieval);
+  if (retrievalBlock) sections.push(retrievalBlock);
+
   return sections.join("\n\n");
+}
+
+function renderEagerBlock(entries: PromptMemoryEntry[] | undefined): string {
+  if (!entries || entries.length === 0) return "";
+  const lines: string[] = ["## Memory — eager (frozen this session)", ""];
+  for (const e of entries) {
+    lines.push(`### ${e.type}: ${e.name}`);
+    if (e.description) lines.push(`_${e.description}_`);
+    lines.push("");
+    lines.push(e.body.trim());
+    lines.push("");
+  }
+  return lines.join("\n").trimEnd();
+}
+
+function renderRetrievalBlock(hits: PromptMemoryHit[] | undefined): string {
+  if (!hits || hits.length === 0) return "";
+  const lines: string[] = ["## Memory — retrieved for this turn", ""];
+  for (const h of hits) {
+    lines.push(`- **${h.type}/${h.name}** (id=\`${h.id}\`) — ${h.description}`);
+    if (h.snippet) lines.push(`  > ${h.snippet}`);
+  }
+  return lines.join("\n");
 }
 
 function renderCoreFilesSection(c: CoreFileContents): string {

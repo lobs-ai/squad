@@ -9,6 +9,7 @@ import { ToolRegistry } from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
 import { runChatTurn, textBlocks } from "../runs.js";
 import type { RunCoordinator } from "../delivery/coordinator.js";
+import type { MemoryService } from "../memory/service.js";
 import { ProtocolError, ErrorCode, type ContentBlock, type MessageRecord } from "@squad/protocol";
 
 export interface ChatDeps {
@@ -23,6 +24,8 @@ export interface ChatDeps {
   coordinator: RunCoordinator;
   /** Persistent agent home directory. Used as cwd for every chat turn. */
   workspaceDir: string;
+  /** Optional memory subsystem; when set, injects eager + retrieval blocks. */
+  memory?: MemoryService;
   /** Testing seam: inject a stub LLMClient to bypass real provider calls. */
   clientOverride?: LLMClient;
 }

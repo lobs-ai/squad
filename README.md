@@ -17,13 +17,13 @@ Five things make Squad different:
 ```bash
 git clone https://github.com/lobs-ai/squad.git
 cd squad
-pnpm setup            # interactive wizard — writes docker/config.json + docker/.env
-docker compose up     # or: pnpm start:docker
+pnpm install
+pnpm start            # interactive wizard on first run, then `squad mgr start --all`
 ```
 
-One container. The `docker/` folder is the single bind-mount surface for everything stateful: config, secrets, sqlite, uploads. Open the dashboard at http://localhost:8080 (token lives in `docker/.env`) and mention the bot in the Discord channel you configured.
+One container per squad. State lives under `~/.squad/squads/<name>/` (config, secrets, sqlite, uploads, ssh). Open the dashboard at http://localhost:8080 (token in `~/.squad/squads/<name>/.env`) and mention the bot in the Discord channel you configured.
 
-Prefer no Docker? `pnpm start:local` runs the gateway directly via Node and auto-launches the same wizard if `docker/` is empty.
+Manage multiple squads with `squad mgr` — see `squad mgr help`.
 
 ## How it works
 

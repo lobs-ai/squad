@@ -146,6 +146,52 @@ const migrations: Migration[] = [
       ALTER TABLE sessions ADD COLUMN compact_at_start INTEGER NOT NULL DEFAULT 0;
     `,
   },
+  {
+    id: 8,
+    name: "memory",
+    up: `
+      CREATE TABLE memory_entry (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        scope_key TEXT,
+        file_path TEXT NOT NULL,
+        body TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        confidence INTEGER NOT NULL DEFAULT 50,
+        provenance_session_id TEXT,
+        provenance_agent_id TEXT,
+        use_count INTEGER NOT NULL DEFAULT 0,
+        last_used_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX idx_memory_type_status ON memory_entry(type, status);
+      CREATE INDEX idx_memory_scope ON memory_entry(scope, scope_key, status);
+      CREATE INDEX idx_memory_last_used ON memory_entry(last_used_at);
+      CREATE UNIQUE INDEX idx_memory_file_path ON memory_entry(file_path);
+
+      CREATE VIRTUAL TABLE memory_entry_fts USING fts5(
+        id UNINDEXED, name, description, body,
+        tokenize='porter unicode61'
+      );
+
+      CREATE TABLE memory_history (
+        id TEXT PRIMARY KEY,
+        entry_id TEXT NOT NULL,
+        body TEXT NOT NULL,
+        description TEXT NOT NULL,
+        reason TEXT,
+        changed_by_agent_id TEXT,
+        changed_at TEXT NOT NULL
+      );
+
+      CREATE INDEX idx_memory_history_entry ON memory_history(entry_id, changed_at);
+    `,
+  },
 ];
 
 export function runMigrations(db: DatabaseHandle): void {

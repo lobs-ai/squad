@@ -25,7 +25,7 @@ FROM node:25-bookworm-slim AS runtime
 RUN npm install -g pnpm@9.0.0
 
 # git + openssh for agent-driven clone/push; gh CLI for GitHub API + as git's
-# HTTPS credential helper (wired by docker/entrypoint.sh when GITHUB_TOKEN set).
+# HTTPS credential helper (wired by scripts/entrypoint.sh when GITHUB_TOKEN set).
 # ripgrep powers the code_search tool.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -58,10 +58,10 @@ RUN pnpm --filter @squad/tools exec playwright install --with-deps chromium \
  && rm -rf /var/lib/apt/lists/*
 
 # Bind-mount target for host-side state (config.json, .env, sqlite, uploads, ssh).
-# Owned by /app's user; docker-compose mounts ./docker over the top.
+# `squad mgr` mounts ~/.squad/squads/<name>/ over the top at runtime.
 RUN mkdir -p /app/docker/data/ssh
 
-COPY docker/entrypoint.sh /usr/local/bin/squad-entrypoint
+COPY scripts/entrypoint.sh /usr/local/bin/squad-entrypoint
 RUN chmod +x /usr/local/bin/squad-entrypoint
 
 EXPOSE 8080

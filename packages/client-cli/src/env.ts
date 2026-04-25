@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import { homedir } from "node:os";
 
 import {
@@ -38,21 +38,6 @@ function parseDotenv(text: string): Record<string, string> {
 }
 
 /**
- * Walk up from `start` looking for a `docker/.env`. Used as a back-compat path
- * for users who haven't migrated to ~/.squad/squads/ yet.
- */
-function findRepoEnv(start: string): string | null {
-  let dir = resolve(start);
-  while (true) {
-    const envPath = join(dir, "docker", ".env");
-    if (existsSync(envPath)) return envPath;
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
-
-/**
  * Build the WS URL + token from a registered squad's .env. Returns null if
  * the .env doesn't exist or has no SQUAD_DASHBOARD_TOKEN / SQUAD_TOKEN.
  */
@@ -77,9 +62,8 @@ function envFromSquad(squad: Squad): Env | null {
  *   4. Single running container with lobs.squad.name label → use it
  *   5. Single registered squad in ~/.squad/squads.json → use it
  *   6. Legacy ~/.squad/config (KEY=VALUE)
- *   7. Repo-walk fallback to docker/.env
  */
-export function resolveEnv(cwd: string = process.cwd()): Env {
+export function resolveEnv(): Env {
   // 1. Explicit env vars take priority — useful for ad-hoc debugging and CI.
   if (process.env.SQUAD_URL && process.env.SQUAD_TOKEN) {
     return { url: process.env.SQUAD_URL, token: process.env.SQUAD_TOKEN };
@@ -142,20 +126,10 @@ export function resolveEnv(cwd: string = process.cwd()): Env {
     if (token) return { url, token };
   }
 
-  // 7. Repo-walk for very old installs that never migrated to ~/.squad.
-  const repoEnv = findRepoEnv(cwd);
-  if (repoEnv) {
-    const file = parseDotenv(readFileSync(repoEnv, "utf8"));
-    const port = process.env.SQUAD_PORT ?? file.SQUAD_PORT ?? "8080";
-    const url = file.SQUAD_URL ?? `ws://localhost:${port}/ws`;
-    const token = file.SQUAD_TOKEN ?? file.SQUAD_DASHBOARD_TOKEN;
-    if (token) return { url, token };
-  }
-
   throw new Error(
     "no squad configured. Try one of:\n" +
+      "  • squad onboard                  setup wizard\n" +
       "  • squad mgr create <name>        create a new squad\n" +
-      "  • squad mgr import               import an existing ./docker/ install\n" +
       "  • set SQUAD_URL + SQUAD_TOKEN    explicit override",
   );
 }

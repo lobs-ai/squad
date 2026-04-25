@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Shared helpers for scripts that delegate to the multi-squad manager. The
-# legacy single-squad `./docker/` install path is gone — these scripts are
-# all thin shims around `squad mgr ...`.
+# Shared helpers for scripts that delegate to the multi-squad manager. All
+# lifecycle scripts are thin shims around `squad mgr ...`.
 
 set -euo pipefail
 

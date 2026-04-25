@@ -71,7 +71,7 @@ async function bootForTest(
   dataDir = mkdtempSync(join(tmpdir(), "squad-delivery-"));
   booted = await boot({
     config: {
-      server: { host: "127.0.0.1", port: 0, data_dir: dataDir },
+      server: { host: "127.0.0.1", port: 0, data_dir: dataDir, memory_dir: join(dataDir, "memory") },
       auth: { tokens: [{ label: "t", key: "secret", scopes: ["*"] }] },
       chat: { delivery: { mode } },
     },

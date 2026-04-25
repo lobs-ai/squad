@@ -205,23 +205,6 @@ function upsertEnvLine(body: string, key: string, value: string): string {
   return out.join("\n");
 }
 
-function readEnvValue(envPath: string, key: string): string | undefined {
-  if (!existsSync(envPath)) return undefined;
-  for (const raw of readFileSync(envPath, "utf8").split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const eq = line.indexOf("=");
-    if (eq === -1) continue;
-    if (line.slice(0, eq).trim() !== key) continue;
-    let val = line.slice(eq + 1).trim();
-    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-      val = val.slice(1, -1);
-    }
-    return val;
-  }
-  return undefined;
-}
-
 // ─── compose regen ─────────────────────────────────────────────────────────
 
 function regenCompose(reg: Registry): void {
@@ -413,9 +396,27 @@ async function cmdStop(args: string[]): Promise<void> {
 }
 
 async function cmdRestart(args: string[]): Promise<void> {
-  const name = args.shift();
-  if (!name) throw new Error("usage: squad mgr restart <name>");
   const reg = ensureRepo(loadRegistry());
+
+  if (hasFlag(args, "--all")) {
+    if (reg.squads.length === 0) throw new Error("no squads registered");
+    regenCompose(reg);
+    if (existsSync(COMPOSE_PATH)) {
+      const stopCode = await runComposeAsync(["down"]);
+      if (stopCode !== 0) {
+        process.exitCode = stopCode;
+        return;
+      }
+    }
+    const services = reg.squads.map((s) => `squad-${s.name}`);
+    services.push("searxng");
+    const code = await runComposeAsync(["up", "-d", "--build", ...services]);
+    process.exitCode = code;
+    return;
+  }
+
+  const name = args.shift();
+  if (!name) throw new Error("usage: squad mgr restart <name>|--all");
   requireSquad(reg, name);
   regenCompose(reg);
   const code = await runComposeAsync(["restart", `squad-${name}`]);
@@ -455,60 +456,11 @@ async function cmdRegen(_args: string[]): Promise<void> {
 }
 
 async function cmdImport(args: string[]): Promise<void> {
-  // Two flavors:
-  //   squad mgr import                    — import legacy ./docker/ as 'default'
-  //   squad mgr import <name>             — re-register an existing
-  //                                          ~/.squad/squads/<name>/ directory
-  const arg = args.shift();
-  let reg = ensureRepo(loadRegistry());
-
-  if (!arg) {
-    const root = findRepoRoot();
-    const legacyDir = join(root, "docker");
-    if (!existsSync(legacyDir)) {
-      throw new Error(`no legacy ./docker/ found at ${legacyDir}`);
-    }
-    if (getSquad(reg, "default")) {
-      throw new Error("squad 'default' already registered. Pass a name to import as: squad mgr import <name>");
-    }
-    const target = squadDir("default");
-    if (existsSync(target)) {
-      throw new Error(`${target} already exists. Move/remove it before importing.`);
-    }
-    ensureSquadHome();
-    mkdirSync(target, { recursive: true });
-    // Copy legacy files into the per-squad layout.
-    copyFileSync(join(legacyDir, "config.json"), join(target, "config.json"));
-    if (existsSync(join(legacyDir, ".env"))) {
-      copyFileSync(join(legacyDir, ".env"), join(target, ".env"));
-      try {
-        chmodSync(join(target, ".env"), 0o600);
-      } catch { /* best-effort */ }
-    }
-    if (existsSync(join(legacyDir, "data"))) {
-      // Hard-link / copy the data dir so SQLite + ssh keys carry over.
-      execSync(`cp -R ${JSON.stringify(join(legacyDir, "data"))} ${JSON.stringify(target)}/`);
-    }
-    // Pull SQUAD_PORT from legacy .env to keep the same host port if possible.
-    const legacyPort = Number(readEnvValue(join(legacyDir, ".env"), "SQUAD_PORT") ?? "8080");
-    const port = reg.squads.some((s) => s.port === legacyPort) ? findFreePort(reg) : legacyPort;
-    reg.squads.push({ name: "default", port });
-    // Force the per-squad config to listen on container 8080 (host port mapped)
-    // so it matches the in-container Discord plugin's default URL.
-    rewriteConfigPort("default", 8080);
-    saveRegistry(reg);
-    regenCompose(reg);
-    process.stdout.write(
-      `${color("✓", ok())} imported legacy ./docker/ as squad 'default' on port ${port}\n` +
-        `  state: ${target}\n` +
-        `  start: ${color("squad mgr start default", muted())}\n` +
-        `  the legacy ${legacyDir} is untouched — delete when ready.\n`,
-    );
-    return;
-  }
-
-  // Re-register an existing dir.
-  const name = arg;
+  // Re-register an existing ~/.squad/squads/<name>/ directory that was
+  // previously removed from squads.json (e.g. via `squad mgr rm`).
+  const name = args.shift();
+  if (!name) throw new Error("usage: squad mgr import <name>");
+  const reg = ensureRepo(loadRegistry());
   validateName(name);
   if (getSquad(reg, name)) throw new Error(`squad '${name}' already in registry`);
   const dir = squadDir(name);
@@ -518,17 +470,6 @@ async function cmdImport(args: string[]): Promise<void> {
   saveRegistry(reg);
   regenCompose(reg);
   process.stdout.write(`${color("✓", ok())} re-registered '${name}' on port ${port}\n`);
-}
-
-function rewriteConfigPort(name: string, port: number): void {
-  const path = squadConfigPath(name);
-  if (!existsSync(path)) return;
-  const cfg = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-  const server = (cfg.server as Record<string, unknown>) ?? {};
-  server.port = port;
-  server.data_dir = "/app/docker/data";
-  cfg.server = server;
-  writeFileSync(path, JSON.stringify(cfg, null, 2) + "\n");
 }
 
 async function cmdExec(args: string[]): Promise<void> {
@@ -568,7 +509,7 @@ function helpText(): string {
     `    ${K("ls")}                                       ${D("list squads + running status (via docker labels)")}`,
     `    ${K("start")}  ${D("<name>|--all")}                        ${D("docker compose up -d")}`,
     `    ${K("stop")}   ${D("<name>|--all")}                        ${D("docker compose stop / down")}`,
-    `    ${K("restart")} ${D("<name>")}                             ${D("docker compose restart")}`,
+    `    ${K("restart")} ${D("<name>|--all")}                       ${D("in-place restart; --all does full stop + up --build")}`,
     `    ${K("logs")}   ${D("<name> [-f]")}                         ${D("docker compose logs")}`,
     "",
     `  ${H("Selection")}`,
@@ -576,7 +517,7 @@ function helpText(): string {
     "",
     `  ${H("Maintenance")}`,
     `    ${K("regen")}                                    ${D("rewrite ~/.squad/docker-compose.yml from squads.json")}`,
-    `    ${K("import")} ${D("[<name>]")}                            ${D("import legacy ./docker/ as 'default', or re-register an existing dir")}`,
+    `    ${K("import")} ${D("<name>")}                              ${D("re-register an existing ~/.squad/squads/<name>/ directory")}`,
     `    ${K("exec")} ${D("<cmd ...> --squad <name>|--all")}       ${D("run another squad CLI command against one or all squads")}`,
     "",
     `  ${H("State layout")}`,

@@ -41,7 +41,7 @@ async function bootForTest(): Promise<BootedGateway> {
   dataDir = mkdtempSync(join(tmpdir(), "squad-subs-"));
   booted = await boot({
     config: {
-      server: { host: "127.0.0.1", port: 0, data_dir: dataDir },
+      server: { host: "127.0.0.1", port: 0, data_dir: dataDir, memory_dir: join(dataDir, "memory") },
       auth: { tokens: [{ label: "test", key: "secret", scopes: ["*"] }] },
       llm: { primary: { model: "claude-sonnet-4-5" }, fallbacks: [], providers: {} },
       subagents: { max_concurrent_global: 8, max_concurrent_per_parent: 4, max_tree_depth: 3 },

@@ -113,6 +113,13 @@ export const configSchema = z.object({
        * automatically isolate their workspace too.
        */
       workspace_dir: z.string().default(""),
+      /**
+       * Persistent typed-memory store. Lives outside the workspace and
+       * outside data_dir on purpose — memory is durable user state that
+       * should follow the user across docker re-rolls. Empty string means
+       * "${HOME}/.squad/memory". Override via SQUAD_MEMORY_DIR env var.
+       */
+      memory_dir: z.string().default(""),
     })
     .default({}),
   auth: z
