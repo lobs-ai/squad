@@ -30,8 +30,13 @@ function getFlagValue(name) {
   return argv[i + 1];
 }
 const SQUAD_NAME = getFlagValue("--squad") || "default";
+const RESERVED_NAMES = new Set(["current", "env", "shared", "extensions", "squads"]);
 if (!/^[a-z0-9][a-z0-9_-]{0,30}$/.test(SQUAD_NAME)) {
   console.error(`invalid squad name '${SQUAD_NAME}': lowercase alnum/_/-, ≤31 chars.`);
+  exit(2);
+}
+if (RESERVED_NAMES.has(SQUAD_NAME)) {
+  console.error(`'${SQUAD_NAME}' is reserved (collides with a top-level ~/.squad/ file). Pick a different name.`);
   exit(2);
 }
 
@@ -40,7 +45,7 @@ const SQUAD_HOME = join(HOME, ".squad");
 const REGISTRY_PATH = join(SQUAD_HOME, "squads.json");
 const COMPOSE_PATH = join(SQUAD_HOME, "docker-compose.yml");
 const CURRENT_FILE = join(SQUAD_HOME, "current");
-const SQUAD_DIR = join(SQUAD_HOME, "squads", SQUAD_NAME);
+const SQUAD_DIR = join(SQUAD_HOME, SQUAD_NAME);
 const CONFIG_PATH = join(SQUAD_DIR, "config.json");
 const ENV_PATH = join(SQUAD_DIR, ".env");
 const DATA_DIR = join(SQUAD_DIR, "data");
@@ -835,7 +840,7 @@ function renderConfig(existing, opts) {
 async function main() {
   console.log(bold(`\nSquad setup wizard — squad '${SQUAD_NAME}'\n`));
   console.log(
-    `Writes ${dim(`~/.squad/squads/${SQUAD_NAME}/{config.json,.env}`)} — the bind-mounted state read by the squad container.`,
+    `Writes ${dim(`~/.squad/${SQUAD_NAME}/{config.json,.env}`)} — the bind-mounted state read by the squad container.`,
   );
   console.log(
     dim(`Pass --squad <name> to set up a different squad. Run 'squad mgr ls' to see them all.\n`),

@@ -40,4 +40,10 @@ describe("validateName", () => {
     expect(() => validateName("a".repeat(40))).toThrow();
     expect(() => validateName("foo bar")).toThrow();
   });
+
+  it("rejects names that collide with top-level ~/.squad/ files", () => {
+    for (const reserved of ["current", "env", "shared", "extensions", "squads"]) {
+      expect(() => validateName(reserved), `'${reserved}' should be reserved`).toThrow(/reserved/);
+    }
+  });
 });

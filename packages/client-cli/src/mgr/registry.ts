@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { REGISTRY_PATH, SQUAD_HOME } from "./paths.js";
+import { REGISTRY_PATH, RESERVED_NAMES, SQUAD_HOME } from "./paths.js";
 
 export interface Squad {
   name: string;
@@ -77,6 +77,11 @@ export function validateName(name: string): void {
   if (!NAME_RE.test(name)) {
     throw new Error(
       `invalid squad name '${name}'. Must be lowercase letters/digits/_/-, start alphanumeric, ≤31 chars.`,
+    );
+  }
+  if (RESERVED_NAMES.has(name)) {
+    throw new Error(
+      `'${name}' is reserved (collides with a top-level ~/.squad/ file). Pick a different name.`,
     );
   }
 }

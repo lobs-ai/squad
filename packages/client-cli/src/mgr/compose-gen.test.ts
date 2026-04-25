@@ -25,10 +25,12 @@ describe("generateCompose", () => {
     expect(out).toMatch(/squad-beta:[\s\S]*"8082:8080"/);
   });
 
-  it("uses absolute bind-mount paths for per-squad state", () => {
+  it("uses absolute bind-mount paths for per-squad state (~/.squad/<name>)", () => {
     const out = generateCompose(REG);
-    expect(out).toMatch(/-\s+\S+\.squad\/squads\/alpha:\/app\/docker/);
-    expect(out).toMatch(/-\s+\S+\.squad\/squads\/beta:\/app\/docker/);
+    expect(out).toMatch(/-\s+\S+\.squad\/alpha:\/app\/docker/);
+    expect(out).toMatch(/-\s+\S+\.squad\/beta:\/app\/docker/);
+    // Make sure we're not still emitting the old nested ~/.squad/squads/<n>.
+    expect(out).not.toMatch(/\.squad\/squads\/alpha:/);
   });
 
   it("labels each squad container for discovery", () => {

@@ -16,7 +16,6 @@ import {
   COMPOSE_PATH,
   CURRENT_FILE,
   SHARED_DIR,
-  SQUADS_DIR,
   SQUAD_HOME,
   squadConfigPath,
   squadDataDir,
@@ -93,7 +92,6 @@ function generateToken(bytes = 32): string {
 
 function ensureSquadHome(): void {
   if (!existsSync(SQUAD_HOME)) mkdirSync(SQUAD_HOME, { recursive: true });
-  if (!existsSync(SQUADS_DIR)) mkdirSync(SQUADS_DIR, { recursive: true });
   if (!existsSync(SHARED_DIR)) mkdirSync(SHARED_DIR, { recursive: true });
 }
 
@@ -584,7 +582,7 @@ function helpText(): string {
     `  ${H("State layout")}`,
     `    ${D("~/.squad/squads.json            registry (source of truth)")}`,
     `    ${D("~/.squad/docker-compose.yml     generated; never hand-edit")}`,
-    `    ${D("~/.squad/squads/<name>/         per-squad config + .env + data + ssh")}`,
+    `    ${D("~/.squad/<name>/                per-squad config + .env + data + ssh")}`,
     `    ${D("~/.squad/shared/searxng/        shared local search settings")}`,
     `    ${D("~/.squad/extensions/            optional shared plugin dir (mounted ro)")}`,
     "",
