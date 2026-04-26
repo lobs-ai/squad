@@ -1,8 +1,15 @@
 import type { BaseTool } from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
-import type { SubagentDefinition } from "@squad/protocol";
+import type { PluginUiContribution, SubagentDefinition } from "@squad/protocol";
 
 export type PluginKind = "tool" | "provider" | "channel" | "skill" | "routine" | "subagent";
+
+/**
+ * Slot identifiers a plugin can claim. Mirrors `PluginUiSlot` in the
+ * protocol package — re-exported here so plugin authors don't have to
+ * import from two places.
+ */
+export type PluginUiSlot = PluginUiContribution["slot"];
 
 export interface PluginDescriptor {
   id: string;
@@ -43,8 +50,31 @@ export interface ApprovalPolicy {
  * specific channel protocols (Discord, Slack, etc.) — channels arrive via
  * plugins.
  */
+/**
+ * Channel capabilities exposed via the protocol's `channels.list` /
+ * `channels.capabilities`. Re-declared here as a plain interface so plugin
+ * authors don't have to depend on `@squad/protocol` directly. The gateway
+ * fills in defaults when omitted (see channels/registry.ts).
+ */
+export interface ChannelHandleCapabilities {
+  supportsPreview: boolean;
+  supportsMultiSelect: boolean;
+  supportsFreeText: boolean;
+  maxOptions: number;
+  supportsImages?: boolean;
+  supportsFileUploads?: boolean;
+  supportsTaskList?: boolean;
+  supportsApprovals?: boolean;
+}
+
 export interface ChannelHandle {
   id: string;
+  /** Short kind identifier surfaced over the protocol — e.g. "discord". */
+  kind?: string;
+  /** Human-friendly label. Defaults to `id` when omitted. */
+  label?: string;
+  /** Capability hints; missing fields default to a conservative baseline. */
+  capabilities?: ChannelHandleCapabilities;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
@@ -59,6 +89,13 @@ export interface GatewayAPI {
   skills: { register(skill: SkillDescriptor): void };
   approvalPolicies: { register(policy: ApprovalPolicy): void };
   channels: { register(channel: ChannelHandle): void };
+  /**
+   * UI contribution surface. Plugins call `ui.contribute({...})` once per
+   * slot they want to claim — the gateway records the metadata and exposes
+   * it via `plugins.list`. Actual UI rendering happens client-side; this is
+   * declarative metadata only.
+   */
+  ui: { contribute(contribution: PluginUiContribution): void };
   logger: { info: (msg: string, meta?: unknown) => void; warn: (msg: string, meta?: unknown) => void; error: (msg: string, meta?: unknown) => void };
   config: Record<string, unknown>;
 }

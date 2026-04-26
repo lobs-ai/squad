@@ -3,6 +3,9 @@ import { timingSafeEqual } from "node:crypto";
 export interface TokenGrant {
   label: string;
   scopes: string[];
+  /** Set on tokens minted at runtime (e.g. via browser pairing). Static tokens
+   *  read from config have this undefined. */
+  ephemeral?: boolean;
 }
 
 export class Authenticator {
@@ -12,6 +15,22 @@ export class Authenticator {
     for (const t of tokens) {
       this.byHash.set(t.secret, { label: t.label, scopes: t.scopes });
     }
+  }
+
+  /**
+   * Add a runtime token (not persisted to config). Used by the browser
+   * pairing flow to issue a per-browser bearer once a CLI operator has
+   * approved the pairing. Returns the grant for caller convenience.
+   */
+  addRuntimeToken(input: { label: string; secret: string; scopes: string[] }): TokenGrant {
+    const grant: TokenGrant = { label: input.label, scopes: input.scopes, ephemeral: true };
+    this.byHash.set(input.secret, grant);
+    return grant;
+  }
+
+  /** Drop a runtime token. Returns true when something was removed. */
+  removeToken(secret: string): boolean {
+    return this.byHash.delete(secret);
   }
 
   /**

@@ -64,6 +64,9 @@ export async function showStatus(): Promise<void> {
 
   const base = httpBase(env.url);
   const { ok: healthOk } = await ping(`${base}/health`, 2000);
+  // The dashboard SPA is served by the gateway itself at the same host:port,
+  // so the URL is just the http(s) base without any extra path.
+  const dashboardUrl = base;
 
   const muted = fg(roleColor("muted"));
   const ok = fg(roleColor("ok"));
@@ -78,6 +81,7 @@ export async function showStatus(): Promise<void> {
     : color("unreachable", errColor);
   render.renderKeyValue([
     ["gateway  ", `${env.url} ${color("·", muted)} ${reachableLabel}`],
+    ["dashboard", `${dashboardUrl} ${color("·", muted)} ${healthOk ? color("open in browser", muted) : color("offline", muted)}`],
   ]);
 
   if (!healthOk) {

@@ -18,7 +18,7 @@
  * the closure below.
  */
 
-import type { LLMClient, CreateMessageParams, LLMResponse } from "./types.js";
+import type { ClientConfig, LLMClient, CreateMessageParams, LLMResponse } from "./types.js";
 import { createClient, parseModelString } from "./client.js";
 import { classifyError, type ClassifiedError } from "./errors.js";
 
@@ -27,6 +27,13 @@ export interface ModelChainConfig {
   primary: string;
   /** Ordered list of fallback models tried when primary fails. */
   fallbacks?: string[];
+  /**
+   * Per-provider keys + base URLs threaded through to every slot's
+   * underlying client. Without this, the chain would build clients with
+   * just env-var fallbacks — which silently fails when callers configure
+   * keys via JSON instead of `process.env`.
+   */
+  config?: ClientConfig;
   /**
    * Called when the chain advances to a new model. Useful for logging /
    * surfacing the change in the dashboard.
@@ -67,7 +74,7 @@ export function createModelChain(cfg: ModelChainConfig): ModelChain {
   // time rather than on the first fallback (which might be seconds into a run).
   const slots: Slot[] = all.map((model) => {
     const parsed = parseModelString(model);
-    return { model, modelId: parsed.modelId, client: createClient(model) };
+    return { model, modelId: parsed.modelId, client: createClient(model, cfg.config) };
   });
 
   let currentIndex = 0;

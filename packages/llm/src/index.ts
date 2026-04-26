@@ -20,6 +20,7 @@ export {
 export {
   MODEL_CATALOG,
   listAvailableModels,
+  augmentWithExtras,
   allModels,
   type ModelInfo,
 } from "./catalog.js";

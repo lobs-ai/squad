@@ -67,13 +67,21 @@ export const MODEL_CATALOG: Record<string, ModelInfo[]> = {
 };
 
 /**
- * Return the catalog filtered to providers that have API keys (or no-key
- * local providers) configured. The filter takes the set of provider names
- * the gateway has seen in `config.llm.providers` plus the always-local set.
+ * Return the catalog filtered to providers the user has actually configured.
+ *
+ * No implicit "always show local providers" set — earlier versions silently
+ * surfaced Ollama / LM Studio / llama.cpp / vLLM models even when the user
+ * had only wired Anthropic. That's misleading: the dashboard then offers
+ * models the gateway can't reach.
+ *
+ * If a provider isn't in the catalog (e.g. a custom `minimax` provider), no
+ * catalog rows show up for it — that's the right call. Use {@link augmentWithExtras}
+ * at the call site to splice in models that the gateway *does* know it can
+ * reach (the configured primary + fallback chain) even when the catalog
+ * doesn't carry them.
  */
 export function listAvailableModels(configuredProviders: readonly string[]): ModelInfo[] {
-  const LOCAL = new Set(["ollama", "lmstudio", "llamacpp", "vllm"]);
-  const available = new Set<string>([...configuredProviders, ...LOCAL]);
+  const available = new Set<string>(configuredProviders);
   return Object.entries(MODEL_CATALOG)
     .filter(([provider]) => available.has(provider))
     .flatMap(([, models]) => models);
@@ -82,4 +90,32 @@ export function listAvailableModels(configuredProviders: readonly string[]): Mod
 /** All models across all providers. Used when the gateway wants to be permissive. */
 export function allModels(): ModelInfo[] {
   return Object.values(MODEL_CATALOG).flat();
+}
+
+/**
+ * Splice synthetic ModelInfo entries for any `extraIds` not already covered
+ * by `models`. Provider is parsed from the leading `provider/` segment of
+ * the model id (e.g. `minimax/minimax-m2.7` → provider `minimax`).
+ *
+ * The synthetic entry uses a 0 contextWindow as a sentinel — the dashboard
+ * shows that as "—". Real catalog entries always carry a real number.
+ */
+export function augmentWithExtras(models: ModelInfo[], extraIds: readonly string[]): ModelInfo[] {
+  const seen = new Set(models.map((m) => m.id));
+  const out = [...models];
+  for (const id of extraIds) {
+    if (!id || seen.has(id)) continue;
+    const slash = id.indexOf("/");
+    const provider = slash > 0 ? id.slice(0, slash) : id;
+    const name = slash > 0 ? id.slice(slash + 1) : id;
+    out.push({
+      id,
+      displayName: name,
+      provider: provider as ModelInfo["provider"],
+      contextWindow: 0,
+      notes: "configured",
+    });
+    seen.add(id);
+  }
+  return out;
 }

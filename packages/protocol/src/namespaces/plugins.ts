@@ -10,6 +10,40 @@ export const pluginKindSchema = z.enum([
 ]);
 export type PluginKind = z.infer<typeof pluginKindSchema>;
 
+// ── UI contributions ─────────────────────────────────────────────────────
+//
+// Plugins can register UI affordances that the dashboard surfaces in
+// well-known slots. The contract is intentionally narrow: the gateway only
+// stores *that* a plugin claimed a slot (and a label/icon). Iframe-isolated
+// plugin UI (the actual render code) lives in a future phase.
+
+export const pluginUiSlotSchema = z.enum([
+  "navTab",
+  "overviewWidget",
+  "sessionPanel",
+  "toolRenderer",
+  "quickAction",
+]);
+export type PluginUiSlot = z.infer<typeof pluginUiSlotSchema>;
+
+export const pluginUiContributionSchema = z.object({
+  slot: pluginUiSlotSchema,
+  /** Stable id, scoped within the plugin (e.g. "queue-tab"). */
+  id: z.string(),
+  label: z.string(),
+  /** Icon name from the dashboard's icon set; the dashboard substitutes a
+   *  default if it doesn't recognize the value. */
+  icon: z.string().optional(),
+  /**
+   * Hint about what the contribution acts on. e.g.:
+   *   - navTab          → route slug
+   *   - toolRenderer    → tool name to take over
+   *   - quickAction     → command-palette action id
+   */
+  target: z.string().optional(),
+});
+export type PluginUiContribution = z.infer<typeof pluginUiContributionSchema>;
+
 export const pluginRecordSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -19,6 +53,9 @@ export const pluginRecordSchema = z.object({
   config: z.record(z.unknown()).optional(),
   source: z.string(), // path or npm spec
   installedAt: z.string(),
+  /** UI slots the plugin claimed during register(api). Present even when
+   *  empty so dashboards don't have to handle undefined. */
+  uiContributions: z.array(pluginUiContributionSchema).default([]),
 });
 export type PluginRecord = z.infer<typeof pluginRecordSchema>;
 

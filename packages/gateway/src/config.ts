@@ -120,6 +120,18 @@ export const configSchema = z.object({
        * "${HOME}/.squad/memory". Override via SQUAD_MEMORY_DIR env var.
        */
       memory_dir: z.string().default(""),
+      /**
+       * Squad name as seen by the manager (matches the docker compose service
+       * `squad-<name>`). Defaults to "default" — the value the dashboard's
+       * SquadPicker shows in single-squad installs. Override per-squad via the
+       * SQUAD_NAME env var or by injecting it through the JSON config.
+       */
+      squad_name: z.string().default("default"),
+      /**
+       * Short build identifier surfaced via `admin.identity` (a git sha,
+       * usually). Empty falls back to the gateway VERSION.
+       */
+      build: z.string().default(""),
     })
     .default({}),
   auth: z

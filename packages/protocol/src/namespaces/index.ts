@@ -6,7 +6,7 @@ import { taskMethods, taskEvents } from "./tasks.js";
 import { questionMethods, questionEvents } from "./questions.js";
 import { approvalMethods, approvalEvents } from "./approvals.js";
 import { pluginMethods, pluginEvents } from "./plugins.js";
-import { channelMethods } from "./channels.js";
+import { channelMethods, channelEvents } from "./channels.js";
 import { routineMethods, routineEvents } from "./routines.js";
 import { adminMethods, adminEvents } from "./admin.js";
 
@@ -51,6 +51,7 @@ export const eventRegistry = {
   ...questionEvents,
   ...approvalEvents,
   ...pluginEvents,
+  ...channelEvents,
   ...routineEvents,
   ...adminEvents,
 } as const;

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -16,11 +16,10 @@ import type {
 
 function noopLogger(): Logger {
   const fn = () => {};
-  // pino's Logger type is complex; a duck-typed stub is enough for the host.
   return { info: fn, warn: fn, error: fn, debug: fn, trace: fn, fatal: fn } as unknown as Logger;
 }
 
-function makeDeps(): PluginHostDeps {
+function makeDeps(extras: Partial<PluginHostDeps> = {}): PluginHostDeps {
   return {
     toolRegistry: new ToolRegistry(),
     subagentRegistry: new SubagentRegistry(),
@@ -30,6 +29,7 @@ function makeDeps(): PluginHostDeps {
     skills: [] as SkillDescriptor[],
     approvalPolicies: [] as ApprovalPolicy[],
     channels: [] as ChannelHandle[],
+    ...extras,
   };
 }
 
@@ -105,10 +105,6 @@ describe("PluginHost", () => {
   });
 
   it("collects channel handles when a plugin registers one", async () => {
-    // The gateway itself is channel-agnostic — a Channel plugin hands over
-    // start/stop lifecycles via api.channels.register. Here we verify the
-    // handle lands in the shared deps.channels array the gateway drives
-    // from boot() / close().
     const path = writePlugin(
       "channel",
       `export default {
@@ -131,5 +127,48 @@ describe("PluginHost", () => {
     await deps.channels[0]?.stop();
     expect((globalThis as Record<string, unknown>).__started).toBe(true);
     expect((globalThis as Record<string, unknown>).__stopped).toBe(true);
+  });
+
+  it("captures ui.contribute calls and exposes them in records()", async () => {
+    const path = writePlugin(
+      "ui",
+      `export default {
+        id: "ui1", name: "Q", version: "0", kinds: ["routine"],
+        register(api) {
+          api.ui.contribute({ slot: "navTab", id: "queue", label: "Queue", icon: "spark" });
+          api.ui.contribute({ slot: "overviewWidget", id: "queue-card", label: "Queue depth" });
+        },
+      };`,
+    );
+    const host = new PluginHost(makeDeps());
+    await host.load(path);
+    const rec = host.recordFor("ui1");
+    expect(rec).not.toBeNull();
+    expect(rec!.uiContributions).toHaveLength(2);
+    expect(rec!.uiContributions.map((c) => c.slot)).toEqual(["navTab", "overviewWidget"]);
+    expect(rec!.uiContributions[0]?.icon).toBe("spark");
+  });
+
+  it("setEnabled / setConfig / reload notify onPluginChanged", async () => {
+    const path = writePlugin(
+      "live",
+      `export default {
+        id: "live", name: "L", version: "0", kinds: ["skill"],
+        register() {},
+      };`,
+    );
+    const onPluginChanged = vi.fn();
+    const host = new PluginHost(makeDeps({ onPluginChanged }));
+    await host.load(path);
+    onPluginChanged.mockClear();
+    host.setEnabled("live", false);
+    expect(onPluginChanged).toHaveBeenCalledOnce();
+    host.setConfig("live", { tweak: 1 });
+    expect(onPluginChanged).toHaveBeenCalledTimes(2);
+    await host.reload("live");
+    // load fires once, reload notify after that → 2 more events.
+    expect(onPluginChanged).toHaveBeenCalledTimes(4);
+    expect(host.recordFor("live")?.enabled).toBe(false);
+    expect(host.recordFor("live")?.config).toEqual({ tweak: 1 });
   });
 });

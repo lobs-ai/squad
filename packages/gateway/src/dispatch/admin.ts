@@ -1,6 +1,8 @@
 import type { Dispatcher } from "./index.js";
 import type { SessionStore } from "../db/sessions.js";
-import { listAvailableModels } from "@squad/llm";
+import { augmentWithExtras, listAvailableModels } from "@squad/llm";
+import type { PeerSource } from "../peers/source.js";
+import type { PairingStore } from "../auth/pairing.js";
 
 export interface AdminDeps {
   sessions: SessionStore;
@@ -14,6 +16,18 @@ export interface AdminDeps {
   providers: string[];
   subagents: { maxConcurrentGlobal: number; maxConcurrentPerParent: number; maxTreeDepth: number };
   approvals: { requireForTags: string[]; timeoutSeconds: number };
+  /** Squad name as known to the manager (matches the docker compose service). */
+  squadName: string;
+  /** TCP port this gateway is listening on. */
+  squadPort: number;
+  /** Hostname this squad is bound to (default 127.0.0.1). */
+  squadHost: string;
+  /** Short build identifier — git sha or version. */
+  build: string;
+  /** Source of peer info (reads ~/.squad/squads.json or env). */
+  peers: PeerSource;
+  /** Browser pairing store. Optional so older harnesses still wire admin.* */
+  pairing?: PairingStore;
 }
 
 export function registerAdminMethods(dispatcher: Dispatcher, deps: AdminDeps): void {
@@ -38,15 +52,35 @@ export function registerAdminMethods(dispatcher: Dispatcher, deps: AdminDeps): v
     approvals: deps.approvals,
   }));
 
-  dispatcher.register("admin.models", async () => ({
-    models: listAvailableModels(deps.providers).map((m) => ({
-      id: m.id,
-      displayName: m.displayName,
-      provider: m.provider,
-      contextWindow: m.contextWindow,
-      ...(m.notes !== undefined ? { notes: m.notes } : {}),
-    })),
+  dispatcher.register("admin.models", async () => {
+    // The catalog only knows the well-known providers (anthropic, openai,
+    // google, …). Augment with the configured primary + fallback chain so
+    // a user who set up a custom provider like `minimax/minimax-m2.7`
+    // still sees their actual model in pickers.
+    const catalog = listAvailableModels(deps.providers);
+    const extras = [deps.primaryModel, ...deps.fallbackModels].filter(Boolean);
+    const merged = augmentWithExtras(catalog, extras);
+    return {
+      models: merged.map((m) => ({
+        id: m.id,
+        displayName: m.displayName,
+        provider: m.provider,
+        contextWindow: m.contextWindow,
+        ...(m.notes !== undefined ? { notes: m.notes } : {}),
+      })),
+    };
+  });
+
+  dispatcher.register("admin.identity", async () => ({
+    name: deps.squadName,
+    port: deps.squadPort,
+    host: deps.squadHost,
+    build: deps.build,
+    version: deps.version,
+    startedAt: new Date(deps.startedAt).toISOString(),
   }));
+
+  dispatcher.register("admin.peers", async () => ({ peers: deps.peers.list() }));
 
   // tokens.* writes are intentionally not in Phase 3. Added in Phase 10.
   dispatcher.register("admin.tokens.create", async () => {
@@ -55,4 +89,28 @@ export function registerAdminMethods(dispatcher: Dispatcher, deps: AdminDeps): v
   dispatcher.register("admin.tokens.revoke", async () => {
     throw new Error("admin.tokens.revoke is not implemented in Phase 3");
   });
+
+  if (deps.pairing) {
+    const pairing = deps.pairing;
+    dispatcher.register("admin.pair.list", async () => ({ pairings: pairing.list() }));
+    dispatcher.register("admin.pair.approve", async (params, ctx) => {
+      const view = pairing.approve({
+        code: params.code,
+        ...(ctx.grant.label !== undefined ? { approvedBy: ctx.grant.label } : {}),
+      });
+      return { pairing: view };
+    });
+    dispatcher.register("admin.pair.cancel", async (params) => {
+      const view = pairing.cancel(params.code);
+      if (!view) throw new Error(`unknown pairing code: ${params.code}`);
+      return { pairing: view };
+    });
+  } else {
+    const notWired = async (): Promise<never> => {
+      throw new Error("browser pairing is not wired into this gateway");
+    };
+    dispatcher.register("admin.pair.list", notWired);
+    dispatcher.register("admin.pair.approve", notWired);
+    dispatcher.register("admin.pair.cancel", notWired);
+  }
 }

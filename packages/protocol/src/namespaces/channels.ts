@@ -61,3 +61,9 @@ export const channelMethods = {
     result: channelsCapabilitiesResult,
   },
 } as const;
+
+export const channelChangedEvent = z.object({ channel: channelRecordSchema });
+
+export const channelEvents = {
+  "channels.changed": channelChangedEvent,
+} as const;

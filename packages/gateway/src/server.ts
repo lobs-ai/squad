@@ -18,6 +18,10 @@ import { registerAdminMethods } from "./dispatch/admin.js";
 import { registerTaskMethods } from "./dispatch/tasks.js";
 import { registerQuestionMethods } from "./dispatch/questions.js";
 import { registerSubagentMethods } from "./dispatch/subagents.js";
+import { registerApprovalMethods } from "./dispatch/approvals.js";
+import { registerPluginMethods } from "./dispatch/plugins.js";
+import { registerChannelMethods } from "./dispatch/channels.js";
+import { registerRoutineMethods } from "./dispatch/routines.js";
 import type { SessionStore } from "./db/sessions.js";
 import type { MessageStore } from "./db/messages.js";
 import type { ToolCallStore } from "./db/tool-calls.js";
@@ -27,6 +31,12 @@ import type { SubagentPool } from "./subagents/pool.js";
 import type { SubagentRegistry } from "./subagents/registry.js";
 import type { RunCoordinator } from "./delivery/coordinator.js";
 import type { MemoryService } from "./memory/service.js";
+import type { ApprovalStore } from "./approvals/store.js";
+import type { PluginHost } from "./plugins/host.js";
+import type { ChannelRegistry } from "./channels/registry.js";
+import type { RoutineStore, RoutineRunner } from "./routines/store.js";
+import { PeerSource } from "./peers/source.js";
+import type { PairingStore } from "./auth/pairing.js";
 
 export interface GatewayDeps {
   config: Config;
@@ -48,6 +58,20 @@ export interface GatewayDeps {
   memory?: MemoryService;
   startedAt: number;
   version: string;
+  /** Approval prompts state — pending + decided history for `approvals.list/decide`. */
+  approvals?: ApprovalStore;
+  /** Plugin registry — surfaces `plugins.list/enable/disable/reload/configure`. */
+  plugins?: PluginHost;
+  /** Channel registry — surfaces `channels.list/bind/unbind/capabilities`. */
+  channels?: ChannelRegistry;
+  /** Routine record store — surfaces `routines.list/create/update/delete/run_now`. */
+  routineStore?: RoutineStore;
+  /** Runner used by `routines.run_now`. */
+  routineRunner?: RoutineRunner;
+  /** Peer enumeration source for `admin.peers`. */
+  peers?: PeerSource;
+  /** Browser pairing store, powering `/pair/*` HTTP + `admin.pair.*` dispatch. */
+  pairing?: PairingStore;
   /** Testing seam: inject an LLMClient to bypass real provider calls. */
   clientOverride?: LLMClient;
 }
@@ -120,18 +144,45 @@ const MIME: Record<string, string> = {
   ".map": "application/json",
 };
 
+/**
+ * Resolve the dashboard's `dist/` directory. We look in this order:
+ *
+ *   1. `SQUAD_DASHBOARD_DIR` env var — explicit override, wins everything.
+ *   2. `<gateway>/../dashboard/dist` — repo layout (`packages/gateway/{src,dist}` and
+ *      `packages/dashboard/dist` are siblings).
+ *   3. `<gateway>/../../@squad/dashboard/dist` — when the gateway is loaded via
+ *      pnpm-linked `node_modules/@squad/gateway`.
+ *   4. `<cwd>/dashboard/dist` and `<cwd>/packages/dashboard/dist` — last resort.
+ *
+ * Resolved lazily on every request (not cached at import time) so a dev who
+ * builds the dashboard *after* starting the gateway gets it picked up
+ * without a restart.
+ */
 function dashboardRoot(): string | null {
-  // Resolve the dashboard dist relative to this file: gateway/dist → ../../dashboard/dist
+  if (process.env["SQUAD_DASHBOARD_DIR"]) {
+    const explicit = process.env["SQUAD_DASHBOARD_DIR"];
+    if (existsSync(join(explicit, "index.html"))) return explicit;
+  }
   const here = fileURLToPath(new URL(".", import.meta.url));
   const candidates = [
+    // repo layout — works for both `src/server.ts` (tsx/vitest) and `dist/server.js`
+    // because both live two levels deep inside packages/gateway/.
+    resolvePath(here, "../../dashboard/dist"),
+    // pnpm node_modules sibling layout
     resolvePath(here, "../../../dashboard/dist"),
-    resolvePath(here, "../../../../packages/dashboard/dist"),
+    resolvePath(here, "../../../../@squad/dashboard/dist"),
+    // cwd-relative fallbacks
+    resolvePath(process.cwd(), "dashboard/dist"),
+    resolvePath(process.cwd(), "packages/dashboard/dist"),
   ];
   for (const c of candidates) if (existsSync(join(c, "index.html"))) return c;
   return null;
 }
 
-const DASHBOARD_ROOT = dashboardRoot();
+/** Exposed for boot()-time logging only — the HTTP path always re-resolves. */
+export function dashboardRootForLogging(): string | null {
+  return dashboardRoot();
+}
 
 function serveStatic(res: ServerResponse, filePath: string): boolean {
   if (!existsSync(filePath)) return false;
@@ -155,23 +206,58 @@ function handleHttp(req: IncomingMessage, res: ServerResponse, deps: GatewayDeps
     );
     return;
   }
-  // Dashboard static assets at / and /assets/*
-  if (DASHBOARD_ROOT && req.method === "GET") {
+  // ── Browser pairing — unauthenticated by design ───────────────────────
+  // The whole point: a browser with no token can ask for a pairing code
+  // and then poll for approval. Approval still requires a CLI operator,
+  // so the dispatcher's auth model is preserved.
+  if (deps.pairing && req.url && req.method === "POST" && req.url === "/pair/begin") {
+    void readJson(req)
+      .then((body) => {
+        const label = typeof (body as Record<string, unknown>)?.label === "string"
+          ? ((body as Record<string, unknown>).label as string)
+          : undefined;
+        const view = deps.pairing!.begin({ ...(label !== undefined ? { label } : {}) });
+        deps.broadcast.publish("pair.requested", { pairing: view });
+        sendJson(res, 200, { pairing: view });
+      })
+      .catch(() => sendJson(res, 400, { error: "invalid body" }));
+    return;
+  }
+  if (deps.pairing && req.method === "GET" && (req.url === "/pair/poll" || req.url?.startsWith("/pair/poll?"))) {
+    const url = new URL(req.url, "http://host");
+    const code = url.searchParams.get("code");
+    if (!code) {
+      sendJson(res, 400, { error: "missing code" });
+      return;
+    }
+    const result = deps.pairing.claim(code);
+    sendJson(res, 200, result);
+    return;
+  }
+  // Dashboard static assets at / and /assets/*. Resolve per request so a
+  // dashboard built after gateway start gets picked up.
+  const root = dashboardRoot();
+  if (root && req.method === "GET") {
     const url = new URL(req.url ?? "/", "http://host");
     const urlPath = url.pathname === "/" ? "/index.html" : url.pathname;
-    const filePath = join(DASHBOARD_ROOT, urlPath);
-    // Prevent directory traversal.
-    if (!filePath.startsWith(DASHBOARD_ROOT + sep) && filePath !== join(DASHBOARD_ROOT, "index.html")) {
+    const filePath = join(root, urlPath);
+    if (!filePath.startsWith(root + sep) && filePath !== join(root, "index.html")) {
       res.writeHead(403);
       res.end("forbidden");
       return;
     }
     if (serveStatic(res, filePath)) return;
-    // SPA fallback: serve index.html for unmatched routes.
-    if (serveStatic(res, join(DASHBOARD_ROOT, "index.html"))) return;
+    // SPA fallback: serve index.html for unmatched routes that don't look
+    // like asset requests (so a missing /assets/foo.js still 404s and the
+    // browser shows the real error).
+    if (!url.pathname.startsWith("/assets/") && serveStatic(res, join(root, "index.html"))) return;
   }
   res.writeHead(404, { "content-type": "text/plain" });
-  res.end("not found\n");
+  res.end(
+    root
+      ? `not found: ${req.url ?? "/"}\n`
+      : `dashboard not built — run \`pnpm -F @squad/dashboard build\` (or set SQUAD_DASHBOARD_DIR)\n`,
+  );
 }
 
 function buildDispatcher(deps: GatewayDeps): Dispatcher {
@@ -201,6 +287,25 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
   registerTaskMethods(d, deps.tasks, deps.broadcast);
   registerQuestionMethods(d, deps.questions);
   registerSubagentMethods(d, deps.subagentPool, deps.subagentRegistry, deps.sessions);
+
+  if (deps.approvals) registerApprovalMethods(d, deps.approvals);
+  if (deps.plugins) registerPluginMethods(d, deps.plugins);
+  if (deps.channels) registerChannelMethods(d, deps.channels);
+  if (deps.routineStore && deps.routineRunner) {
+    registerRoutineMethods(d, deps.routineStore, deps.routineRunner);
+  }
+
+  // Identity + peers need a PeerSource. When boot() doesn't pass one (test
+  // harness), synthesize a minimal in-process source so admin.peers still
+  // returns something well-formed.
+  const peers =
+    deps.peers ??
+    new PeerSource({
+      selfName: deps.config.server.squad_name,
+      selfPort: deps.config.server.port,
+    });
+
+  const adminPairing = deps.pairing;
   registerAdminMethods(d, {
     sessions: deps.sessions,
     startedAt: deps.startedAt,
@@ -217,6 +322,37 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
       requireForTags: deps.config.policy.approvals.require_for_tags,
       timeoutSeconds: deps.config.policy.approvals.timeout_seconds,
     },
+    squadName: deps.config.server.squad_name,
+    squadPort: deps.config.server.port,
+    squadHost: deps.config.server.host === "0.0.0.0" ? "127.0.0.1" : deps.config.server.host,
+    build: deps.config.server.build || deps.version,
+    peers,
+    ...(adminPairing ? { pairing: adminPairing } : {}),
   });
   return d;
+}
+
+function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+
+function readJson(req: IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("error", reject);
+    req.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf8");
+      if (raw.trim().length === 0) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(raw));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  });
 }

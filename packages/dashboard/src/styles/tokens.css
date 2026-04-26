@@ -1,0 +1,92 @@
+/* squad operator console — design tokens */
+:root {
+  /* surfaces */
+  --bg:           #0a0a0b;
+  --bg-elevated:  #101013;
+  --bg-card:      #16161b;
+  --bg-inset:     #0d0d10;
+  --bg-hover:     #1c1c22;
+  --bg-active:    #20212a;
+
+  /* foreground */
+  --fg:           #e6e7ea;
+  --fg-strong:    #ffffff;
+  --fg-muted:     #8b8d96;
+  --fg-faint:     #5a5c66;
+  --fg-dim:       #3d3f48;
+
+  /* lines */
+  --border:       #22242c;
+  --border-soft:  #1a1c22;
+  --border-strong:#2e3038;
+
+  /* brand + semantic */
+  --accent:       #5b8def;
+  --accent-soft:  #5b8def22;
+  --accent-line:  #5b8def55;
+  --ok:           #4ade80;
+  --warn:         #f59e0b;
+  --danger:       #f87171;
+  --info:         #60a5fa;
+  --magenta:      #c084fc;
+  --cyan:         #67e8f9;
+
+  /* scale */
+  --radius-sm: 3px;
+  --radius:    5px;
+  --radius-lg: 8px;
+  --shadow-1:  0 1px 0 rgba(255,255,255,.02), 0 1px 2px rgba(0,0,0,.6);
+  --shadow-2:  0 1px 0 rgba(255,255,255,.03), 0 8px 24px rgba(0,0,0,.5);
+
+  /* typography */
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --font-ui:   'Inter', system-ui, -apple-system, sans-serif;
+
+  --t-xs: 10.5px;
+  --t-sm: 11.5px;
+  --t-md: 12.5px;
+  --t-lg: 14px;
+  --t-xl: 17px;
+  --t-2xl: 22px;
+  --t-3xl: 30px;
+}
+
+[data-density="compact"] {
+  --t-xs: 10px;
+  --t-sm: 11px;
+  --t-md: 12px;
+}
+
+[data-theme="light"] {
+  --bg:           #f7f7f5;
+  --bg-elevated:  #ffffff;
+  --bg-card:      #ffffff;
+  --bg-inset:     #ececea;
+  --bg-hover:     #efeeec;
+  --bg-active:    #e6e5e2;
+  --fg:           #18191c;
+  --fg-strong:    #000;
+  --fg-muted:     #5b5d65;
+  --fg-faint:     #8a8c95;
+  --fg-dim:       #b9bac0;
+  --border:       #d9d9d4;
+  --border-soft:  #e6e5e1;
+  --border-strong:#c5c5c0;
+}
+
+[data-theme="hi-contrast"] {
+  --bg:           #000000;
+  --bg-elevated:  #050507;
+  --bg-card:      #0a0a0e;
+  --bg-inset:     #050507;
+  --bg-hover:     #1a1a22;
+  --bg-active:    #25252e;
+  --fg:           #ffffff;
+  --fg-strong:    #ffffff;
+  --fg-muted:     #c8cad2;
+  --fg-faint:     #9aa0aa;
+  --fg-dim:       #6c707a;
+  --border:       #4a4d56;
+  --border-soft:  #2e3038;
+  --border-strong:#7a7e88;
+}

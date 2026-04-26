@@ -6,9 +6,14 @@ import { listSessions, newSession, renameSession, sessionTree } from "./commands
 import { listTasks } from "./commands/tasks.js";
 import { answerQuestion, listQuestions } from "./commands/ask.js";
 import { showStatus } from "./commands/status.js";
-import { startGateway, stopGateway, gatewayLogs, runOnboard } from "./commands/lifecycle.js";
+import { startGateway, stopGateway, restartGateway, gatewayLogs, runOnboard } from "./commands/lifecycle.js";
 import { runMgr } from "./commands/mgr.js";
 import { runPair, runUnpair, runPairList } from "./commands/pair.js";
+import {
+  runPairBrowserApprove,
+  runPairBrowserList,
+  runPairBrowserCancel,
+} from "./commands/pair-browser.js";
 import {
   generateKey,
   showKey,
@@ -36,6 +41,7 @@ function helpText(): string {
     `    ${K("onboard")} ${D("[--force|--yes] [--squad <name>]")}  ${D("setup wizard (creates a squad)")}`,
     `    ${K("start")}                       ${D("docker compose up every registered squad")}`,
     `    ${K("stop")}                        ${D("docker compose stop every registered squad")}`,
+    `    ${K("restart")}                     ${D("full stop + start cycle for every registered squad")}`,
     `    ${K("status")}                      ${D("current squad's gateway liveness + session")}`,
     `    ${K("logs")}    ${D("[-f]")}                 ${D("tail current squad's logs")}`,
     "",
@@ -61,6 +67,11 @@ function helpText(): string {
     `    ${K("pair")} ${D("<channel> <user-id>")}      ${D("add a user to the channel's DM allow list")}`,
     `    ${K("unpair")} ${D("<channel> <user-id>")}    ${D("remove a user from the allow list")}`,
     `    ${K("pair list")} ${D("[channel]")}           ${D("show the allow list(s)")}`,
+    "",
+    `  ${H("Browser pairing")} ${D("— grant a browser tab dashboard access")}`,
+    `    ${K("pair browser")} ${D("<code>")}            ${D("approve a code shown in the dashboard's pair screen")}`,
+    `    ${K("pair browser list")}             ${D("show pending/approved browser pairings")}`,
+    `    ${K("pair browser cancel")} ${D("<code>")}     ${D("revoke a pairing (and its token)")}`,
     "",
     `  ${H("SSH keys")} ${D("— docker/data/ssh/; agents git-push with these")}`,
     `    ${K("key wizard")}                  ${D("interactive generate + paste-to-GitHub")}`,
@@ -125,6 +136,9 @@ async function main(): Promise<void> {
       return;
     case "stop":
       await stopGateway();
+      return;
+    case "restart":
+      await restartGateway(argv);
       return;
     case "status":
       await showStatus();
@@ -204,9 +218,30 @@ async function main(): Promise<void> {
     }
 
     case "pair": {
-      // squad pair <channel> <user-id>   — add user to channel's DM allow list
-      // squad pair list [channel]        — show the current allow list(s)
+      // Sub-dispatch:
+      //   squad pair <channel> <user-id>     — Discord-style channel allow list
+      //   squad pair list [channel]          — show the channel allow list(s)
+      //   squad pair browser <code>          — approve a browser pairing
+      //   squad pair browser list            — list browser pairings
+      //   squad pair browser cancel <code>   — revoke a browser pairing
       const sub = argv[0];
+      if (sub === "browser") {
+        argv.shift();
+        const action = argv[0];
+        if (action === "list" || action === "ls") {
+          await runPairBrowserList();
+          return;
+        }
+        if (action === "cancel" || action === "rm") {
+          argv.shift();
+          await runPairBrowserCancel(argv.shift());
+          return;
+        }
+        // Anything else is treated as the code itself (so `squad pair browser
+        // 7F2-4QK` works as the primary affordance the dashboard prints).
+        await runPairBrowserApprove(argv.shift());
+        return;
+      }
       if (sub === "list" || sub === "ls") {
         argv.shift();
         runPairList(argv[0]);

@@ -29,6 +29,12 @@ import { DeliveryQueue } from "./delivery/queue.js";
 import { RunCoordinator } from "./delivery/coordinator.js";
 import { PluginHost } from "./plugins/host.js";
 import { RoutineScheduler } from "./routines/scheduler.js";
+import { RoutineStore } from "./routines/store.js";
+import { ApprovalStore } from "./approvals/store.js";
+import { ChannelRegistry } from "./channels/registry.js";
+import { PeerSource } from "./peers/source.js";
+import { PairingStore } from "./auth/pairing.js";
+import { JsonFilePairingPersistence } from "./auth/pairing-persist.js";
 import { tagMatchPolicy, cascade } from "./approvals/policy.js";
 import type {
   ApprovalPolicy,
@@ -36,7 +42,8 @@ import type {
   RoutineDescriptor,
   SkillDescriptor,
 } from "@squad/plugin-sdk";
-import type { LLMClient } from "@squad/llm";
+import { createClient, createModelChain, type LLMClient } from "@squad/llm";
+import { resolveProviderConfig } from "./llm-config.js";
 import { createGatewayServer, type GatewayHandle } from "./server.js";
 import { seedCoreFiles } from "./agent-prompt.js";
 import { MemoryStore } from "./memory/store.js";
@@ -65,6 +72,17 @@ export { DeliveryQueue } from "./delivery/queue.js";
 export { RunCoordinator } from "./delivery/coordinator.js";
 export { PluginHost } from "./plugins/host.js";
 export { RoutineScheduler, matchesCron } from "./routines/scheduler.js";
+export { RoutineStore } from "./routines/store.js";
+export { ApprovalStore } from "./approvals/store.js";
+export { ChannelRegistry } from "./channels/registry.js";
+export { PeerSource } from "./peers/source.js";
+export { PairingStore } from "./auth/pairing.js";
+export {
+  JsonFilePairingPersistence,
+  MemoryPairingPersistence,
+  type PairingPersistence,
+  type PersistedPairing,
+} from "./auth/pairing-persist.js";
 export { tagMatchPolicy, allowAllPolicy, denyAllPolicy, cascade } from "./approvals/policy.js";
 export { Dispatcher } from "./dispatch/index.js";
 export { runChatTurn } from "./runs.js";
@@ -121,6 +139,8 @@ export interface BootedGateway {
     tasks: TaskStore;
     questions: QuestionStore;
     memory: MemoryStore;
+    approvals: ApprovalStore;
+    routines: RoutineStore;
   };
   subagents: {
     pool: SubagentPool;
@@ -128,6 +148,10 @@ export interface BootedGateway {
   };
   plugins: PluginHost;
   routines: RoutineScheduler;
+  routineStore: RoutineStore;
+  channels: ChannelRegistry;
+  peers: PeerSource;
+  pairing: PairingStore;
   coordinator: RunCoordinator;
   deliveryQueue: DeliveryQueue;
   broadcast: Broadcast;
@@ -193,6 +217,48 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   );
   const toolRegistry = opts.toolRegistry ?? new ToolRegistry().registerAll([...BUILTIN_TOOLS]);
   const subagentRegistry = new SubagentRegistry();
+
+  // Resolve provider config (api_key / api_key_env / base_url) into a
+  // ClientConfig and build a single primary+fallback client we hand to
+  // every code path that needs to talk to a model. Without this, the
+  // runner builds clients with just env-var fallbacks — which silently
+  // fails when callers configure keys via JSON instead of `process.env`.
+  const llmResolution = resolveProviderConfig(
+    config.llm.providers as Record<string, import("./llm-config.js").ProviderConfig>,
+  );
+  const sharedClient: LLMClient | undefined = (() => {
+    if (opts.clientOverride) return opts.clientOverride;
+    if (!config.llm.primary?.model) return undefined;
+    try {
+      const fallbackModels = config.llm.fallbacks.map((f) => f.model);
+      if (fallbackModels.length > 0) {
+        return createModelChain({
+          primary: config.llm.primary.model,
+          fallbacks: fallbackModels,
+          config: llmResolution.clientConfig,
+        }) as unknown as LLMClient;
+      }
+      return createClient(config.llm.primary.model, llmResolution.clientConfig);
+    } catch (err) {
+      logger.error(
+        { err, primary: config.llm.primary.model },
+        "could not build shared LLM client — chat.send will surface the error per-turn",
+      );
+      return undefined;
+    }
+  })();
+  if (llmResolution.missingKeys.length > 0) {
+    for (const m of llmResolution.missingKeys) {
+      logger.warn(
+        { provider: m.provider, envVar: m.envVar, reason: m.reason },
+        `LLM provider "${m.provider}" has no resolvable api key — calls to its models will fail`,
+      );
+    }
+  }
+  if (llmResolution.resolved.length > 0) {
+    logger.info({ providers: llmResolution.resolved }, "LLM providers resolved");
+  }
+
   const subagentPool = new SubagentPool(
     {
       registry: subagentRegistry,
@@ -201,7 +267,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
       logger,
       toolRegistry,
       workspaceDir,
-      ...(opts.clientOverride !== undefined ? { clientOverride: opts.clientOverride } : {}),
+      ...(sharedClient !== undefined ? { clientOverride: sharedClient } : {}),
     },
     {
       maxConcurrentGlobal: config.subagents.max_concurrent_global,
@@ -252,6 +318,17 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   const channelHandles: ChannelHandle[] = [];
   void cascade; // exported, not wired into a ToolRegistry seam yet
 
+  const channels = new ChannelRegistry({
+    onChannelChanged: (rec) => broadcast.publish("channels.changed", { channel: rec }),
+  });
+  const approvals = new ApprovalStore({
+    onPending: (a) => broadcast.publish(`approvals.pending/${a.sessionId}`, { approval: a }),
+    onDecided: (a) => broadcast.publish(`approvals.decided/${a.sessionId}`, { approval: a }),
+  });
+  const routineStore = new RoutineStore({
+    onFired: (e) => broadcast.publish(`routines.fired/${e.sessionId}`, e),
+  });
+
   const plugins = new PluginHost({
     toolRegistry,
     subagentRegistry,
@@ -261,6 +338,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     skills: skillsList,
     approvalPolicies,
     channels: channelHandles,
+    onPluginChanged: (rec) => broadcast.publish("plugins.changed", { plugin: rec }),
   });
 
   for (const entry of config.plugins) {
@@ -274,6 +352,11 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     }
   }
 
+  // After plugins finish loading, register their channels in the registry
+  // and adopt their routines into the dashboard-visible routine store.
+  for (const ch of channelHandles) channels.add(ch);
+  for (const r of routinesList) routineStore.adoptFromPlugin(r);
+
   const routines = new RoutineScheduler(
     async (r) => {
       logger.info({ routine: r.name }, "routine fired");
@@ -282,6 +365,10 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
         fallbacks: config.llm.fallbacks.map((f) => f.model),
         title: `routine:${r.name}`,
       });
+      // Tie the cron-fired session back to the routine record so dashboards
+      // can show "last run" / link to the session that ran it.
+      const rec = routineStore.list().find((rr) => rr.name === r.name);
+      if (rec) routineStore.markFired(rec.id, session.id);
       // Phase 10 runs the routine prompt through the agent loop via the
       // existing runChatTurn path. Delivery lands in the broadcast stream;
       // channel-specific delivery is a post-v1 refinement.
@@ -290,6 +377,43 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     logger,
   );
   for (const r of routinesList) routines.register(r);
+
+  // Persist approved browser pairings to <data_dir>/pairings.json so a
+  // gateway restart doesn't force every browser to re-pair.
+  const pairingsFile = join(config.server.data_dir, "pairings.json");
+  const pairingPersistence = new JsonFilePairingPersistence(pairingsFile);
+  const pairing = new PairingStore(
+    authenticator,
+    {
+      onRequested: (p) => broadcast.publish("pair.requested", { pairing: p }),
+      onApproved: (p) => broadcast.publish("pair.approved", { pairing: p }),
+      onCancelled: (p) => broadcast.publish("pair.cancelled", { pairing: p }),
+    },
+    { persistence: pairingPersistence },
+  );
+  const restored = pairing.hydrate();
+  if (restored > 0) {
+    logger.info({ restored, pairingsFile }, "restored persisted browser pairings");
+  }
+
+  const peers = new PeerSource({
+    selfName: config.server.squad_name,
+    selfPort: config.server.port,
+    selfHost: config.server.host === "0.0.0.0" ? "127.0.0.1" : config.server.host,
+  });
+  peers.start((next) => broadcast.publish("peers.changed", { peers: next }));
+
+  // Probe for the dashboard up front so a missing build is loud, not a
+  // mystery 404 in the browser. The HTTP layer re-resolves on every
+  // request, so this is informational only.
+  {
+    const probe = await import("./server.js").then((m) => m.dashboardRootForLogging());
+    if (probe) logger.info({ dashboardDir: probe }, "dashboard ready");
+    else
+      logger.warn(
+        "dashboard not built — `pnpm -F @squad/dashboard build` (or set SQUAD_DASHBOARD_DIR) to enable the SPA at /",
+      );
+  }
 
   const handle = createGatewayServer({
     config,
@@ -309,6 +433,22 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     memory: memoryService,
     startedAt,
     version: VERSION,
+    plugins,
+    approvals,
+    channels,
+    routineStore,
+    peers,
+    pairing,
+    ...(sharedClient !== undefined ? { clientOverride: sharedClient } : {}),
+    routineRunner: async (record) => {
+      const session = sessions.create({
+        model: record.model ?? config.llm.primary.model,
+        fallbacks: config.llm.fallbacks.map((f) => f.model),
+        title: `routine:${record.name}`,
+      });
+      logger.info({ routineId: record.id, sessionId: session.id }, "routine run_now");
+      return { sessionId: session.id };
+    },
     ...(opts.clientOverride !== undefined ? { clientOverride: opts.clientOverride } : {}),
   });
 
@@ -325,16 +465,21 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
 
   return {
     handle,
-    stores: { sessions, messages, toolCalls, tasks, questions, memory },
+    stores: { sessions, messages, toolCalls, tasks, questions, memory, approvals, routines: routineStore },
     subagents: { pool: subagentPool, registry: subagentRegistry },
     plugins,
     routines,
+    routineStore,
+    channels,
+    peers,
+    pairing,
     coordinator,
     deliveryQueue,
     broadcast,
     startChannels,
     close: async () => {
       routines.stop();
+      peers.stop();
       for (const ch of channelHandles) {
         try {
           await ch.stop();
