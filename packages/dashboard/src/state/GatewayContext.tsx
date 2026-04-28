@@ -54,6 +54,19 @@ export interface AdminConfig {
   approvals: { requireForTags: string[]; timeoutSeconds: number };
 }
 
+/**
+ * Full raw config.json contents — what the Settings forms bind to. Shape
+ * mirrors `configSchema` in `packages/gateway/src/config.ts` but is left
+ * loosely typed so optional defaults don't have to be re-mirrored client-side.
+ */
+export interface FullConfigState {
+  config: Record<string, unknown>;
+  /** Backend can write — false in deployments without SQUAD_CONFIG. */
+  editable: boolean;
+  /** Absolute path to config.json on the gateway host (for display). */
+  path: string | null;
+}
+
 export interface ChannelRecord {
   id: string;
   kind: string;
@@ -101,6 +114,7 @@ export interface GatewayState {
   squad: SquadIdentity | null;
   peers: PeerRecord[];
   config: AdminConfig | null;
+  fullConfig: FullConfigState | null;
   models: ModelOption[];
   plugins: PluginRecord[];
   channels: ChannelRecord[];
@@ -125,6 +139,11 @@ export interface GatewayState {
   messages: MessageRecord[];
   tasks: Task[];
   streaming: string;
+  /**
+   * True between the moment the user sends a message and the moment the agent
+   * starts emitting a response. Drives the chat typing indicator.
+   */
+  awaitingResponse: boolean;
   subagentTree: SubagentTreeNode | null;
   setActiveSessionId: (id: string | null) => void;
   refreshSessions: () => Promise<void>;
@@ -140,6 +159,16 @@ export interface GatewayState {
   updateTaskStatus: (taskId: string, status: Task["status"]) => Promise<void>;
   reloadPlugin: (id: string) => Promise<void>;
   cancelPairing: (code: string) => Promise<void>;
+  /** Reload the on-disk config from the gateway (Settings form sync). */
+  refreshFullConfig: () => Promise<void>;
+  /**
+   * Persist a single config path to disk and refresh state. The value can be
+   * any JSON-serializable shape — primitive, object, or array — depending on
+   * which path you're writing to.
+   */
+  setConfigPath: (path: string, value: unknown) => Promise<void>;
+  /** Remove a single config path on disk and refresh state. */
+  unsetConfigPath: (path: string) => Promise<void>;
   createRoutine: (input: {
     name: string;
     cron: string;
@@ -237,6 +266,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
   const [squad, setSquad] = useState<SquadIdentity | null>(null);
   const [peers, setPeers] = useState<PeerRecord[]>([]);
   const [config, setConfig] = useState<AdminConfig | null>(null);
+  const [fullConfig, setFullConfig] = useState<FullConfigState | null>(null);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [plugins, setPlugins] = useState<PluginRecord[]>([]);
   const [channels, setChannels] = useState<ChannelRecord[]>([]);
@@ -250,6 +280,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
   const [messages, setMessages] = useState<MessageRecord[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [streaming, setStreaming] = useState<string>("");
+  const [awaitingResponse, setAwaitingResponse] = useState<boolean>(false);
   const [chatError, setChatError] = useState<{ message: string; at: string } | null>(null);
   const [subagentTree, setSubagentTree] = useState<SubagentTreeNode | null>(null);
   const subscribedRef = useRef<Set<string>>(new Set());
@@ -322,6 +353,38 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     );
     setPairings(list);
   }, [client]);
+
+  const refreshFullConfig = useCallback(async () => {
+    const result = await tryRequest(
+      () => client.request("admin.config.full", {}),
+      null as FullConfigState | null,
+    );
+    if (result) setFullConfig(result);
+  }, [client]);
+
+  // Persist a single path. The gateway re-validates against `configSchema`
+  // and writes atomically; we then echo the returned config into local state
+  // so the form reflects what's actually on disk (handy if zod normalized
+  // the input, e.g. coerced a number-as-string).
+  const setConfigPath = useCallback(
+    async (path: string, value: unknown) => {
+      const { config: next } = await client.request("admin.config.set", { path, value });
+      setFullConfig((cur) =>
+        cur ? { ...cur, config: next } : { config: next, editable: true, path: null },
+      );
+    },
+    [client],
+  );
+
+  const unsetConfigPath = useCallback(
+    async (path: string) => {
+      const { config: next } = await client.request("admin.config.unset", { path });
+      setFullConfig((cur) =>
+        cur ? { ...cur, config: next } : { config: next, editable: true, path: null },
+      );
+    },
+    [client],
+  );
 
   const refreshTreeFor = useCallback(
     async (rootId: string) => {
@@ -401,6 +464,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
         refreshPeers(),
         refreshRoutines(),
         refreshPairings(),
+        refreshFullConfig(),
       ]);
     })();
     return () => {
@@ -415,6 +479,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     refreshPeers,
     refreshRoutines,
     refreshPairings,
+    refreshFullConfig,
   ]);
 
   // Periodic health refresh — drives uptime + session counts in the status bar.
@@ -467,6 +532,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     if (!activeSession) return;
     setMessages([]);
     setStreaming("");
+    setAwaitingResponse(false);
     setChatError(null);
     setTasks([]);
     let cancelled = false;
@@ -525,6 +591,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
         const tSess = topic.split("/")[1];
         if (activeSessionId && tSess === activeSessionId) {
           setStreaming((s) => s + (data as { delta: string }).delta);
+          setAwaitingResponse(false);
         }
       } else if (topic.startsWith("chat.user_message/")) {
         const tSess = topic.split("/")[1];
@@ -533,12 +600,23 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
           // A new user message means whatever errored before is no longer
           // the most recent thing — clear the banner.
           setChatError(null);
+          setAwaitingResponse(true);
         }
       } else if (topic.startsWith("chat.assistant_message/")) {
         const tSess = topic.split("/")[1];
         if (activeSessionId && tSess === activeSessionId) {
           setMessages((m) => [...m, (data as { message: MessageRecord }).message]);
           setStreaming("");
+          setAwaitingResponse(false);
+        }
+      } else if (topic.startsWith("chat.tool_result/")) {
+        // Between a tool finishing and the next text/tool_use, the agent is
+        // thinking again — re-arm the indicator. The dashboard doesn't render
+        // tool calls live (they appear via the final assistant_message), so
+        // without this the UI looks idle for the whole tool turn.
+        const tSess = topic.split("/")[1];
+        if (activeSessionId && tSess === activeSessionId) {
+          setAwaitingResponse(true);
         }
       } else if (topic.startsWith("chat.error/")) {
         const tSess = topic.split("/")[1];
@@ -546,6 +624,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
           const d = data as { message?: string };
           setChatError({ message: d.message ?? "chat error", at: new Date().toISOString() });
           setStreaming("");
+          setAwaitingResponse(false);
         }
       } else if (topic.startsWith("tasks.")) {
         if (activeSession) {
@@ -597,6 +676,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
       if (!activeSession || !text.trim()) return;
       try {
         setChatError(null);
+        setAwaitingResponse(true);
         await client.request("chat.send", { sessionId: activeSession.id, content: text });
       } catch (err) {
         // Surface the rejection in the chat banner so the user sees that
@@ -605,6 +685,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
           message: (err as Error).message ?? "chat.send failed",
           at: new Date().toISOString(),
         });
+        setAwaitingResponse(false);
         throw err;
       }
     },
@@ -764,6 +845,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     squad,
     peers,
     config,
+    fullConfig,
     models,
     plugins,
     channels,
@@ -782,6 +864,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     messages,
     tasks,
     streaming,
+    awaitingResponse,
     subagentTree,
     setActiveSessionId,
     refreshSessions: async () => {
@@ -799,6 +882,9 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     updateTaskStatus,
     reloadPlugin,
     cancelPairing,
+    refreshFullConfig,
+    setConfigPath,
+    unsetConfigPath,
     createRoutine,
     updateRoutine,
     deleteRoutine,

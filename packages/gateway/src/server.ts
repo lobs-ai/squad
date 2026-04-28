@@ -4,7 +4,7 @@ import { readFileSync, existsSync, statSync } from "node:fs";
 import { extname, join, resolve as resolvePath, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
-import { ToolRegistry } from "@squad/tools";
+import { ToolRegistry, type ConfigBackend } from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
 import type { Logger } from "./logger.js";
 import type { Authenticator } from "./auth.js";
@@ -72,6 +72,19 @@ export interface GatewayDeps {
   peers?: PeerSource;
   /** Browser pairing store, powering `/pair/*` HTTP + `admin.pair.*` dispatch. */
   pairing?: PairingStore;
+  /**
+   * Read/write backend for config.json, powering `admin.config.full/set/unset`.
+   * Optional — absent in tests/ephemeral deployments. The Settings UI hides
+   * edit controls when `admin.config.full` reports `editable: false`.
+   */
+  configBackend?: ConfigBackend;
+  /** Absolute path to config.json (only set when `configBackend` is). */
+  configPath?: string;
+  /**
+   * Returns a JSON-shaped snapshot of the current live config. Used as a
+   * read-only fallback when there is no `configBackend` wired up.
+   */
+  liveConfigSnapshot?: () => Record<string, unknown>;
   /** Testing seam: inject an LLMClient to bypass real provider calls. */
   clientOverride?: LLMClient;
 }
@@ -328,6 +341,9 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
     build: deps.config.server.build || deps.version,
     peers,
     ...(adminPairing ? { pairing: adminPairing } : {}),
+    ...(deps.configBackend ? { configBackend: deps.configBackend } : {}),
+    ...(deps.configPath ? { configPath: deps.configPath } : {}),
+    ...(deps.liveConfigSnapshot ? { liveConfigSnapshot: deps.liveConfigSnapshot } : {}),
   });
   return d;
 }

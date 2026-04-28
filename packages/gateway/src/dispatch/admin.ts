@@ -3,6 +3,7 @@ import type { SessionStore } from "../db/sessions.js";
 import { augmentWithExtras, listAvailableModels } from "@squad/llm";
 import type { PeerSource } from "../peers/source.js";
 import type { PairingStore } from "../auth/pairing.js";
+import type { ConfigBackend } from "@squad/tools";
 
 export interface AdminDeps {
   sessions: SessionStore;
@@ -28,6 +29,17 @@ export interface AdminDeps {
   peers: PeerSource;
   /** Browser pairing store. Optional so older harnesses still wire admin.* */
   pairing?: PairingStore;
+  /**
+   * Read/write backend for the on-disk config.json. Present iff the gateway
+   * was booted with a `configPath`. When absent, `admin.config.full` returns
+   * the live in-memory config with `editable: false`, and `admin.config.set`
+   * / `admin.config.unset` reject with a clear error.
+   */
+  configBackend?: ConfigBackend;
+  /** Absolute path to config.json if `configBackend` is wired. */
+  configPath?: string;
+  /** A snapshot of the current live config — fallback when no backend exists. */
+  liveConfigSnapshot?: () => Record<string, unknown>;
 }
 
 export function registerAdminMethods(dispatcher: Dispatcher, deps: AdminDeps): void {
@@ -51,6 +63,42 @@ export function registerAdminMethods(dispatcher: Dispatcher, deps: AdminDeps): v
     subagents: deps.subagents,
     approvals: deps.approvals,
   }));
+
+  dispatcher.register("admin.config.full", async () => {
+    if (deps.configBackend) {
+      const config = await deps.configBackend.get();
+      return {
+        config,
+        editable: true,
+        path: deps.configPath ?? null,
+      };
+    }
+    return {
+      config: deps.liveConfigSnapshot ? deps.liveConfigSnapshot() : {},
+      editable: false,
+      path: null,
+    };
+  });
+
+  dispatcher.register("admin.config.set", async (params) => {
+    if (!deps.configBackend) {
+      throw new Error(
+        "config edits unavailable: gateway was started without SQUAD_CONFIG (no config.json to write to)",
+      );
+    }
+    const config = await deps.configBackend.setValue(params.path, params.value);
+    return { config };
+  });
+
+  dispatcher.register("admin.config.unset", async (params) => {
+    if (!deps.configBackend) {
+      throw new Error(
+        "config edits unavailable: gateway was started without SQUAD_CONFIG (no config.json to write to)",
+      );
+    }
+    const config = await deps.configBackend.unsetValue(params.path);
+    return { config };
+  });
 
   dispatcher.register("admin.models", async () => {
     // The catalog only knows the well-known providers (anthropic, openai,

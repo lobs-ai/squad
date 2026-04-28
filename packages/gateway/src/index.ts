@@ -289,13 +289,18 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   const memoryService = new MemoryService(memory);
   logger.info({ memoryDir }, "memory store ready");
 
-  if (opts.configPath) {
-    const configBackend = new JsonConfigBackend({
-      path: opts.configPath,
-      onUpdate: (next) => {
-        liveConfig.current = next;
-      },
-    });
+  // Single ConfigBackend feeds both the agent's `set_config` tools AND the
+  // dashboard's `admin.config.set` RPC, so writes from either side stay in
+  // sync (and the validation-on-write contract is honored once).
+  const configBackend = opts.configPath
+    ? new JsonConfigBackend({
+        path: opts.configPath,
+        onUpdate: (next) => {
+          liveConfig.current = next;
+        },
+      })
+    : undefined;
+  if (configBackend) {
     registerConfigTools(toolRegistry, configBackend);
   }
 
@@ -440,6 +445,9 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     peers,
     pairing,
     ...(sharedClient !== undefined ? { clientOverride: sharedClient } : {}),
+    ...(configBackend ? { configBackend } : {}),
+    ...(opts.configPath ? { configPath: opts.configPath } : {}),
+    liveConfigSnapshot: () => liveConfig.current as unknown as Record<string, unknown>,
     routineRunner: async (record) => {
       const session = sessions.create({
         model: record.model ?? config.llm.primary.model,

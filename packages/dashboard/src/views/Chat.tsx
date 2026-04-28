@@ -41,6 +41,7 @@ export function Chat(): JSX.Element {
     treeSessions,
     messages,
     streaming,
+    awaitingResponse,
     tasks,
     subagentTree,
     pendingQuestions,
@@ -102,7 +103,7 @@ export function Chat(): JSX.Element {
     if (!el) return;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
     if (nearBottom) el.scrollTop = el.scrollHeight;
-  }, [messages.length, streaming]);
+  }, [messages.length, streaming, awaitingResponse]);
 
   if (!activeSession) {
     return (
@@ -346,6 +347,7 @@ export function Chat(): JSX.Element {
               onDecide={(aid, dec) => void decideApproval(aid, dec)}
             />
           ))}
+          {awaitingResponse && !streaming && <TypingIndicator />}
         </div>
         <div style={{ borderTop: "1px solid var(--border)", padding: 10, background: "var(--bg-elevated)" }}>
           <form
@@ -866,6 +868,23 @@ function ChatRow({
     );
   }
   return null;
+}
+
+function TypingIndicator(): JSX.Element {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div className="row gap-2" style={{ marginBottom: 4 }}>
+        <Icon name="bot" size={12} style={{ color: "var(--accent)" }} />
+        <span className="strong">agent</span>
+        <span className="hint">thinking…</span>
+      </div>
+      <div className="typing-dots" aria-label="agent is typing">
+        <span />
+        <span />
+        <span />
+      </div>
+    </div>
+  );
 }
 
 function formatToolTarget(input: unknown): string | null {

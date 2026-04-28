@@ -27,6 +27,34 @@ export const adminConfigResult = z.object({
   }),
 });
 
+// Full-tree read + path-scoped writes used by the Settings UI. The result is
+// intentionally untyped (`unknown`) on the wire — the gateway re-validates
+// every write against the canonical zod schema, and the dashboard renders
+// known sections explicitly. `editable: false` means the gateway has no
+// SQUAD_CONFIG file to write to (test/ephemeral deployments) — the SPA hides
+// edit affordances in that case.
+export const adminConfigFullParams = z.object({}).optional();
+export const adminConfigFullResult = z.object({
+  config: z.record(z.unknown()),
+  editable: z.boolean(),
+  path: z.string().nullable(),
+});
+
+export const adminConfigSetParams = z.object({
+  path: z.string().min(1),
+  value: z.unknown(),
+});
+export const adminConfigSetResult = z.object({
+  config: z.record(z.unknown()),
+});
+
+export const adminConfigUnsetParams = z.object({
+  path: z.string().min(1),
+});
+export const adminConfigUnsetResult = z.object({
+  config: z.record(z.unknown()),
+});
+
 export const adminModelsParams = z.object({}).optional();
 export const adminModelsResult = z.object({
   models: z.array(
@@ -146,6 +174,9 @@ export const pairCancelledEvent = z.object({ pairing: pairingViewSchema });
 export const adminMethods = {
   "admin.health": { params: adminHealthParams, result: adminHealthResult },
   "admin.config": { params: adminConfigParams, result: adminConfigResult },
+  "admin.config.full": { params: adminConfigFullParams, result: adminConfigFullResult },
+  "admin.config.set": { params: adminConfigSetParams, result: adminConfigSetResult },
+  "admin.config.unset": { params: adminConfigUnsetParams, result: adminConfigUnsetResult },
   "admin.models": { params: adminModelsParams, result: adminModelsResult },
   "admin.identity": { params: adminIdentityParams, result: adminIdentityResult },
   "admin.peers": { params: adminPeersParams, result: adminPeersResult },
