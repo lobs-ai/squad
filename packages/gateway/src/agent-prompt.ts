@@ -222,10 +222,19 @@ const SEEDS: Record<CoreFileName, string> = {
  */
 export function seedCoreFiles(workspaceDir: string): string {
   const coreDir = join(workspaceDir, CORE_DIR);
+  return seedCoreFilesAt(coreDir);
+}
+
+/**
+ * Same as `seedCoreFiles` but writes into an explicit core directory. Used
+ * by named subagents which keep their own SOUL/USER/MEMORY under
+ * `<workspace>/.squad/subagents/<name>/`. Returns the directory path.
+ */
+export function seedCoreFilesAt(coreDir: string, overrides?: Partial<Record<CoreFileName, string>>): string {
   mkdirSync(coreDir, { recursive: true });
   for (const name of CORE_FILES) {
     const path = join(coreDir, name);
-    if (!existsSync(path)) writeFileSync(path, SEEDS[name]);
+    if (!existsSync(path)) writeFileSync(path, overrides?.[name] ?? SEEDS[name]);
   }
   return coreDir;
 }
@@ -243,12 +252,27 @@ export interface CoreFileContents {
  * effect on the next turn.
  */
 export function loadCoreFiles(workspaceDir: string): CoreFileContents {
-  const coreDir = join(workspaceDir, CORE_DIR);
+  return loadCoreFilesAt(join(workspaceDir, CORE_DIR));
+}
+
+/**
+ * Same as `loadCoreFiles` but reads from an explicit core directory.
+ * Missing files become empty strings.
+ */
+export function loadCoreFilesAt(coreDir: string): CoreFileContents {
   return {
     soul: readIfExists(join(coreDir, "SOUL.md")),
     user: readIfExists(join(coreDir, "USER.md")),
     memory: readIfExists(join(coreDir, "MEMORY.md")),
   };
+}
+
+/** Empty core file contents — for ad-hoc subagents that don't carry their own. */
+export const EMPTY_CORE_FILES: CoreFileContents = { soul: "", user: "", memory: "" };
+
+/** Resolve the core directory for a named subagent. */
+export function subagentCoreDir(workspaceDir: string, name: string): string {
+  return join(workspaceDir, CORE_DIR, "subagents", name);
 }
 
 function readIfExists(path: string): string {

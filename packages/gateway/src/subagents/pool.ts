@@ -1,5 +1,9 @@
 import { Session, runAgent, type AgentSpec } from "@squad/runner";
-import { ToolRegistry } from "@squad/tools";
+import {
+  ToolRegistry,
+  type ToolGroupRegistry,
+  formatGroupIndexForPrompt,
+} from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
 import type { SubagentDefinition } from "@squad/protocol";
 import type { SessionStore } from "../db/sessions.js";
@@ -7,6 +11,15 @@ import type { Broadcast } from "../broadcast.js";
 import type { Logger } from "../logger.js";
 import type { SubagentRegistry } from "./registry.js";
 import type { ToolsetRegistry } from "../toolsets/registry.js";
+import type { MemoryService } from "../memory/service.js";
+import {
+  buildSquadSystemPrompt,
+  loadCoreFilesAt,
+  seedCoreFilesAt,
+  subagentCoreDir,
+  EMPTY_CORE_FILES,
+  type CoreFileContents,
+} from "../agent-prompt.js";
 
 export interface PoolLimits {
   maxConcurrentGlobal: number;
@@ -16,19 +29,16 @@ export interface PoolLimits {
 
 export interface SpawnInput {
   parentSessionId: string;
-  subagent: string;
-  input: unknown;
+  /** Registered subagent name. Omit for an ad-hoc spawn. */
+  subagent?: string;
+  /** First user message handed to the subagent. */
+  prompt?: string;
+  /** Optional structured payload — JSON-stringified and prepended to the prompt. */
+  input?: unknown;
+  /** Telemetry label for ad-hoc spawns. */
+  name?: string;
   modelOverride?: string;
-  /**
-   * Optional list of toolset names. Unioned with the definition's
-   * `toolsets` and the def's explicit `tools`; resolved against the
-   * gateway's ToolsetRegistry at spawn time.
-   */
   toolsets?: string[];
-  /**
-   * Optional ad-hoc tool list. Unioned with whatever the definition and
-   * any toolsets resolve to.
-   */
   tools?: string[];
   wait: boolean;
 }
@@ -54,8 +64,14 @@ export interface SubagentPoolDeps {
   /** Persistent agent home directory shared with the parent. */
   workspaceDir: string;
   clientOverride?: LLMClient;
-  /** Optional — when set, spawn unions resolved toolset tools. */
+  /** When set, spawn unions resolved toolset tools. */
   toolsets?: ToolsetRegistry;
+  /** Tool group registry — used to render the lazy `<tool_groups>` index. */
+  toolGroups?: ToolGroupRegistry;
+  /** Memory service — when set, named subagents get the eager + retrieval blocks. */
+  memory?: MemoryService;
+  /** Default model used for ad-hoc spawns when the caller didn't pin one. */
+  defaultModel?: string;
 }
 
 export class SubagentPool {
@@ -68,9 +84,13 @@ export class SubagentPool {
     private readonly limits: PoolLimits,
   ) {}
 
+  /** Bind the memory service after construction (it boots after the pool). */
+  setMemory(memory: MemoryService): void {
+    (this.deps as { memory?: MemoryService }).memory = memory;
+  }
+
   spawn(input: SpawnInput): SpawnHandle {
-    const def = this.deps.registry.get(input.subagent);
-    if (!def) throw new Error(`subagent '${input.subagent}' is not registered`);
+    const def = this.resolveDefinition(input);
 
     const depth = this.depth(input.parentSessionId);
     if (depth >= this.limits.maxTreeDepth) {
@@ -80,22 +100,23 @@ export class SubagentPool {
     }
 
     // Resolve any toolset references up front — a missing toolset throws
-    // here, before we create the session row. The resolved list flows into
-    // runOne via spawn-input shadow on the local entry.
+    // here, before we create the session row.
     const resolvedTools = this.resolveSpawnTools(def, input);
+    const isAdHoc = !input.subagent;
 
     const session = this.deps.sessions.create({
       model: input.modelOverride ?? def.model,
       parentSessionId: input.parentSessionId,
-      subagentDefId: def.name,
-      title: `${def.name}`,
+      // Ad-hoc spawns leave subagentDefId null so the row clearly marks the
+      // run as one-off.
+      ...(isAdHoc ? {} : { subagentDefId: def.name }),
+      title: isAdHoc ? input.name ?? "ad-hoc subagent" : def.name,
     });
 
-    // Stash the resolved tool list on the input so runOne uses it instead of
-    // def.tools alone. Avoids changing every internal signature.
-    const spawnInput: SpawnInput & { _resolvedTools?: string[] } = {
+    const spawnInput: SpawnInput & { _resolvedTools?: string[]; _adHoc?: boolean } = {
       ...input,
       _resolvedTools: resolvedTools,
+      _adHoc: isAdHoc,
     };
 
     let cancelled = false;
@@ -116,7 +137,7 @@ export class SubagentPool {
         parentSessionId: input.parentSessionId,
         sessionId: session.id,
         subagent: def.name,
-        input: input.input,
+        input: input.input ?? input.prompt ?? null,
       });
 
       try {
@@ -163,8 +184,33 @@ export class SubagentPool {
   }
 
   /**
+   * Resolve the SubagentDefinition the spawn should use. For named spawns we
+   * look it up in the registry. For ad-hoc spawns we synthesize an ephemeral
+   * definition from the caller's input — `tools`/`toolsets`/`model` come
+   * straight off the spawn input. The synthesized def carries no
+   * systemPrompt — the system prompt is always the Squad system prompt.
+   */
+  private resolveDefinition(input: SpawnInput): SubagentDefinition {
+    if (input.subagent) {
+      const def = this.deps.registry.get(input.subagent);
+      if (!def) throw new Error(`subagent '${input.subagent}' is not registered`);
+      return def;
+    }
+    const adhocName = input.name ? `adhoc:${input.name}` : "adhoc";
+    return {
+      name: adhocName,
+      description: "Ad-hoc subagent",
+      model: input.modelOverride ?? this.deps.defaultModel ?? "claude-sonnet-4-5",
+      tools: input.tools ?? [],
+      ...(input.toolsets ? { toolsets: input.toolsets } : {}),
+    };
+  }
+
+  /**
    * Resolve the union of (def.tools ∪ resolved-toolsets ∪ explicit input.tools).
    * Throws on any unknown toolset reference — see ToolsetRegistry.resolve.
+   * For ad-hoc spawns with neither tools nor toolsets, returns the parent's
+   * full tool list so the agent doesn't have to enumerate.
    */
   private resolveSpawnTools(def: SubagentDefinition, input: SpawnInput): string[] {
     const seen = new Set<string>();
@@ -188,6 +234,16 @@ export class SubagentPool {
       }
       for (const ts of toolsetNames) {
         for (const t of this.deps.toolsets.resolve(ts)) push(t);
+      }
+    }
+
+    // Ad-hoc with no explicit tool list → inherit everything the parent has.
+    // Skip describe_tool_group; that's a meta tool for the lazy-loading flow
+    // which the subagent doesn't need.
+    if (out.length === 0 && !input.subagent) {
+      for (const name of this.deps.toolRegistry.names()) {
+        if (name === "describe_tool_group") continue;
+        push(name);
       }
     }
 
@@ -247,7 +303,7 @@ export class SubagentPool {
   private async runOne(
     sessionId: string,
     def: SubagentDefinition,
-    input: SpawnInput & { _resolvedTools?: string[] },
+    input: SpawnInput & { _resolvedTools?: string[]; _adHoc?: boolean },
   ) {
     // Build a filtered tool registry: only tools the subagent definition allows.
     const allowed = input._resolvedTools ?? def.tools;
@@ -269,8 +325,40 @@ export class SubagentPool {
       });
     }
 
-    // Seed the subagent's message history with the structured task input.
-    const task = JSON.stringify(input.input);
+    // First user message: structured input + free-form prompt joined with a
+    // blank line. At least one is always present.
+    const segments: string[] = [];
+    if (input.input !== undefined && input.input !== null) {
+      segments.push(typeof input.input === "string" ? input.input : JSON.stringify(input.input));
+    }
+    if (input.prompt) segments.push(input.prompt);
+    const task = segments.join("\n\n") || def.description;
+
+    // Build the Squad system prompt the same way the primary agent does.
+    // Named subagents get their own per-name core dir; ad-hoc skip core
+    // files entirely. Named subagents also get the memory eager block; we
+    // skip retrieval here since subagents don't carry per-turn user input
+    // through the chat path.
+    let coreFiles: CoreFileContents = EMPTY_CORE_FILES;
+    if (!input._adHoc) {
+      const coreDir = subagentCoreDir(this.deps.workspaceDir, def.name);
+      seedCoreFilesAt(coreDir, def.systemPrompt ? { "SOUL.md": def.systemPrompt } : undefined);
+      coreFiles = loadCoreFilesAt(coreDir);
+    }
+    const memoryEager = input._adHoc
+      ? []
+      : (await this.deps.memory?.eagerForSession(sessionId)) ?? [];
+    const toolGroupsIndex = this.deps.toolGroups
+      ? formatGroupIndexForPrompt(this.deps.toolGroups.lazy())
+      : undefined;
+
+    const systemPrompt = buildSquadSystemPrompt({
+      workspaceDir: this.deps.workspaceDir,
+      coreFiles,
+      memoryEager,
+      ...(toolGroupsIndex ? { toolGroupsIndex } : {}),
+    });
+
     const session = new Session([{ role: "user", content: task }]);
 
     const spec: AgentSpec = {
@@ -283,7 +371,7 @@ export class SubagentPool {
       timeout: { total: def.limits?.timeoutMs ? Math.ceil(def.limits.timeoutMs / 1000) : 300 },
       maxTokens: def.limits?.maxTokens ?? 16384,
       session,
-      systemPrompt: def.systemPrompt,
+      systemPrompt,
       context: { sessionId, parentTaskId: input.parentSessionId },
       ...(this.deps.clientOverride !== undefined ? { clientOverride: this.deps.clientOverride } : {}),
       onTextChunk: (delta) => {

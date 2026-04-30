@@ -331,7 +331,14 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
   });
   registerTaskMethods(d, deps.tasks, deps.broadcast);
   registerQuestionMethods(d, deps.questions);
-  registerSubagentMethods(d, deps.subagentPool, deps.subagentRegistry, deps.sessions);
+  registerSubagentMethods(d, {
+    pool: deps.subagentPool,
+    registry: deps.subagentRegistry,
+    sessions: deps.sessions,
+    ...(deps.subagentDefStore ? { defStore: deps.subagentDefStore } : {}),
+    workspaceDir: deps.workspaceDir,
+    defaultModel: deps.config.llm.primary.model,
+  });
 
   if (deps.approvals) registerApprovalMethods(d, deps.approvals);
   if (deps.plugins) registerPluginMethods(d, deps.plugins);

@@ -80,6 +80,21 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
     verbose: "compact" as import("../ui/render.js").VerboseLevel,
     shouldExit: false,
     pendingQuestion: null as QuestionRecord | null,
+    // Index into pendingQuestion.input.questions of the sub-question the
+    // user is currently answering. Only meaningful when pendingQuestion
+    // is set; reset to 0 each time a new record is started.
+    pendingSubIdx: 0,
+    // Answers accumulated for the active record while the user walks
+    // through its sub-questions one at a time. Submitted as a single
+    // questions.answer call once every sub-question has a value.
+    pendingAnswers: {} as Record<string, string>,
+    // True between the user typing "o"/"other" and submitting the next
+    // line, which is then taken verbatim as the freeform answer for the
+    // current sub-question.
+    awaitingFreeform: false,
+    // Records that arrived while another was being answered. Drained in
+    // FIFO order each time the active question is fully answered.
+    questionQueue: [] as QuestionRecord[],
     pendingApproval: null as ApprovalRecord | null,
     taskCount: 0,
     openQuestions: 0,
@@ -98,6 +113,11 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
       state.activeSubagents = 0;
       state.pendingApprovals = 0;
       state.pendingApproval = null;
+      state.pendingQuestion = null;
+      state.pendingSubIdx = 0;
+      state.pendingAnswers = {};
+      state.awaitingFreeform = false;
+      state.questionQueue = [];
       await client.subscribe(subscribedTopics(newId));
       await refreshTaskCount(client, state);
       await refreshOpenQuestions(client, state);
@@ -273,17 +293,29 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
     } else if (topic.startsWith("tasks.")) {
       void refreshTaskCount(client, state);
     } else if (topic.startsWith("questions.asked/")) {
-      state.pendingQuestion = (data as { question: QuestionRecord }).question;
+      const q = (data as { question: QuestionRecord }).question;
       state.openQuestions = (state.openQuestions ?? 0) + 1;
-      printSafely(() => process.stdout.write(render.renderAskPrompt(state.pendingQuestion!)));
-      prePrompt();
+      if (state.pendingQuestion) {
+        // Already answering one — queue this for after.
+        state.questionQueue.push(q);
+      } else {
+        startQuestion(q);
+      }
     } else if (
       topic.startsWith("questions.answered/") ||
       topic.startsWith("questions.cancelled/") ||
       topic.startsWith("questions.timed_out/")
     ) {
-      state.pendingQuestion = null;
+      const q = (data as { question: QuestionRecord }).question;
       state.openQuestions = Math.max(0, (state.openQuestions ?? 1) - 1);
+      // If the gateway-side resolution races our local clear (e.g. timeout
+      // fires while the user is mid-answer), drop the active entry too so
+      // the REPL doesn't keep prompting for a question that's gone.
+      if (state.pendingQuestion?.id === q.id) {
+        clearActiveQuestion();
+      } else {
+        state.questionQueue = state.questionQueue.filter((x) => x.id !== q.id);
+      }
     } else if (
       topic.startsWith("approvals.requested/") ||
       topic.startsWith("approvals.pending/")
@@ -293,16 +325,29 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
       if (state.pendingApproval?.id === approval.id) return;
       state.pendingApproval = approval;
       state.pendingApprovals += 1;
-      printSafely(() => {
-        process.stdout.write(renderApprovalPrompt(approval));
-      });
-      prePrompt();
+      // Same logic as ask_user: stop the spinner (the agent is blocked on
+      // us, not thinking), print the prompt, and force the input to show
+      // even mid-run.
+      if (activeRunId !== null) spinner.stop();
+      process.stdout.write(renderApprovalPrompt(approval));
+      forceShowInput();
     } else if (topic.startsWith("approvals.decided/")) {
       const approval = (data as { approval: ApprovalRecord }).approval;
-      if (state.pendingApproval?.id === approval.id) {
-        state.pendingApproval = null;
-      }
+      const wasActive = state.pendingApproval?.id === approval.id;
+      if (wasActive) state.pendingApproval = null;
       state.pendingApprovals = Math.max(0, state.pendingApprovals - 1);
+      // Hand the bottom row back to the spinner if we held it open just
+      // for this approval and a run is still going.
+      if (
+        wasActive &&
+        activeRunId !== null &&
+        !state.pendingQuestion &&
+        !state.pendingApproval
+      ) {
+        spinner.setLabel("thinking");
+        spinner.start();
+        input.pause();
+      }
     } else if (topic.startsWith("subagents.spawned/")) {
       state.activeSubagents += 1;
     } else if (
@@ -317,9 +362,82 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
   void refreshTaskCount(client, state);
   void refreshOpenQuestions(client, state);
 
+  /**
+   * The agent has called ask_user and is now blocked on us. We need to
+   * stop the spinner (it's lying — the agent isn't thinking, it's
+   * waiting), surface the question, and resume the input even if a run is
+   * still active. The spinner restarts only after the user finishes
+   * answering all sub-questions and the run continues.
+   */
+  function startQuestion(q: QuestionRecord): void {
+    state.pendingQuestion = q;
+    state.pendingSubIdx = 0;
+    state.pendingAnswers = {};
+    state.awaitingFreeform = false;
+    if (activeRunId !== null) spinner.stop();
+    process.stdout.write(render.renderAskPrompt(q, 0, {}));
+    forceShowInput();
+  }
+
+  function clearActiveQuestion(): void {
+    // Idempotent: the local line-handler path and the questions.answered
+    // event both want to drive the queue + spinner restart, and they race
+    // by milliseconds. If pendingQuestion is already null and there's
+    // nothing queued, the first caller already finished; bail out so we
+    // don't double-start the spinner.
+    if (state.pendingQuestion === null && state.questionQueue.length === 0) {
+      return;
+    }
+    state.pendingQuestion = null;
+    state.pendingSubIdx = 0;
+    state.pendingAnswers = {};
+    state.awaitingFreeform = false;
+    const next = state.questionQueue.shift();
+    if (next) {
+      startQuestion(next);
+      return;
+    }
+    // No more questions. If a run is still active, hand the bottom row
+    // back to the spinner; otherwise let prePrompt take over.
+    if (activeRunId !== null) {
+      spinner.setLabel("thinking");
+      spinner.start();
+      input.pause();
+    } else {
+      prePrompt();
+    }
+  }
+
+  /**
+   * Force the input row to be visible even when a run is active. Used
+   * exclusively for ask_user/approval prompts where the agent is blocked
+   * on the user — without this, the spinner stays up and prePrompt() bails
+   * because activeRunId is still set, leaving the user unable to type.
+   */
+  function forceShowInput(): void {
+    if (state.shouldExit) return;
+    if (isStatusbarEnabled()) {
+      renderStatusbar({
+        sessionId: state.sessionId,
+        pendingQuestion: Boolean(state.pendingQuestion),
+        taskCount: state.taskCount,
+        openQuestions: state.openQuestions,
+        tokensIn: state.tokensIn,
+        tokensOut: state.tokensOut,
+        activeSubagents: state.activeSubagents,
+        pendingApprovals: state.pendingApprovals,
+      });
+    }
+    if (!input.isRunning()) input.start();
+    else input.resume();
+  }
+
   function prePrompt(): void {
     if (state.shouldExit) return;
-    if (activeRunId !== null) return;
+    // While a run is in flight we normally let the spinner own the bottom
+    // line — but if the agent is blocked on a question or approval, we
+    // *must* keep the input row up so the user can answer.
+    if (activeRunId !== null && !state.pendingQuestion && !state.pendingApproval) return;
     if (isStatusbarEnabled()) {
       renderStatusbar({
         sessionId: state.sessionId,
@@ -360,8 +478,20 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
           render.renderInfo("type a / allow, d / deny, or w / why?");
         }
       } else if (state.pendingQuestion) {
-        await handleAnswer(client, state.pendingQuestion, trimmed);
-        state.pendingQuestion = null;
+        const done = await handleAnswerStep(
+          client,
+          state.pendingQuestion,
+          state,
+          trimmed,
+        );
+        if (done) {
+          // Hand control to the queue-drain / spinner-restart logic.
+          clearActiveQuestion();
+          // clearActiveQuestion already redrew either the next question or
+          // the spinner — skip the bottom-of-handler prePrompt so we don't
+          // double-render.
+          return;
+        }
       } else {
         const res = await client.request("chat.send", {
           sessionId: state.sessionId,
@@ -437,24 +567,74 @@ async function handleApprovalAnswer(
   return false;
 }
 
-async function handleAnswer(
+/**
+ * Handle one line of input toward answering the active question record.
+ * Walks the user through each sub-question in order; on the final
+ * sub-question, submits all collected answers as a single
+ * questions.answer request and returns true so the REPL can drain its
+ * question queue. Returns false while more sub-questions remain so the
+ * caller leaves pendingQuestion set and waits for the next line.
+ *
+ * Recognized inputs per sub-question:
+ *   1, 2, 3, 4   → pick the corresponding option
+ *   o, other     → arm the next line as a freeform answer
+ *   anything else → freeform answer (taken verbatim)
+ */
+async function handleAnswerStep(
   client: ProtocolClient,
   question: QuestionRecord,
+  state: {
+    pendingSubIdx: number;
+    pendingAnswers: Record<string, string>;
+    awaitingFreeform: boolean;
+  },
   line: string,
-): Promise<void> {
-  const q = question.input.questions[0]!;
-  let chosen: string;
-  const n = Number.parseInt(line, 10);
-  if (!Number.isNaN(n) && n >= 1 && n <= q.options.length) {
-    chosen = q.options[n - 1]!.label;
-  } else {
+): Promise<boolean> {
+  const subQs = question.input.questions;
+  const sq = subQs[state.pendingSubIdx]!;
+
+  let chosen: string | null = null;
+  if (state.awaitingFreeform) {
+    // Previous line said "other"; this one is the freeform answer.
     chosen = line;
+    state.awaitingFreeform = false;
+  } else {
+    const norm = line.trim().toLowerCase();
+    if (norm === "o" || norm === "other") {
+      // Arm freeform mode and reprint the prompt so the user knows we're
+      // waiting for a typed answer rather than a number.
+      state.awaitingFreeform = true;
+      render.renderInfo("type your answer:");
+      return false;
+    }
+    const n = Number.parseInt(line, 10);
+    if (!Number.isNaN(n) && n >= 1 && n <= sq.options.length) {
+      chosen = sq.options[n - 1]!.label;
+    } else {
+      // Anything else is a freeform answer — matches the dashboard's
+      // "Other…" behavior, so power-users can skip the [o] step.
+      chosen = line;
+    }
   }
+
+  state.pendingAnswers[sq.question] = chosen;
+  state.pendingSubIdx += 1;
+
+  if (state.pendingSubIdx < subQs.length) {
+    // Reprint the panel with the next sub-question highlighted and
+    // already-answered ones collapsed.
+    process.stdout.write(
+      render.renderAskPrompt(question, state.pendingSubIdx, state.pendingAnswers),
+    );
+    return false;
+  }
+
   await client.request("questions.answer", {
     sessionId: question.sessionId,
     questionId: question.id,
-    answers: { [q.question]: chosen },
+    answers: { ...state.pendingAnswers },
   });
+  return true;
 }
 
 async function refreshTaskCount(

@@ -10,7 +10,8 @@ function toWireDef(def: SubagentDefinition): SubagentDefinition {
     description: def.description,
     model: def.model,
     tools: def.tools,
-    systemPrompt: def.systemPrompt,
+    ...(def.toolsets !== undefined ? { toolsets: def.toolsets } : {}),
+    ...(def.systemPrompt !== undefined ? { systemPrompt: def.systemPrompt } : {}),
     ...(def.limits !== undefined ? { limits: def.limits } : {}),
     ...(def.inputSchema !== undefined ? { inputSchema: def.inputSchema } : {}),
   };
@@ -27,6 +28,12 @@ export function registerSubagentMethods(
   }));
 
   dispatcher.register("subagents.spawn", async (params) => {
+    if (!params.subagent) {
+      throw new ProtocolError(
+        ErrorCode.invalid_params,
+        "ad-hoc subagent spawn (without `subagent` name) is not yet wired into the gateway pool",
+      );
+    }
     if (!registry.get(params.subagent)) {
       throw new ProtocolError(
         ErrorCode.not_found,

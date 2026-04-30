@@ -20,14 +20,16 @@ export class SubagentDefStore {
   constructor(private readonly db: DatabaseHandle) {}
 
   list(): SubagentDefinition[] {
-    const rows = this.db.prepare<SubagentDefRow>("SELECT * FROM subagent_defs ORDER BY name").all();
+    const rows = this.db
+      .prepare("SELECT * FROM subagent_defs ORDER BY name")
+      .all() as SubagentDefRow[];
     return rows.map((r) => JSON.parse(r.config_json) as SubagentDefinition);
   }
 
   get(name: string): SubagentDefinition | null {
     const row = this.db
-      .prepare<SubagentDefRow>("SELECT * FROM subagent_defs WHERE name = ?")
-      .get(name);
+      .prepare("SELECT * FROM subagent_defs WHERE name = ?")
+      .get(name) as SubagentDefRow | undefined;
     return row ? (JSON.parse(row.config_json) as SubagentDefinition) : null;
   }
 
@@ -49,8 +51,8 @@ export class SubagentDefStore {
 
   delete(name: string): boolean {
     const res = this.db
-      .prepare<unknown, { changes: number }>("DELETE FROM subagent_defs WHERE name = ?")
-      .run(name);
+      .prepare("DELETE FROM subagent_defs WHERE name = ?")
+      .run(name) as { changes: number };
     return res.changes > 0;
   }
 }

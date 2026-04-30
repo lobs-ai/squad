@@ -29,6 +29,7 @@ import { questionBackendFor } from "./questions/backend.js";
 import { SubagentRegistry } from "./subagents/registry.js";
 import { SubagentPool } from "./subagents/pool.js";
 import { subagentBackendFor } from "./subagents/backend.js";
+import { SubagentDefStore } from "./db/subagent-defs.js";
 import { DeliveryQueue } from "./delivery/queue.js";
 import { RunCoordinator } from "./delivery/coordinator.js";
 import { PluginHost } from "./plugins/host.js";
@@ -250,6 +251,10 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   );
   const toolRegistry = opts.toolRegistry ?? new ToolRegistry().registerAll([...BUILTIN_TOOLS]);
   const subagentRegistry = new SubagentRegistry();
+  const subagentDefStore = new SubagentDefStore(db);
+  // Hydrate user-created subagents from sqlite. Plugin-registered subagents
+  // come back via the plugin host on its own boot path.
+  for (const def of subagentDefStore.list()) subagentRegistry.register(def, "user");
 
   // Tool groups: lazy-loading scheme that keeps the system prompt small. The
   // registry holds {name → {description, guidance, toolNames}} for every
@@ -318,6 +323,8 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
       toolRegistry,
       workspaceDir,
       toolsets: toolsetRegistry,
+      toolGroups,
+      defaultModel: config.llm.primary.model,
       ...(sharedClient !== undefined ? { clientOverride: sharedClient } : {}),
     },
     {
@@ -328,7 +335,16 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   );
   registerTaskTools(toolRegistry, taskBackendFor(tasks));
   registerAskUserTool(toolRegistry, questionBackendFor(questions));
-  registerSpawnSubagentTool(toolRegistry, subagentBackendFor(subagentPool, subagentRegistry));
+  registerSpawnSubagentTool(
+    toolRegistry,
+    subagentBackendFor({
+      pool: subagentPool,
+      registry: subagentRegistry,
+      defStore: subagentDefStore,
+      workspaceDir,
+      defaultModel: config.llm.primary.model,
+    }),
+  );
 
   // Memory: every memory operation routes through MemCore. The gateway holds
   // no local memory state. Boot fails fast if MemCore can't be initialized —
@@ -400,6 +416,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     containerTag,
   });
   registerMemoryTools(toolRegistry, memoryBackendFor(memoryService));
+  subagentPool.setMemory(memoryService);
   logger.info({ containerTag }, "memcore memory service ready");
 
   // Idle-driven session ingestion. Disabled when `memcoreOverride` is set

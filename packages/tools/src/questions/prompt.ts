@@ -11,4 +11,6 @@ export const ASK_GUIDANCE = [
   "- Do NOT include a literal 'Other' option — the channel always surfaces one.",
   "- Use option.preview when the user benefits from seeing a concrete artifact",
   "  (ASCII mockup, code snippet, config diff). Skip it for pure preference questions.",
+  "- Bundle related decisions into a single ask_user call (up to 4 sub-questions)",
+  "  rather than asking them one at a time — the user answers them together.",
 ].join("\n");
