@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { ToolRegistry } from "@squad/tools";
 import type { LLMClient, LLMResponse, CreateMessageParams } from "@squad/llm";
 import { boot, type BootedGateway } from "../../src/index.js";
+import { StubMemCore } from "../fixtures/stub-memcore.js";
+import type { MemCore } from "memcore";
 
 class ScriptedClient implements LLMClient {
   async createMessage(_p: CreateMessageParams): Promise<LLMResponse> {
@@ -40,8 +42,9 @@ afterEach(async () => {
 async function bootForTest(): Promise<BootedGateway> {
   dataDir = mkdtempSync(join(tmpdir(), "squad-subs-"));
   booted = await boot({
+    memcoreOverride: new StubMemCore() as unknown as MemCore,
     config: {
-      server: { host: "127.0.0.1", port: 0, data_dir: dataDir, memory_dir: join(dataDir, "memory") },
+      server: { host: "127.0.0.1", port: 0, data_dir: dataDir },
       auth: { tokens: [{ label: "test", key: "secret", scopes: ["*"] }] },
       llm: { primary: { model: "claude-sonnet-4-5" }, fallbacks: [], providers: {} },
       subagents: { max_concurrent_global: 8, max_concurrent_per_parent: 4, max_tree_depth: 3 },

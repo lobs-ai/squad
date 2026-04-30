@@ -6,6 +6,8 @@ import { AddressInfo } from "node:net";
 import WebSocket from "ws";
 import { ToolRegistry } from "@squad/tools";
 import { boot, type BootedGateway } from "../../src/index.js";
+import { StubMemCore } from "../fixtures/stub-memcore.js";
+import type { MemCore } from "memcore";
 import type { Frame, PluginRecord } from "@squad/protocol";
 
 interface Harness {
@@ -20,12 +22,13 @@ interface Harness {
 async function bootHarness(extras: { plugins?: Array<string | { path: string; config?: unknown }> } = {}): Promise<Harness> {
   const dataDir = mkdtempSync(join(tmpdir(), "squad-admin-it-"));
   const booted = await boot({
+    memcoreOverride: new StubMemCore() as unknown as MemCore,
     config: {
       server: {
         host: "127.0.0.1",
         port: 8765,
         data_dir: dataDir,
-        memory_dir: join(dataDir, "memory"),
+
         squad_name: "alpha",
         build: "deadbee",
       },
@@ -108,8 +111,9 @@ describe("admin.identity / admin.peers / extension methods", () => {
     let booted: BootedGateway | null = null;
     try {
       booted = await boot({
+        memcoreOverride: new StubMemCore() as unknown as MemCore,
         config: {
-          server: { host: "127.0.0.1", port: 0, data_dir: dataDir, memory_dir: join(dataDir, "memory"), squad_name: "alpha" },
+          server: { host: "127.0.0.1", port: 0, data_dir: dataDir, squad_name: "alpha" },
           auth: { tokens: [{ label: "test", key: "secret", scopes: ["*"] }] },
           llm: {
             primary: { model: "minimax/minimax-m2.7" },

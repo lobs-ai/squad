@@ -52,7 +52,7 @@ export class MemoryProposeTool extends BaseTool<ProposeInput> {
       body: { type: "string", description: "Full content. Include WHY for feedback/project entries." },
       scope: { type: "string", enum: [...SCOPE_ENUM], description: "Defaults: user/feedback=global, project/reference=project, working=tree" },
       scopeKey: { type: ["string", "null"], description: "Required when scope=tree (root session id)" },
-      confidence: { type: "number", description: "0-100; high when user explicitly said 'remember', lower when inferred" },
+      confidence: { type: "number", description: "0-1; high (>0.8) when user explicitly said 'remember', lower when inferred" },
     },
     required: ["type", "name", "description", "body"],
   };

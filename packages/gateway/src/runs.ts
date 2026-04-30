@@ -138,7 +138,7 @@ export async function runChatTurn(
   // systemPrompt still wins — tests and bespoke flows opt out this way.
   // Memory blocks: eager is frozen per session (kept inside the cacheable
   // prefix); retrieval is per-turn against the latest user input.
-  const memoryEager = deps.memory?.eagerForSession(options.sessionId) ?? [];
+  const memoryEager = (await deps.memory?.eagerForSession(options.sessionId)) ?? [];
   const userQuery =
     options.userContent
       .filter((b): b is { type: "text"; text: string } => b.type === "text")
@@ -146,7 +146,7 @@ export async function runChatTurn(
       .join("\n");
   const treeRoot = deps.sessions.rootId(options.sessionId);
   const memoryRetrieval =
-    deps.memory?.retrievalForTurn(userQuery, { scopeKey: treeRoot }) ?? [];
+    (await deps.memory?.retrievalForTurn(userQuery, { scopeKey: treeRoot })) ?? [];
 
   const systemPrompt =
     options.systemPrompt ??

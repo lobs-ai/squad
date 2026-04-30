@@ -1,12 +1,9 @@
 export {
-  MemoryStore,
-  DuplicateMemoryError,
-  sanitizeFtsQuery,
-  type MemoryStoreOptions,
-  type DuplicateMatch,
-} from "./store.js";
-export { MemoryValidationError, validateProposeInput, scanForInjection, defaultScopeForType } from "./validate.js";
-export { resolveMemoryDir, ensureMemoryDir, renderIndex, parseEntryFile, renderEntryFile } from "./files.js";
+  MemoryValidationError,
+  validateProposeInput,
+  scanForInjection,
+  defaultScopeForType,
+} from "./validate.js";
 export {
   MEMORY_TYPES,
   MEMORY_SCOPES,
@@ -23,4 +20,9 @@ export {
   type MemorySearchHit,
 } from "./types.js";
 export { memoryBackendFor } from "./backend.js";
-export { MemoryService } from "./service.js";
+export {
+  MemoryService,
+  DuplicateMemoryError,
+  type DuplicateMatch,
+  type MemoryServiceOptions,
+} from "./service.js";

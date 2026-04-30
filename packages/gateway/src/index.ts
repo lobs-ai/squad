@@ -46,10 +46,9 @@ import { createClient, createModelChain, type LLMClient } from "@squad/llm";
 import { resolveProviderConfig } from "./llm-config.js";
 import { createGatewayServer, type GatewayHandle } from "./server.js";
 import { seedCoreFiles } from "./agent-prompt.js";
-import { MemoryStore } from "./memory/store.js";
-import { resolveMemoryDir } from "./memory/files.js";
 import { memoryBackendFor } from "./memory/backend.js";
 import { MemoryService } from "./memory/service.js";
+import type { MemCore } from "memcore";
 
 export { logger } from "./logger.js";
 export { loadConfig, type Config } from "./config.js";
@@ -94,9 +93,7 @@ export {
   CORE_FILES,
 } from "./agent-prompt.js";
 export {
-  MemoryStore,
   MemoryService,
-  resolveMemoryDir,
   memoryBackendFor,
   DuplicateMemoryError,
   MemoryValidationError,
@@ -128,6 +125,12 @@ export interface BootOptions {
   configPath?: string;
   /** Testing seam: inject an LLMClient to bypass real provider calls. */
   clientOverride?: LLMClient;
+  /**
+   * Testing seam: inject a MemCore instance to bypass postgres. When
+   * provided, the gateway uses this instead of constructing one from
+   * `config.server.memcore`.
+   */
+  memcoreOverride?: MemCore;
 }
 
 export interface BootedGateway {
@@ -138,7 +141,7 @@ export interface BootedGateway {
     toolCalls: ToolCallStore;
     tasks: TaskStore;
     questions: QuestionStore;
-    memory: MemoryStore;
+    memory: MemoryService;
     approvals: ApprovalStore;
     routines: RoutineStore;
   };
@@ -279,15 +282,55 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   registerAskUserTool(toolRegistry, questionBackendFor(questions));
   registerSpawnSubagentTool(toolRegistry, subagentBackendFor(subagentPool, subagentRegistry));
 
-  // Memory store: durable typed entries that follow the user across docker
-  // re-rolls. Lives at ~/.squad/memory/ by default — deliberately NOT under
-  // data_dir/workspace_dir.
-  const memoryDir = resolveMemoryDir(config.server.memory_dir);
-  mkdirSync(memoryDir, { recursive: true });
-  const memory = new MemoryStore(db, { memoryDir });
-  registerMemoryTools(toolRegistry, memoryBackendFor(memory));
-  const memoryService = new MemoryService(memory);
-  logger.info({ memoryDir }, "memory store ready");
+  // Memory: every memory operation routes through MemCore. The gateway holds
+  // no local memory state. Boot fails fast if MemCore can't be initialized —
+  // memory is a load-bearing primitive for the agent, not optional.
+  const memcoreCfg = config.server.memcore;
+  let memcoreInstance: MemCore;
+  if (opts.memcoreOverride) {
+    memcoreInstance = opts.memcoreOverride;
+  } else {
+    const memcoreDatabaseUrl =
+      memcoreCfg.database_url || process.env.MEMCORE_DATABASE_URL || "";
+    if (!memcoreDatabaseUrl) {
+      throw new Error(
+        "memcore.database_url (or MEMCORE_DATABASE_URL) is required — squad uses MemCore for all memory ops",
+      );
+    }
+    const memcoreEmbedKey = process.env[memcoreCfg.embedding_api_key_env] ?? "";
+    // Dynamic import: memcore validates env at import-time. Loading it lazily
+    // means we surface a clean error here rather than at module-resolution time.
+    const memcoreMod = await import("memcore");
+    const { MemCore: MemCoreCtor, OpenAIEmbedder, StubEmbedder } = memcoreMod;
+    const memcoreEmbedder = memcoreEmbedKey
+      ? new OpenAIEmbedder({
+          apiKey: memcoreEmbedKey,
+          model: memcoreCfg.embedding_model,
+          ...(memcoreCfg.embedding_base_url
+            ? { baseUrl: memcoreCfg.embedding_base_url }
+            : {}),
+        })
+      : (() => {
+          logger.warn(
+            { envVar: memcoreCfg.embedding_api_key_env },
+            "memcore embedder API key not set — using StubEmbedder (semantic recall will be degraded)",
+          );
+          return new StubEmbedder(memcoreCfg.embedding_dim, memcoreCfg.embedding_model);
+        })();
+    memcoreInstance = new MemCoreCtor({
+      databaseUrl: memcoreDatabaseUrl,
+      embedder: memcoreEmbedder,
+      embeddingModel: memcoreCfg.embedding_model,
+      embeddingDim: memcoreCfg.embedding_dim,
+      extractionModel: memcoreCfg.extraction_model,
+    });
+  }
+  const containerTag = memcoreCfg.container_tag || config.server.squad_name;
+  const memoryService = new MemoryService(memcoreInstance, logger, {
+    containerTag,
+  });
+  registerMemoryTools(toolRegistry, memoryBackendFor(memoryService));
+  logger.info({ containerTag }, "memcore memory service ready");
 
   // Single ConfigBackend feeds both the agent's `set_config` tools AND the
   // dashboard's `admin.config.set` RPC, so writes from either side stay in
@@ -473,7 +516,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
 
   return {
     handle,
-    stores: { sessions, messages, toolCalls, tasks, questions, memory, approvals, routines: routineStore },
+    stores: { sessions, messages, toolCalls, tasks, questions, memory: memoryService, approvals, routines: routineStore },
     subagents: { pool: subagentPool, registry: subagentRegistry },
     plugins,
     routines,
@@ -496,6 +539,11 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
         }
       }
       await handle.close();
+      try {
+        await memcoreInstance.close();
+      } catch (err) {
+        logger.error({ err }, "memcore failed to close");
+      }
       db.close();
     },
   };

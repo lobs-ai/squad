@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ToolRegistry } from "@squad/tools";
 import { boot, type BootedGateway } from "../../src/index.js";
+import { StubMemCore } from "../fixtures/stub-memcore.js";
+import type { MemCore } from "memcore";
 
 /**
  * End-to-end check for the plugin-as-channel contract. Writes a stub channel
@@ -62,8 +64,9 @@ describe("gateway channel plugin lifecycle", () => {
   it("loads the plugin, drives start() after boot and stop() on close", async () => {
     const pluginPath = writeStubPlugin();
     booted = await boot({
+      memcoreOverride: new StubMemCore() as unknown as MemCore,
       config: {
-        server: { host: "127.0.0.1", port: 0, data_dir: tmp, memory_dir: join(tmp, "memory") },
+        server: { host: "127.0.0.1", port: 0, data_dir: tmp },
         auth: { tokens: [{ label: "test", key: "secret", scopes: ["*"] }] },
         llm: {
           primary: { model: "claude-sonnet-4-5" },
@@ -125,8 +128,9 @@ describe("gateway channel plugin lifecycle", () => {
     );
 
     booted = await boot({
+      memcoreOverride: new StubMemCore() as unknown as MemCore,
       config: {
-        server: { host: "127.0.0.1", port: 0, data_dir: tmp, memory_dir: join(tmp, "memory") },
+        server: { host: "127.0.0.1", port: 0, data_dir: tmp },
         auth: { tokens: [{ label: "test", key: "secret", scopes: ["*"] }] },
         llm: {
           primary: { model: "claude-sonnet-4-5" },

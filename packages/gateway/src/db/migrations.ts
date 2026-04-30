@@ -192,6 +192,15 @@ const migrations: Migration[] = [
       CREATE INDEX idx_memory_history_entry ON memory_history(entry_id, changed_at);
     `,
   },
+  {
+    id: 9,
+    name: "drop_local_memory_tables",
+    up: `
+      DROP TABLE IF EXISTS memory_history;
+      DROP TABLE IF EXISTS memory_entry_fts;
+      DROP TABLE IF EXISTS memory_entry;
+    `,
+  },
 ];
 
 export function runMigrations(db: DatabaseHandle): void {

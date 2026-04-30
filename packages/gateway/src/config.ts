@@ -114,12 +114,32 @@ export const configSchema = z.object({
        */
       workspace_dir: z.string().default(""),
       /**
-       * Persistent typed-memory store. Lives outside the workspace and
-       * outside data_dir on purpose — memory is durable user state that
-       * should follow the user across docker re-rolls. Empty string means
-       * "${HOME}/.squad/memory". Override via SQUAD_MEMORY_DIR env var.
+       * MemCore is the sole memory backend. Set `database_url` (or the
+       * MEMCORE_DATABASE_URL env var) — boot fails fast otherwise.
        */
-      memory_dir: z.string().default(""),
+      memcore: z
+        .object({
+          /** Postgres connection string. Falls back to MEMCORE_DATABASE_URL. */
+          database_url: z.string().default(""),
+          /**
+           * Container tag (multi-tenant scope). Empty string (the default)
+           * derives from `server.squad_name`, so each squad managed by
+           * `squad mgr` is automatically its own tenant. Override only when
+           * you want two squads to share a memory pool.
+           */
+          container_tag: z.string().default(""),
+          /** Embedder API key env var. Falls back to OPENAI_API_KEY. */
+          embedding_api_key_env: z.string().default("OPENAI_API_KEY"),
+          /** Embedder base URL. Falls back to OpenAI. */
+          embedding_base_url: z.string().default(""),
+          /** Embedding model name. */
+          embedding_model: z.string().default("text-embedding-3-large"),
+          /** Embedding dim — only relevant when overriding the model. */
+          embedding_dim: z.number().int().positive().default(3072),
+          /** Extraction model. */
+          extraction_model: z.string().default("claude-haiku-4-5"),
+        })
+        .default({}),
       /**
        * Squad name as seen by the manager (matches the docker compose service
        * `squad-<name>`). Defaults to "default" — the value the dashboard's

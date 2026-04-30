@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { ToolRegistry } from "@squad/tools";
 import type { LLMClient, LLMResponse, CreateMessageParams } from "@squad/llm";
 import { boot, type BootedGateway } from "../../src/index.js";
+import { StubMemCore } from "../fixtures/stub-memcore.js";
+import type { MemCore } from "memcore";
 
 /**
  * Client that blocks on a signal the test owns. We use two gates: one that
@@ -70,8 +72,9 @@ async function bootForTest(
 ): Promise<BootedGateway> {
   dataDir = mkdtempSync(join(tmpdir(), "squad-delivery-"));
   booted = await boot({
+    memcoreOverride: new StubMemCore() as unknown as MemCore,
     config: {
-      server: { host: "127.0.0.1", port: 0, data_dir: dataDir, memory_dir: join(dataDir, "memory") },
+      server: { host: "127.0.0.1", port: 0, data_dir: dataDir },
       auth: { tokens: [{ label: "t", key: "secret", scopes: ["*"] }] },
       chat: { delivery: { mode } },
     },

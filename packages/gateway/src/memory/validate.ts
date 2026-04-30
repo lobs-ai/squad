@@ -61,9 +61,9 @@ export function validateProposeInput(input: MemoryProposeInput): MemoryProposeIn
     if (
       !Number.isFinite(input.confidence) ||
       input.confidence < 0 ||
-      input.confidence > 100
+      input.confidence > 1
     ) {
-      problems.push({ field: "confidence", message: "must be 0-100" });
+      problems.push({ field: "confidence", message: "must be 0-1" });
     }
   }
   // Scope/scopeKey coherence
@@ -82,7 +82,7 @@ export function validateProposeInput(input: MemoryProposeInput): MemoryProposeIn
   return {
     ...input,
     scope,
-    confidence: input.confidence ?? 50,
+    confidence: input.confidence ?? 0.5,
   };
 }
 

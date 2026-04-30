@@ -10,6 +10,8 @@ import {
   boot,
   type BootedGateway,
 } from "../../src/index.js";
+import { StubMemCore } from "../fixtures/stub-memcore.js";
+import type { MemCore } from "memcore";
 import type { Frame } from "@squad/protocol";
 
 class ScriptedClient implements LLMClient {
@@ -48,8 +50,9 @@ interface Harness {
 async function bootHarness(replies: string[]): Promise<Harness> {
   const dataDir = mkdtempSync(join(tmpdir(), "squad-it-"));
   const booted = await boot({
+    memcoreOverride: new StubMemCore() as unknown as MemCore,
     config: {
-      server: { host: "127.0.0.1", port: 0, data_dir: dataDir, memory_dir: join(dataDir, "memory") },
+      server: { host: "127.0.0.1", port: 0, data_dir: dataDir },
       auth: { tokens: [{ label: "test", key: "secret", scopes: ["*"] }] },
       llm: { primary: { model: "claude-sonnet-4-5" }, fallbacks: [], providers: {} },
       subagents: { max_concurrent_global: 8, max_concurrent_per_parent: 4, max_tree_depth: 3 },

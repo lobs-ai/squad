@@ -6,6 +6,8 @@ import { AddressInfo } from "node:net";
 import WebSocket from "ws";
 import { ToolRegistry } from "@squad/tools";
 import { boot, type BootedGateway } from "../../src/index.js";
+import { StubMemCore } from "../fixtures/stub-memcore.js";
+import type { MemCore } from "memcore";
 import type { Frame, PairingView } from "@squad/protocol";
 
 interface Harness {
@@ -20,8 +22,9 @@ interface Harness {
 async function bootHarness(): Promise<Harness> {
   const dataDir = mkdtempSync(join(tmpdir(), "squad-pair-"));
   const booted = await boot({
+    memcoreOverride: new StubMemCore() as unknown as MemCore,
     config: {
-      server: { host: "127.0.0.1", port: 0, data_dir: dataDir, memory_dir: join(dataDir, "memory"), squad_name: "alpha" },
+      server: { host: "127.0.0.1", port: 0, data_dir: dataDir, squad_name: "alpha" },
       auth: { tokens: [{ label: "admin", key: "secret", scopes: ["*"] }] },
       llm: { primary: { model: "claude-sonnet-4-5" }, fallbacks: [], providers: {} },
       subagents: { max_concurrent_global: 8, max_concurrent_per_parent: 4, max_tree_depth: 3 },
@@ -165,8 +168,9 @@ describe("browser pairing", () => {
     try {
       // ── boot 1: pair a browser, capture its token ─────────────────────
       const boot1 = await boot({
+        memcoreOverride: new StubMemCore() as unknown as MemCore,
         config: {
-          server: { host: "127.0.0.1", port: 0, data_dir: dataDir, memory_dir: join(dataDir, "memory"), squad_name: "alpha" },
+          server: { host: "127.0.0.1", port: 0, data_dir: dataDir, squad_name: "alpha" },
           auth: { tokens: [{ label: "admin", key: "secret", scopes: ["*"] }] },
           llm: { primary: { model: "claude-sonnet-4-5" }, fallbacks: [], providers: {} },
           subagents: { max_concurrent_global: 8, max_concurrent_per_parent: 4, max_tree_depth: 3 },
@@ -215,8 +219,9 @@ describe("browser pairing", () => {
 
       // ── boot 2: reuse the same data_dir and try the saved token ─────
       const boot2 = await boot({
+        memcoreOverride: new StubMemCore() as unknown as MemCore,
         config: {
-          server: { host: "127.0.0.1", port: 0, data_dir: dataDir, memory_dir: join(dataDir, "memory"), squad_name: "alpha" },
+          server: { host: "127.0.0.1", port: 0, data_dir: dataDir, squad_name: "alpha" },
           auth: { tokens: [{ label: "admin", key: "secret", scopes: ["*"] }] },
           llm: { primary: { model: "claude-sonnet-4-5" }, fallbacks: [], providers: {} },
           subagents: { max_concurrent_global: 8, max_concurrent_per_parent: 4, max_tree_depth: 3 },
