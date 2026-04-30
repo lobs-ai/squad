@@ -4,6 +4,7 @@ import type { sessionSearchHit } from "@squad/protocol";
 import { Card, PageHead } from "../ui/primitives.js";
 import { Icon } from "../ui/Icon.js";
 import { useGateway } from "../state/GatewayContext.js";
+import { usePersistedState } from "../state/usePersistedState.js";
 
 type SessionSearchHit = z.infer<typeof sessionSearchHit>;
 
@@ -15,7 +16,7 @@ interface SearchViewProps {
 
 export function SearchView({ onOpenSession }: SearchViewProps): JSX.Element {
   const { client } = useGateway();
-  const [q, setQ] = useState("");
+  const [q, setQ] = usePersistedState("squad-search-q", "");
   const [hits, setHits] = useState<SessionSearchHit[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

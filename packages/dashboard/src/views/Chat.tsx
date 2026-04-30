@@ -54,6 +54,7 @@ export function Chat(): JSX.Element {
     setSessionModel,
     answerQuestion,
     decideApproval,
+    allowApprovalPath,
     models,
     chatError,
     clearChatError,
@@ -147,6 +148,7 @@ export function Chat(): JSX.Element {
       style={{
         display: "grid",
         gridTemplateColumns: "220px 1fr",
+        gridTemplateRows: "1fr",
         height: "100%",
         minHeight: 0,
         position: "relative",
@@ -351,6 +353,7 @@ export function Chat(): JSX.Element {
               approval={r.approvalId ? sessApprovals.find((a) => a.id === r.approvalId) : undefined}
               onAnswer={(qid, answers) => void answerQuestion(qid, answers)}
               onDecide={(aid, dec) => void decideApproval(aid, dec)}
+              onAlwaysAllow={(aid) => void allowApprovalPath(aid)}
             />
           ))}
           {awaitingResponse && !streaming && pendingForSession.length === 0 && <TypingIndicator />}
@@ -679,12 +682,14 @@ function ChatRow({
   approval,
   onAnswer,
   onDecide,
+  onAlwaysAllow,
 }: {
   row: ChatRowMessage;
   question?: QuestionRecord;
   approval?: ApprovalRecord;
   onAnswer: (questionId: string, answers: Record<string, string>) => void;
   onDecide: (approvalId: string, decision: "approve" | "deny") => void;
+  onAlwaysAllow: (approvalId: string) => void;
 }): JSX.Element | null {
   if (row.kind === "user") {
     return (
@@ -833,7 +838,9 @@ function ChatRow({
           <button className="btn sm" onClick={() => onDecide(approval.id, "deny")}>
             deny
           </button>
-          <button className="btn ghost sm">always allow this path</button>
+          <button className="btn ghost sm" onClick={() => onAlwaysAllow(approval.id)}>
+            always allow this path
+          </button>
         </div>
       </div>
     );

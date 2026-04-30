@@ -39,6 +39,11 @@ export function subagentBackendFor(deps: SubagentBackendDeps): SubagentBackend {
           succeeded: result.succeeded,
         };
       }
+      // Async spawn — swallow rejections so they don't surface as
+      // UnhandledPromiseRejection. The pool already publishes a
+      // `subagents.failed/<id>` event for subscribers; the parent doesn't
+      // need a thrown error here since it's intentionally not waiting.
+      handle.done.catch(() => {});
       return { sessionId: handle.sessionId };
     },
 

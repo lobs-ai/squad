@@ -3,6 +3,7 @@ import type { Task, SessionRecord } from "@squad/protocol";
 import { Card, PageHead } from "../ui/primitives.js";
 import { Icon } from "../ui/Icon.js";
 import { useGateway } from "../state/GatewayContext.js";
+import { usePersistedState } from "../state/usePersistedState.js";
 
 interface Props {
   onOpenSession: (id: string) => void;
@@ -24,8 +25,18 @@ const COLUMNS: ColumnSpec[] = [
 export function Tasks({ onOpenSession }: Props): JSX.Element {
   const { tasks, sessions, treeSessions, activeSession, refreshSessions, createTask, updateTaskStatus } =
     useGateway();
-  const [scope, setScope] = useState<"session" | "tree" | "all">("tree");
-  const [ownerFilter, setOwnerFilter] = useState<"all" | "agent" | "subagent" | "user">("all");
+  const SCOPES = ["session", "tree", "all"] as const;
+  const OWNERS = ["all", "agent", "subagent", "user"] as const;
+  const [scopeRaw, setScopeRaw] = usePersistedState("squad-tasks-scope", "tree");
+  const scope = (SCOPES as readonly string[]).includes(scopeRaw)
+    ? (scopeRaw as typeof SCOPES[number])
+    : "tree";
+  const setScope = setScopeRaw as (v: typeof SCOPES[number]) => void;
+  const [ownerRaw, setOwnerRaw] = usePersistedState("squad-tasks-owner", "all");
+  const ownerFilter = (OWNERS as readonly string[]).includes(ownerRaw)
+    ? (ownerRaw as typeof OWNERS[number])
+    : "all";
+  const setOwnerFilter = setOwnerRaw as (v: typeof OWNERS[number]) => void;
   const [adding, setAdding] = useState(false);
   const [newSubject, setNewSubject] = useState("");
   const [creating, setCreating] = useState(false);

@@ -55,6 +55,17 @@ interface RunningEntry {
   cancel: () => void;
 }
 
+export interface BackgroundOutcome {
+  parentSessionId: string;
+  sessionId: string;
+  subagent: string;
+  /** True for ad-hoc spawns (subagentDefId is null on the session row). */
+  adHoc: boolean;
+  succeeded: boolean;
+  result: unknown;
+  error?: string;
+}
+
 export interface SubagentPoolDeps {
   registry: SubagentRegistry;
   sessions: SessionStore;
@@ -72,6 +83,14 @@ export interface SubagentPoolDeps {
   memory?: MemoryService;
   /** Default model used for ad-hoc spawns when the caller didn't pin one. */
   defaultModel?: string;
+  /**
+   * Fired when a backgrounded spawn (`wait: false`) finishes — succeeded or
+   * failed. The gateway uses this to wake the parent session up by injecting
+   * a synthetic user message and triggering the next chat turn. Without it,
+   * fire-and-forget subagents would drop on the floor and the parent would
+   * sit idle waiting for a signal that never arrives.
+   */
+  onBackgroundOutcome?: (outcome: BackgroundOutcome) => void;
 }
 
 export class SubagentPool {
@@ -87,6 +106,11 @@ export class SubagentPool {
   /** Bind the memory service after construction (it boots after the pool). */
   setMemory(memory: MemoryService): void {
     (this.deps as { memory?: MemoryService }).memory = memory;
+  }
+
+  /** Bind (or replace) the background-outcome callback after construction. */
+  setBackgroundOutcomeHandler(handler: (outcome: BackgroundOutcome) => void): void {
+    (this.deps as { onBackgroundOutcome?: (o: BackgroundOutcome) => void }).onBackgroundOutcome = handler;
   }
 
   spawn(input: SpawnInput): SpawnHandle {
@@ -130,6 +154,8 @@ export class SubagentPool {
       cancel: () => abort(),
     };
 
+    const isBackground = !input.wait;
+
     const done = (async () => {
       await this.acquire(input.parentSessionId);
       this.running.set(session.id, entry);
@@ -149,6 +175,23 @@ export class SubagentPool {
           tokensIn: result.usage.inputTokens,
           tokensOut: result.usage.outputTokens,
         });
+        if (isBackground) {
+          try {
+            this.deps.onBackgroundOutcome?.({
+              parentSessionId: input.parentSessionId,
+              sessionId: session.id,
+              subagent: def.name,
+              adHoc: isAdHoc,
+              succeeded: result.succeeded,
+              result: result.output,
+            });
+          } catch (cbErr) {
+            this.deps.logger.error(
+              { err: cbErr, sessionId: session.id },
+              "onBackgroundOutcome callback threw",
+            );
+          }
+        }
         return {
           result: result.output,
           tokensIn: result.usage.inputTokens,
@@ -161,6 +204,24 @@ export class SubagentPool {
           sessionId: session.id,
           error: message,
         });
+        if (isBackground) {
+          try {
+            this.deps.onBackgroundOutcome?.({
+              parentSessionId: input.parentSessionId,
+              sessionId: session.id,
+              subagent: def.name,
+              adHoc: isAdHoc,
+              succeeded: false,
+              result: null,
+              error: message,
+            });
+          } catch (cbErr) {
+            this.deps.logger.error(
+              { err: cbErr, sessionId: session.id },
+              "onBackgroundOutcome callback threw",
+            );
+          }
+        }
         throw err;
       } finally {
         this.running.delete(session.id);

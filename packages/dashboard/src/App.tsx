@@ -93,7 +93,9 @@ function Shell(): JSX.Element {
   const [theme, setTheme] = usePersistedState("squad-theme", "dark");
   const [density, setDensity] = usePersistedState("squad-density", "comfortable");
   const [accent, setAccent] = usePersistedState("squad-accent", "#5b8def");
-  const [view, setView] = useState<ViewId>("overview");
+  const [viewRaw, setViewRaw] = usePersistedState("squad-view", "overview");
+  const view = viewRaw as ViewId;
+  const setView = setViewRaw as (v: ViewId) => void;
   const [cmdOpen, setCmdOpen] = useState(false);
   const goSequenceRef = useRef<number>(0);
   const { setActiveSessionId, startSession, squad } = useGateway();

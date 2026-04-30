@@ -4,6 +4,7 @@ import { Card, PageHead } from "../ui/primitives.js";
 import { Icon } from "../ui/Icon.js";
 import { useGateway } from "../state/GatewayContext.js";
 import { estimateCost, fmtAgo, fmtCost, fmtTokens, modelShort } from "../state/fmt.js";
+import { usePersistedState } from "../state/usePersistedState.js";
 
 interface Props {
   onOpenSession: (id: string) => void;
@@ -23,12 +24,16 @@ const TIME_WINDOWS: Array<{ id: "any" | "1d" | "7d" | "30d"; label: string; ms: 
 
 export function Sessions({ onOpenSession }: Props): JSX.Element {
   const { sessions, client, models, renameSession, setSessionModel } = useGateway();
-  const [q, setQ] = useState("");
+  const [q, setQ] = usePersistedState("squad-sessions-q", "");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [searching, setSearching] = useState(false);
-  const [platformFilter, setPlatformFilter] = useState<string>("all");
-  const [modelFilter, setModelFilter] = useState<string>("all");
-  const [timeFilter, setTimeFilter] = useState<typeof TIME_WINDOWS[number]["id"]>("any");
+  const [platformFilter, setPlatformFilter] = usePersistedState("squad-sessions-platform", "all");
+  const [modelFilter, setModelFilter] = usePersistedState("squad-sessions-model", "all");
+  const [timeFilterRaw, setTimeFilterRaw] = usePersistedState("squad-sessions-time", "any");
+  const timeFilter = (TIME_WINDOWS.some((w) => w.id === timeFilterRaw)
+    ? timeFilterRaw
+    : "any") as typeof TIME_WINDOWS[number]["id"];
+  const setTimeFilter = setTimeFilterRaw as (v: typeof TIME_WINDOWS[number]["id"]) => void;
   const [editing, setEditing] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
 

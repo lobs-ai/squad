@@ -49,6 +49,18 @@ export function installApprovalHook(deps: ApprovalHookDeps): () => void {
     const sessionId = (event.data["sessionId"] as string | undefined) ?? event.taskId;
     const session = sessionId ? deps.sessions.tryGet(sessionId) : null;
     const parentSessionId = session?.parentSessionId ?? null;
+    // For approval routing we always want the root session — that's where the
+    // user's UI is watching. Subagent tool calls would otherwise raise on the
+    // subagent's sessionId, which no human is subscribed to, and block forever.
+    const rootSessionId = sessionId
+      ? (() => {
+          try {
+            return deps.sessions.rootId(sessionId);
+          } catch {
+            return sessionId;
+          }
+        })()
+      : null;
 
     const verdict = await deps.policy.decide({
       sessionId: sessionId ?? "",
@@ -75,15 +87,25 @@ export function installApprovalHook(deps: ApprovalHookDeps): () => void {
       return null;
     }
     const trimmedInput = capInputSize(toolInput, cap);
+    // Raise the approval against the root session so the user's UI sees it
+    // even when the calling tool lives inside a subagent.
+    const approvalSessionId = rootSessionId ?? sessionId;
     const { approval, settled } = deps.approvals.raise({
-      sessionId,
+      sessionId: approvalSessionId,
       toolCallId: toolUseId,
       toolName,
       input: trimmedInput,
       tags,
     });
     deps.logger.info(
-      { approvalId: approval.id, toolName, sessionId, tags },
+      {
+        approvalId: approval.id,
+        toolName,
+        sessionId,
+        rootSessionId: approvalSessionId,
+        viaSubagent: approvalSessionId !== sessionId,
+        tags,
+      },
       "approval requested — awaiting decision",
     );
     const decided = await settled;

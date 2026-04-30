@@ -3,6 +3,7 @@ import { Card, PageHead } from "../ui/primitives.js";
 import { Icon } from "../ui/Icon.js";
 import { useGateway, type FullConfigState } from "../state/GatewayContext.js";
 import { fmtAgo } from "../state/fmt.js";
+import { usePersistedState } from "../state/usePersistedState.js";
 
 interface Props {
   theme: string;
@@ -23,6 +24,7 @@ const SECTIONS = [
   { id: "auth", label: "auth tokens" },
   { id: "plugins", label: "plugins" },
   { id: "server", label: "server" },
+  { id: "memcore", label: "memcore (memory)" },
   { id: "pairings", label: "pairings" },
   { id: "channels", label: "channels" },
   { id: "raw", label: "raw config.json" },
@@ -45,7 +47,9 @@ const ACCENTS: Array<{ name: string; hex: string }> = [
 const KNOWN_PROVIDERS = ["anthropic", "openai", "google", "groq", "openrouter", "mistral"];
 
 export function Settings({ theme, setTheme, density, setDensity, accent, setAccent }: Props): JSX.Element {
-  const [section, setSection] = useState<(typeof SECTIONS)[number]["id"]>("squad");
+  const [sectionRaw, setSectionRaw] = usePersistedState("squad-settings-section", "squad");
+  const section = (SECTIONS.some((s) => s.id === sectionRaw) ? sectionRaw : "squad") as (typeof SECTIONS)[number]["id"];
+  const setSection = setSectionRaw as (v: (typeof SECTIONS)[number]["id"]) => void;
   const {
     config,
     fullConfig,
@@ -181,6 +185,14 @@ export function Settings({ theme, setTheme, density, setDensity, accent, setAcce
 
           {section === "server" && (
             <ServerEditor fullConfig={fullConfig} setConfigPath={setConfigPath} />
+          )}
+
+          {section === "memcore" && (
+            <MemCoreEditor
+              fullConfig={fullConfig}
+              setConfigPath={setConfigPath}
+              unsetConfigPath={unsetConfigPath}
+            />
           )}
 
           {section === "pairings" && (
@@ -1538,7 +1550,6 @@ function ServerEditor({
         port?: number;
         data_dir?: string;
         workspace_dir?: string;
-        memory_dir?: string;
         squad_name?: string;
         build?: string;
       }
@@ -1593,17 +1604,6 @@ function ServerEditor({
         }}
       />
       <Field
-        label="memory_dir"
-        hint="durable memory store. empty means ${HOME}/.squad/memory; SQUAD_MEMORY_DIR env wins."
-        initial={cfg.memory_dir}
-        placeholder="(default: ~/.squad/memory)"
-        disabled={!editable}
-        onSave={async (raw) => {
-          if (raw.trim() === "") await setConfigPath("server.memory_dir", "");
-          else await setConfigPath("server.memory_dir", raw.trim());
-        }}
-      />
-      <Field
         label="build"
         hint="git sha or version tag, surfaced via admin.identity. empty falls back to the gateway VERSION."
         initial={cfg.build}
@@ -1616,8 +1616,296 @@ function ServerEditor({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// raw config viewer
+// memcore (memory)
 // ─────────────────────────────────────────────────────────────────────────────
+
+interface MemCoreCfg {
+  database_url?: string;
+  container_tag?: string;
+  embedding_api_key_env?: string;
+  embedding_base_url?: string;
+  embedding_model?: string;
+  embedding_dim?: number;
+  processing_model?: string;
+  extraction_model?: string;
+  contextualizer_model?: string;
+  conflict_model?: string;
+  temporal_parser_model?: string;
+  profile_generator_model?: string;
+  ingest?: {
+    idle_threshold_seconds?: number;
+    max_idle_seconds?: number;
+    min_delta_messages?: number;
+    min_delta_tokens?: number;
+    include_subagents?: boolean;
+    sweeper_interval_seconds?: number;
+  };
+}
+
+function MemCoreEditor({
+  fullConfig,
+  setConfigPath,
+  unsetConfigPath,
+}: {
+  fullConfig: FullConfigState | null;
+  setConfigPath: (p: string, v: unknown) => Promise<void>;
+  unsetConfigPath: (p: string) => Promise<void>;
+}): JSX.Element {
+  const editable = !!fullConfig?.editable;
+  const cfg = (getPath(fullConfig?.config, ["server", "memcore"]) as MemCoreCfg | undefined) ?? {};
+  const ingest = cfg.ingest ?? {};
+  const stageHint =
+    "empty inherits the stage default → server.memcore.processing_model → llm.primary.model.";
+
+  return (
+    <Card title="memcore (memory)">
+      <div className="hint" style={{ marginBottom: 12 }}>
+        memcore is the durable memory backend. {RESTART_HINT} an unset
+        <span className="kbd"> database_url</span> + missing{" "}
+        <span className="kbd">MEMCORE_DATABASE_URL</span> env var will fail boot.
+      </div>
+      <Field
+        label="database_url"
+        hint="postgres connection string. falls back to MEMCORE_DATABASE_URL env var."
+        initial={cfg.database_url}
+        placeholder="postgres://user:pass@host:5432/memcore"
+        type="password"
+        disabled={!editable}
+        onSave={async (raw) => {
+          if (raw.trim() === "") await unsetConfigPath("server.memcore.database_url");
+          else await setConfigPath("server.memcore.database_url", raw.trim());
+        }}
+        onClear={() => unsetConfigPath("server.memcore.database_url")}
+      />
+      <Field
+        label="container_tag"
+        hint="multi-tenant scope. empty derives from server.squad_name — only override to share memory between squads."
+        initial={cfg.container_tag}
+        placeholder="(derive from squad_name)"
+        disabled={!editable}
+        onSave={async (raw) => {
+          if (raw.trim() === "") await unsetConfigPath("server.memcore.container_tag");
+          else await setConfigPath("server.memcore.container_tag", raw.trim());
+        }}
+        onClear={() => unsetConfigPath("server.memcore.container_tag")}
+      />
+
+      <div className="section-label" style={{ marginTop: 16, marginBottom: 6 }}>
+        embeddings
+      </div>
+      <Field
+        label="embedding_api_key_env"
+        hint="env var holding the embedder's api key. defaults to OPENAI_API_KEY."
+        initial={cfg.embedding_api_key_env}
+        placeholder="OPENAI_API_KEY"
+        disabled={!editable}
+        onSave={(raw) => setConfigPath("server.memcore.embedding_api_key_env", raw.trim())}
+      />
+      <Field
+        label="embedding_base_url"
+        hint="optional. proxy / on-prem embedder endpoint. empty = OpenAI."
+        initial={cfg.embedding_base_url}
+        placeholder="(default: OpenAI)"
+        disabled={!editable}
+        onSave={async (raw) => {
+          if (raw.trim() === "") await unsetConfigPath("server.memcore.embedding_base_url");
+          else await setConfigPath("server.memcore.embedding_base_url", raw.trim());
+        }}
+        onClear={() => unsetConfigPath("server.memcore.embedding_base_url")}
+      />
+      <Field
+        label="embedding_model"
+        initial={cfg.embedding_model}
+        placeholder="text-embedding-3-large"
+        disabled={!editable}
+        onSave={(raw) => setConfigPath("server.memcore.embedding_model", raw.trim())}
+      />
+      <NumberField
+        label="embedding_dim"
+        hint="only relevant when overriding the model. must match the model's native dimension."
+        initial={cfg.embedding_dim}
+        min={1}
+        disabled={!editable}
+        onSave={(n) => setConfigPath("server.memcore.embedding_dim", n)}
+      />
+
+      <div className="section-label" style={{ marginTop: 16, marginBottom: 6 }}>
+        processing models
+      </div>
+      <Field
+        label="processing_model"
+        hint="default model for every memcore stage. empty inherits llm.primary.model."
+        initial={cfg.processing_model}
+        placeholder="(inherit llm.primary)"
+        disabled={!editable}
+        onSave={async (raw) => {
+          if (raw.trim() === "") await unsetConfigPath("server.memcore.processing_model");
+          else await setConfigPath("server.memcore.processing_model", raw.trim());
+        }}
+        onClear={() => unsetConfigPath("server.memcore.processing_model")}
+      />
+      <Field
+        label="extraction_model"
+        hint={stageHint}
+        initial={cfg.extraction_model}
+        placeholder="(inherit processing_model)"
+        disabled={!editable}
+        onSave={async (raw) => {
+          if (raw.trim() === "") await unsetConfigPath("server.memcore.extraction_model");
+          else await setConfigPath("server.memcore.extraction_model", raw.trim());
+        }}
+        onClear={() => unsetConfigPath("server.memcore.extraction_model")}
+      />
+      <Field
+        label="contextualizer_model"
+        hint={stageHint}
+        initial={cfg.contextualizer_model}
+        placeholder="(inherit processing_model)"
+        disabled={!editable}
+        onSave={async (raw) => {
+          if (raw.trim() === "") await unsetConfigPath("server.memcore.contextualizer_model");
+          else await setConfigPath("server.memcore.contextualizer_model", raw.trim());
+        }}
+        onClear={() => unsetConfigPath("server.memcore.contextualizer_model")}
+      />
+      <Field
+        label="conflict_model"
+        hint={stageHint}
+        initial={cfg.conflict_model}
+        placeholder="(inherit processing_model)"
+        disabled={!editable}
+        onSave={async (raw) => {
+          if (raw.trim() === "") await unsetConfigPath("server.memcore.conflict_model");
+          else await setConfigPath("server.memcore.conflict_model", raw.trim());
+        }}
+        onClear={() => unsetConfigPath("server.memcore.conflict_model")}
+      />
+      <Field
+        label="temporal_parser_model"
+        hint={stageHint}
+        initial={cfg.temporal_parser_model}
+        placeholder="(inherit processing_model)"
+        disabled={!editable}
+        onSave={async (raw) => {
+          if (raw.trim() === "") await unsetConfigPath("server.memcore.temporal_parser_model");
+          else await setConfigPath("server.memcore.temporal_parser_model", raw.trim());
+        }}
+        onClear={() => unsetConfigPath("server.memcore.temporal_parser_model")}
+      />
+      <Field
+        label="profile_generator_model"
+        hint={stageHint}
+        initial={cfg.profile_generator_model}
+        placeholder="(inherit processing_model)"
+        disabled={!editable}
+        onSave={async (raw) => {
+          if (raw.trim() === "") await unsetConfigPath("server.memcore.profile_generator_model");
+          else await setConfigPath("server.memcore.profile_generator_model", raw.trim());
+        }}
+        onClear={() => unsetConfigPath("server.memcore.profile_generator_model")}
+      />
+
+      <div className="section-label" style={{ marginTop: 16, marginBottom: 6 }}>
+        idle ingestion
+      </div>
+      <div className="hint" style={{ marginBottom: 12 }}>
+        a sweeper picks sessions that have gone quiet and feeds the unprocessed delta into
+        memcore's extraction pipeline. tune for cost vs. recall.
+      </div>
+      <NumberField
+        label="idle_threshold_seconds"
+        hint="seconds of inactivity before a session is eligible for ingestion."
+        initial={ingest.idle_threshold_seconds}
+        min={1}
+        disabled={!editable}
+        onSave={(n) => setConfigPath("server.memcore.ingest.idle_threshold_seconds", n)}
+      />
+      <NumberField
+        label="max_idle_seconds"
+        hint="hard ceiling — force-ingest once unprocessed content is older than this."
+        initial={ingest.max_idle_seconds}
+        min={1}
+        disabled={!editable}
+        onSave={(n) => setConfigPath("server.memcore.ingest.max_idle_seconds", n)}
+      />
+      <NumberField
+        label="min_delta_messages"
+        hint="skip ingestion when the unprocessed delta is smaller than this."
+        initial={ingest.min_delta_messages}
+        min={0}
+        disabled={!editable}
+        onSave={(n) => setConfigPath("server.memcore.ingest.min_delta_messages", n)}
+      />
+      <NumberField
+        label="min_delta_tokens"
+        hint="token-budget gate, same role as min_delta_messages."
+        initial={ingest.min_delta_tokens}
+        min={0}
+        disabled={!editable}
+        onSave={(n) => setConfigPath("server.memcore.ingest.min_delta_tokens", n)}
+      />
+      <NumberField
+        label="sweeper_interval_seconds"
+        hint="how often the idle sweeper runs."
+        initial={ingest.sweeper_interval_seconds}
+        min={1}
+        disabled={!editable}
+        onSave={(n) => setConfigPath("server.memcore.ingest.sweeper_interval_seconds", n)}
+      />
+      <div className="row gap-2" style={{ alignItems: "center", marginTop: 8 }}>
+        <input
+          type="checkbox"
+          checked={ingest.include_subagents === true}
+          disabled={!editable}
+          onChange={(e) =>
+            void setConfigPath("server.memcore.ingest.include_subagents", e.target.checked)
+          }
+        />
+        <span>include_subagents</span>
+        <span className="hint" style={{ marginLeft: 8 }}>
+          ingest subagent transcripts. off by default — the parent's reply usually summarises them.
+        </span>
+      </div>
+    </Card>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// raw config editor — universal backstop for any field a typed editor doesn't
+// cover. Walks the live config tree and renders typed inputs per leaf. Each
+// edit is one admin.config.set/unset call: the gateway re-validates against
+// its schema atomically, so an invalid edit fails loud and the leaf shows the
+// error inline.
+// ─────────────────────────────────────────────────────────────────────────────
+
+type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [k: string]: JsonValue };
+
+function joinPath(parent: string, segment: string | number): string {
+  if (parent === "") return String(segment);
+  return `${parent}.${segment}`;
+}
+
+function inferDefaultFor(template: JsonValue | undefined): JsonValue {
+  if (template === undefined) return "";
+  if (Array.isArray(template)) return [];
+  if (template === null) return "";
+  if (typeof template === "object") {
+    // Use the first child's type as a hint for what siblings should look like;
+    // empty otherwise.
+    const sample = Object.values(template)[0];
+    return sample === undefined ? {} : inferDefaultFor(sample as JsonValue);
+  }
+  if (typeof template === "string") return "";
+  if (typeof template === "number") return 0;
+  if (typeof template === "boolean") return false;
+  return "";
+}
 
 function RawConfigViewer({
   fullConfig,
@@ -1626,7 +1914,9 @@ function RawConfigViewer({
   fullConfig: FullConfigState | null;
   refresh: () => Promise<void>;
 }): JSX.Element {
-  const json = useMemo(() => JSON.stringify(fullConfig?.config ?? {}, null, 2), [fullConfig]);
+  const editable = !!fullConfig?.editable;
+  const config = (fullConfig?.config ?? {}) as Record<string, JsonValue>;
+
   return (
     <Card
       title="raw config.json"
@@ -1636,26 +1926,570 @@ function RawConfigViewer({
         </button>
       }
     >
-      <div className="hint" style={{ marginBottom: 8 }}>
-        on-disk view, refreshed from <span className="kbd">{fullConfig?.path ?? "(no file)"}</span>.
-        edits via the forms above are atomic — the gateway re-validates against the schema before
-        each write.
+      <div className="hint" style={{ marginBottom: 12 }}>
+        every key in <span className="kbd">{fullConfig?.path ?? "(no file)"}</span>, rendered as a
+        form. each leaf saves on blur and the gateway re-validates the whole tree against its
+        schema — bad edits fail loud, valid ones are atomic.
       </div>
-      <pre
-        className="mono"
-        style={{
-          background: "var(--bg-inset)",
-          color: "var(--fg-muted)",
-          padding: 12,
-          borderRadius: 3,
-          fontSize: "var(--t-sm)",
-          whiteSpace: "pre",
-          maxHeight: 600,
-          overflow: "auto",
-        }}
-      >
-        {json}
-      </pre>
+      <ObjectNode path="" value={config} editable={editable} />
     </Card>
+  );
+}
+
+// ── recursive nodes ─────────────────────────────────────────────────────────
+
+interface NodeProps {
+  path: string;
+  editable: boolean;
+}
+
+function ObjectNode({
+  path,
+  value,
+  editable,
+  removable,
+  onRemove,
+}: NodeProps & {
+  value: Record<string, JsonValue>;
+  removable?: boolean;
+  onRemove?: () => Promise<void>;
+}): JSX.Element {
+  const { setConfigPath } = useGateway();
+  const keys = Object.keys(value).sort();
+  const [adding, setAdding] = useState(false);
+  const [newKey, setNewKey] = useState("");
+  const [newType, setNewType] = useState<"string" | "number" | "boolean" | "object" | "array">(
+    "string",
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  const addKey = async (): Promise<void> => {
+    const k = newKey.trim();
+    if (!k) return;
+    if (k in value) {
+      setError(`"${k}" already exists`);
+      return;
+    }
+    setError(null);
+    let v: JsonValue;
+    switch (newType) {
+      case "number":
+        v = 0;
+        break;
+      case "boolean":
+        v = false;
+        break;
+      case "object":
+        v = {};
+        break;
+      case "array":
+        v = [];
+        break;
+      default:
+        v = "";
+    }
+    try {
+      await setConfigPath(joinPath(path, k), v);
+      setNewKey("");
+      setAdding(false);
+    } catch (e) {
+      setError((e as Error).message ?? "add failed");
+    }
+  };
+
+  return (
+    <div
+      style={{
+        marginLeft: path === "" ? 0 : 14,
+        paddingLeft: path === "" ? 0 : 10,
+        borderLeft: path === "" ? "none" : "1px solid var(--border-soft)",
+      }}
+    >
+      {removable && (
+        <div style={{ marginBottom: 6 }}>
+          <button className="btn ghost sm" disabled={!editable} onClick={() => void onRemove?.()}>
+            <Icon name="x" /> remove
+          </button>
+        </div>
+      )}
+      {keys.length === 0 && !adding && (
+        <div className="hint" style={{ padding: "4px 0" }}>(empty object)</div>
+      )}
+      {keys.map((k) => (
+        <KeyedNode key={k} parentPath={path} segment={k} value={value[k]!} editable={editable} />
+      ))}
+      <div style={{ marginTop: 6 }}>
+        {adding ? (
+          <div className="row gap-2" style={{ alignItems: "center", flexWrap: "wrap" }}>
+            <input
+              className="input"
+              autoFocus
+              placeholder="key name"
+              value={newKey}
+              onChange={(e) => setNewKey(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void addKey();
+                if (e.key === "Escape") {
+                  setAdding(false);
+                  setNewKey("");
+                  setError(null);
+                }
+              }}
+              style={{ width: 160 }}
+              disabled={!editable}
+            />
+            <select
+              className="input"
+              value={newType}
+              onChange={(e) =>
+                setNewType(e.target.value as "string" | "number" | "boolean" | "object" | "array")
+              }
+              disabled={!editable}
+              style={{ width: 110 }}
+            >
+              <option value="string">string</option>
+              <option value="number">number</option>
+              <option value="boolean">boolean</option>
+              <option value="object">object</option>
+              <option value="array">array</option>
+            </select>
+            <button
+              className="btn primary sm"
+              onClick={() => void addKey()}
+              disabled={!editable || !newKey.trim()}
+            >
+              add
+            </button>
+            <button
+              className="btn ghost sm"
+              onClick={() => {
+                setAdding(false);
+                setNewKey("");
+                setError(null);
+              }}
+            >
+              cancel
+            </button>
+            {error && (
+              <span className="tag warn" title={error}>
+                error
+              </span>
+            )}
+          </div>
+        ) : (
+          <button className="btn ghost sm" disabled={!editable} onClick={() => setAdding(true)}>
+            + add key
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ArrayNode({
+  path,
+  value,
+  editable,
+}: NodeProps & { value: JsonValue[] }): JSX.Element {
+  const { setConfigPath, unsetConfigPath } = useGateway();
+  const [error, setError] = useState<string | null>(null);
+
+  const move = async (i: number, j: number): Promise<void> => {
+    if (j < 0 || j >= value.length) return;
+    setError(null);
+    try {
+      const next = value.slice();
+      const tmp = next[i]!;
+      next[i] = next[j]!;
+      next[j] = tmp;
+      await setConfigPath(path, next);
+    } catch (e) {
+      setError((e as Error).message ?? "move failed");
+    }
+  };
+
+  const remove = async (i: number): Promise<void> => {
+    setError(null);
+    try {
+      await unsetConfigPath(joinPath(path, i));
+    } catch (e) {
+      setError((e as Error).message ?? "remove failed");
+    }
+  };
+
+  const append = async (): Promise<void> => {
+    setError(null);
+    try {
+      const template = value.length > 0 ? value[value.length - 1] : undefined;
+      const next = inferDefaultFor(template as JsonValue | undefined);
+      await setConfigPath(joinPath(path, value.length), next);
+    } catch (e) {
+      setError((e as Error).message ?? "append failed");
+    }
+  };
+
+  return (
+    <div
+      style={{
+        marginLeft: 14,
+        paddingLeft: 10,
+        borderLeft: "1px solid var(--border-soft)",
+      }}
+    >
+      {value.length === 0 && (
+        <div className="hint" style={{ padding: "4px 0" }}>(empty array)</div>
+      )}
+      {value.map((v, i) => (
+        <div
+          key={i}
+          style={{
+            padding: "4px 0",
+            borderBottom: i < value.length - 1 ? "1px dashed var(--border-soft)" : "none",
+            marginBottom: 4,
+          }}
+        >
+          <div className="row gap-2" style={{ alignItems: "center", marginBottom: 4 }}>
+            <span className="faint mono" style={{ minWidth: 28 }}>
+              [{i}]
+            </span>
+            <span className="spacer" />
+            <button
+              className="btn ghost sm"
+              disabled={!editable || i === 0}
+              onClick={() => void move(i, i - 1)}
+              title="move up"
+            >
+              ↑
+            </button>
+            <button
+              className="btn ghost sm"
+              disabled={!editable || i === value.length - 1}
+              onClick={() => void move(i, i + 1)}
+              title="move down"
+            >
+              ↓
+            </button>
+            <button
+              className="btn ghost sm"
+              disabled={!editable}
+              onClick={() => void remove(i)}
+              title="remove"
+            >
+              <Icon name="x" />
+            </button>
+          </div>
+          <ValueNode path={joinPath(path, i)} value={v} editable={editable} inline />
+        </div>
+      ))}
+      <div style={{ marginTop: 6 }}>
+        <button className="btn ghost sm" disabled={!editable} onClick={() => void append()}>
+          + add item
+        </button>
+        {error && (
+          <span className="tag warn" style={{ marginLeft: 8 }} title={error}>
+            error
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function KeyedNode({
+  parentPath,
+  segment,
+  value,
+  editable,
+}: {
+  parentPath: string;
+  segment: string;
+  value: JsonValue;
+  editable: boolean;
+}): JSX.Element {
+  const { unsetConfigPath } = useGateway();
+  const path = joinPath(parentPath, segment);
+  const isObject = value !== null && typeof value === "object" && !Array.isArray(value);
+  const isArray = Array.isArray(value);
+  const composite = isObject || isArray;
+
+  const [open, setOpen] = useState(parentPath === ""); // default: expand top-level groups
+  const [error, setError] = useState<string | null>(null);
+
+  const remove = async (): Promise<void> => {
+    setError(null);
+    try {
+      await unsetConfigPath(path);
+    } catch (e) {
+      setError((e as Error).message ?? "remove failed");
+    }
+  };
+
+  return (
+    <div style={{ padding: "4px 0" }}>
+      <div className="row gap-2" style={{ alignItems: "center" }}>
+        {composite && (
+          <button
+            className="btn ghost sm"
+            onClick={() => setOpen((o) => !o)}
+            style={{ padding: "0 4px", minWidth: 22 }}
+            title={open ? "collapse" : "expand"}
+          >
+            {open ? "▾" : "▸"}
+          </button>
+        )}
+        <span
+          className="mono strong"
+          style={{ minWidth: 200, color: "var(--fg-strong)" }}
+          title={path}
+        >
+          {segment}
+        </span>
+        {!composite && (
+          <ValueNode path={path} value={value} editable={editable} inline={false} />
+        )}
+        {composite && (
+          <span className="faint" style={{ fontSize: "var(--t-sm)" }}>
+            {isArray
+              ? `array · ${(value as JsonValue[]).length} item${(value as JsonValue[]).length === 1 ? "" : "s"}`
+              : `object · ${Object.keys(value as Record<string, JsonValue>).length} key${Object.keys(value as Record<string, JsonValue>).length === 1 ? "" : "s"}`}
+          </span>
+        )}
+        <span className="spacer" />
+        <button className="btn ghost sm" disabled={!editable} onClick={() => void remove()}>
+          <Icon name="x" />
+        </button>
+      </div>
+      {error && (
+        <div className="hint" style={{ color: "var(--warn)", marginTop: 4 }}>
+          {error}
+        </div>
+      )}
+      {composite && open && isObject && (
+        <ObjectNode
+          path={path}
+          value={value as Record<string, JsonValue>}
+          editable={editable}
+        />
+      )}
+      {composite && open && isArray && (
+        <ArrayNode path={path} value={value as JsonValue[]} editable={editable} />
+      )}
+    </div>
+  );
+}
+
+function ValueNode({
+  path,
+  value,
+  editable,
+  inline,
+}: NodeProps & { value: JsonValue; inline: boolean }): JSX.Element {
+  if (typeof value === "string") {
+    return <ScalarString path={path} value={value} editable={editable} inline={inline} />;
+  }
+  if (typeof value === "number") {
+    return <ScalarNumber path={path} value={value} editable={editable} />;
+  }
+  if (typeof value === "boolean") {
+    return <ScalarBoolean path={path} value={value} editable={editable} />;
+  }
+  if (value === null) {
+    return <ScalarNull path={path} editable={editable} />;
+  }
+  // Composite values shouldn't land here — KeyedNode renders them via their
+  // own component. Defensive fallback: show as JSON.
+  return (
+    <span className="mono faint" style={{ fontSize: "var(--t-sm)" }}>
+      {JSON.stringify(value)}
+    </span>
+  );
+}
+
+function ScalarString({
+  path,
+  value,
+  editable,
+  inline,
+}: NodeProps & { value: string; inline: boolean }): JSX.Element {
+  const { setConfigPath } = useGateway();
+  const [draft, setDraft] = useState(value);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Heuristic: a path containing api_key / token / secret renders as a
+  // password input. Same behaviour as the typed editors.
+  const isSecret = /(?:^|\.)(?:api_key|key|token|secret|database_url)$/i.test(path) && !path.endsWith("api_key_env") && !path.endsWith(".path");
+  const [reveal, setReveal] = useState(false);
+  useEffect(() => setDraft(value), [value]);
+
+  const dirty = draft !== value;
+  const save = async (): Promise<void> => {
+    if (!dirty) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await setConfigPath(path, draft);
+    } catch (e) {
+      setError((e as Error).message ?? "save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="row gap-2" style={{ flex: 1, alignItems: "center", flexWrap: "wrap" }}>
+      <input
+        className="input"
+        type={isSecret && !reveal ? "password" : "text"}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => void save()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+          if (e.key === "Escape") {
+            setDraft(value);
+            (e.currentTarget as HTMLInputElement).blur();
+          }
+        }}
+        disabled={!editable || saving}
+        style={{ flex: inline ? 1 : "0 1 360px", minWidth: 180 }}
+      />
+      {isSecret && (
+        <button
+          className="btn ghost sm"
+          onClick={() => setReveal((r) => !r)}
+          disabled={!editable}
+        >
+          {reveal ? "hide" : "show"}
+        </button>
+      )}
+      {dirty && (
+        <button className="btn primary sm" onClick={() => void save()} disabled={!editable || saving}>
+          save
+        </button>
+      )}
+      {error && (
+        <span className="tag warn" title={error}>
+          error
+        </span>
+      )}
+    </div>
+  );
+}
+
+function ScalarNumber({
+  path,
+  value,
+  editable,
+}: NodeProps & { value: number }): JSX.Element {
+  const { setConfigPath } = useGateway();
+  const [draft, setDraft] = useState(String(value));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => setDraft(String(value)), [value]);
+
+  const dirty = draft !== String(value);
+  const save = async (): Promise<void> => {
+    if (!dirty) return;
+    const n = Number(draft);
+    if (!Number.isFinite(n)) {
+      setError("not a number");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await setConfigPath(path, n);
+    } catch (e) {
+      setError((e as Error).message ?? "save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="row gap-2" style={{ alignItems: "center" }}>
+      <input
+        className="input"
+        type="number"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => void save()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+          if (e.key === "Escape") {
+            setDraft(String(value));
+            (e.currentTarget as HTMLInputElement).blur();
+          }
+        }}
+        disabled={!editable || saving}
+        style={{ width: 160 }}
+      />
+      {dirty && (
+        <button className="btn primary sm" onClick={() => void save()} disabled={!editable || saving}>
+          save
+        </button>
+      )}
+      {error && (
+        <span className="tag warn" title={error}>
+          error
+        </span>
+      )}
+    </div>
+  );
+}
+
+function ScalarBoolean({
+  path,
+  value,
+  editable,
+}: NodeProps & { value: boolean }): JSX.Element {
+  const { setConfigPath } = useGateway();
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div className="row gap-2" style={{ alignItems: "center" }}>
+      <input
+        type="checkbox"
+        checked={value}
+        disabled={!editable}
+        onChange={async (e) => {
+          setError(null);
+          try {
+            await setConfigPath(path, e.target.checked);
+          } catch (err) {
+            setError((err as Error).message ?? "save failed");
+          }
+        }}
+      />
+      <span className="faint mono" style={{ fontSize: "var(--t-sm)" }}>
+        {value ? "true" : "false"}
+      </span>
+      {error && (
+        <span className="tag warn" title={error}>
+          error
+        </span>
+      )}
+    </div>
+  );
+}
+
+function ScalarNull({
+  path,
+  editable,
+}: NodeProps): JSX.Element {
+  const { setConfigPath } = useGateway();
+  return (
+    <div className="row gap-2" style={{ alignItems: "center" }}>
+      <span className="faint mono" style={{ fontSize: "var(--t-sm)" }}>
+        null
+      </span>
+      <button
+        className="btn ghost sm"
+        disabled={!editable}
+        onClick={() => void setConfigPath(path, "")}
+        title="set to empty string"
+      >
+        set string
+      </button>
+    </div>
   );
 }

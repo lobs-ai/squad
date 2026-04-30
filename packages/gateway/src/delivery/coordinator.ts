@@ -136,6 +136,35 @@ export class RunCoordinator {
   }
 
   /**
+   * Trigger a fresh chat turn from outside chat dispatch — used by the
+   * subagent pool to wake the parent session up when a backgrounded child
+   * finishes. The injected user message is persisted by `runChatTurn`
+   * itself (persistUserMessage: true). When a run is already active for the
+   * session we enqueue instead, mirroring `decide`.
+   */
+  async startSyntheticTurn(sessionId: string, content: ContentBlock[]): Promise<void> {
+    if (!this.starter) {
+      this.logger.warn(
+        { sessionId },
+        "startSyntheticTurn called before starter was wired — dropping",
+      );
+      return;
+    }
+    const active = this.findActiveForSession(sessionId);
+    if (active) {
+      this.queue.enqueue({
+        id: randomUUID(),
+        sessionId,
+        content,
+        enqueuedAt: Date.now(),
+      });
+      this.injectedForRun.delete(active.runId);
+      return;
+    }
+    await this.starter(sessionId, content, { persistUserMessage: true });
+  }
+
+  /**
    * Decide whether a new chat.send should start a fresh run or queue behind
    * an active one. Pure decision logic — the caller persists the user
    * message and (if running) fires startTurn.

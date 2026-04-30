@@ -31,9 +31,11 @@ export class SpawnSubagentTool extends BaseTool<SpawnSubagentInput> {
     "    `create_subagent`). It uses its own SOUL/USER/MEMORY under",
     "    `.squad/subagents/<name>/` and the model/tools you registered.",
     "",
-    "Pass `wait: true` to get the final result inline. Pass `wait: false`",
-    "(default) to fan out — the tool returns a sessionId immediately and the",
-    "subagent streams on its own subscription topic.",
+    "Spawns are async by default — the tool returns immediately with a",
+    "sessionId and the subagent runs in the background. You keep working and",
+    "can subscribe to its events via `subagents.text_delta` /",
+    "`subagents.completed`. Pass `wait: true` only when you actually need the",
+    "result inline before continuing.",
     "",
     "Subagents share the parent's task list. Put enough detail in the prompt",
     "(and any related task row) for the subagent to pick the work up cold.",
@@ -58,7 +60,11 @@ export class SpawnSubagentTool extends BaseTool<SpawnSubagentInput> {
         description: "Telemetry label for ad-hoc spawns.",
       },
       model: { type: "string", description: "Model id (overrides the named def)" },
-      wait: { type: "boolean", description: "Await the final result inline" },
+      wait: {
+        type: "boolean",
+        description:
+          "Block until the subagent finishes and return its result inline. Defaults to false (async fan-out).",
+      },
       toolsets: {
         type: "array",
         items: { type: "string" },
@@ -87,6 +93,7 @@ export class SpawnSubagentTool extends BaseTool<SpawnSubagentInput> {
         "spawn_subagent: provide either `subagent` (named) or `prompt` (ad-hoc)",
       );
     }
+    const wait = input.wait ?? false;
     const { sessionId, result, succeeded } = await this.backend.spawn({
       parentSessionId,
       ...(input.subagent !== undefined ? { subagent: input.subagent } : {}),
@@ -96,19 +103,21 @@ export class SpawnSubagentTool extends BaseTool<SpawnSubagentInput> {
       ...(input.model !== undefined ? { modelOverride: input.model } : {}),
       ...(input.toolsets !== undefined ? { toolsets: input.toolsets } : {}),
       ...(input.tools !== undefined ? { tools: input.tools } : {}),
-      wait: input.wait ?? false,
+      wait,
     });
-    return {
-      result: JSON.stringify(
-        {
+    const label = input.subagent ?? input.name ?? "subagent";
+    const payload = wait
+      ? {
+          status: succeeded ? "completed" : "failed",
           sessionId,
           ...(result !== undefined ? { result } : {}),
-          ...(succeeded !== undefined ? { succeeded } : {}),
-        },
-        null,
-        2,
-      ),
-    };
+        }
+      : {
+          status: "spawned",
+          sessionId,
+          note: `${label} is running in the background — keep working. Subscribe to subagents.text_delta/${sessionId} or subagents.completed/${sessionId} to follow it.`,
+        };
+    return { result: JSON.stringify(payload, null, 2) };
   }
 }
 

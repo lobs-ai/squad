@@ -1,17 +1,23 @@
 import type { ApprovalPolicy } from "@squad/plugin-sdk";
 
 export interface TagMatchOptions {
-  requireForTags: string[];
+  /**
+   * Tags that require approval. Pass a function to read the current value on
+   * every decision — required when the underlying config can change at
+   * runtime, otherwise edits via `set_config` / `admin.config.set` won't take
+   * effect until the gateway restarts.
+   */
+  requireForTags: string[] | (() => string[]);
 }
 
-/**
- * Default policy: any tool whose tags intersect `requireForTags` prompts for
- * approval (returns "escalate"). Everything else auto-approves.
- */
 export function tagMatchPolicy(options: TagMatchOptions): ApprovalPolicy {
-  const requireSet = new Set(options.requireForTags);
+  const read =
+    typeof options.requireForTags === "function"
+      ? options.requireForTags
+      : () => options.requireForTags as string[];
   return {
     async decide(ctx): Promise<"approve" | "deny" | "escalate"> {
+      const requireSet = new Set(read());
       const hit = ctx.tags.some((t) => requireSet.has(t));
       return hit ? "escalate" : "approve";
     },

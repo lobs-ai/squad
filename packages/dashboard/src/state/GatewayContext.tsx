@@ -176,6 +176,12 @@ export interface GatewayState {
     answers: Record<string, string>,
   ) => Promise<void>;
   decideApproval: (approvalId: string, decision: "approve" | "deny", reason?: string) => Promise<void>;
+  /**
+   * Mark this (toolName, target) as "always allow" and decide the current
+   * pending approval as `approve` in one round-trip. `scope` defaults to
+   * "exact" — pass "tool" to allow every target for the tool.
+   */
+  allowApprovalPath: (approvalId: string, scope?: "exact" | "tool") => Promise<void>;
   createTask: (subject: string, description?: string) => Promise<void>;
   updateTaskStatus: (taskId: string, status: Task["status"]) => Promise<void>;
   reloadPlugin: (id: string) => Promise<void>;
@@ -336,7 +342,21 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
   const [routines, setRoutines] = useState<RoutineRecord[]>([]);
   const [pairings, setPairings] = useState<PairingView[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem("squad-active-session");
+    } catch {
+      return null;
+    }
+  });
+  useEffect(() => {
+    try {
+      if (activeSessionId) localStorage.setItem("squad-active-session", activeSessionId);
+      else localStorage.removeItem("squad-active-session");
+    } catch {
+      // ignore
+    }
+  }, [activeSessionId]);
   const [messages, setMessages] = useState<MessageRecord[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [streaming, setStreaming] = useState<string>("");
@@ -578,9 +598,12 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     return () => clearInterval(t);
   }, [client]);
 
-  // Auto-pick the first session as active once we have one.
+  // Auto-pick the first session as active once we have one. Also recovers
+  // from a stale persisted id whose session no longer exists.
   useEffect(() => {
-    if (!activeSessionId && sessions[0]) setActiveSessionId(sessions[0].id);
+    if (sessions.length === 0) return;
+    if (activeSessionId && sessions.some((s) => s.id === activeSessionId)) return;
+    setActiveSessionId(sessions[0].id);
   }, [sessions, activeSessionId]);
 
   const activeSession = useMemo(
@@ -603,8 +626,12 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
   }, [sessions, rootSessionId]);
 
   // Load chat history + tasks + subagent tree when the active session changes.
+  // Depend on the session ID (a stable string) — not on the session record —
+  // so a session.updated event (e.g. token-count bump after a message) doesn't
+  // re-clear the transcript, which would briefly empty it and yank the chat
+  // scroll position to the top.
   useEffect(() => {
-    if (!activeSession) {
+    if (!activeSessionId) {
       setSessionQuestions([]);
       return;
     }
@@ -618,13 +645,13 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     void (async () => {
       const [hist, taskList] = await Promise.all([
         tryRequest(
-          () => client.request("chat.history", { sessionId: activeSession.id, limit: 200 }),
+          () => client.request("chat.history", { sessionId: activeSessionId, limit: 200 }),
           { messages: [] as MessageRecord[] },
         ),
         tryRequest(
           () =>
             client
-              .request("tasks.list", { sessionId: activeSession.id, includeDeleted: false })
+              .request("tasks.list", { sessionId: activeSessionId, includeDeleted: false })
               .then((r) => r.tasks as Task[]),
           [] as Task[],
         ),
@@ -633,12 +660,12 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
       setMessages(hist.messages);
       setTasks(taskList);
     })();
-    void refreshSessionQuestions(activeSession.id);
+    void refreshSessionQuestions(activeSessionId);
     if (rootSessionId) void refreshTreeFor(rootSessionId);
     return () => {
       cancelled = true;
     };
-  }, [client, activeSession, rootSessionId, refreshTreeFor, refreshSessionQuestions]);
+  }, [client, activeSessionId, rootSessionId, refreshTreeFor, refreshSessionQuestions]);
 
   // Subscribe to all event streams once.
   useEffect(() => {
@@ -831,6 +858,13 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     [client],
   );
 
+  const allowApprovalPath = useCallback(
+    async (approvalId: string, scope: "exact" | "tool" = "exact") => {
+      await client.request("approvals.allow_path", { approvalId, scope });
+    },
+    [client],
+  );
+
   const createTask = useCallback(
     async (subject: string, description: string = "") => {
       if (!activeSession) return;
@@ -1019,6 +1053,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     setSessionTitleModel,
     answerQuestion,
     decideApproval,
+    allowApprovalPath,
     createTask,
     updateTaskStatus,
     reloadPlugin,

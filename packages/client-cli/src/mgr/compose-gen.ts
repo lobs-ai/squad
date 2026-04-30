@@ -52,6 +52,10 @@ function renderSquadService(squad: Squad, buildContext: string): string {
     environment:
       - SQUAD_CONFIG=/app/docker/config.json
       - SEARXNG_URL=http://searxng:8080
+      # Tells the gateway that Docker (via 'restart: unless-stopped') will
+      # respawn this container on exit. The agent's restart_gateway tool keys
+      # off this to know the restart will actually complete.
+      - SQUAD_RESTART_POLICY=docker
     volumes:
       - ${sd}:/app/docker
 ${extensionsMount}    depends_on:

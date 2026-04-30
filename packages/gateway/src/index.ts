@@ -12,8 +12,10 @@ import {
   registerConfigTools,
   registerMemoryTools,
   registerCronTools,
+  registerRestartTool,
 } from "@squad/tools";
 import { JsonConfigBackend } from "./config-backend.js";
+import { RestartManager } from "./restart/manager.js";
 import { logger } from "./logger.js";
 import { resolveTokenSecrets, configSchema, type Config } from "./config.js";
 import { Authenticator } from "./auth.js";
@@ -42,6 +44,8 @@ import { cronBackendFor } from "./routines/backend.js";
 import { ToolsetRegistry } from "./toolsets/registry.js";
 import { CommandRegistry } from "./commands/registry.js";
 import { ApprovalStore } from "./approvals/store.js";
+import { ApprovalRuleStore, allowListPolicy } from "./approvals/rules.js";
+import { JsonFileApprovalRulePersistence } from "./approvals/rules-persist.js";
 import { installApprovalHook } from "./approvals/hook.js";
 import { getHookRegistry } from "@squad/runner";
 import { ChannelRegistry } from "./channels/registry.js";
@@ -97,6 +101,16 @@ export {
   staggerOffsetMs,
 } from "./routines/persistence.js";
 export { ApprovalStore } from "./approvals/store.js";
+export {
+  ApprovalRuleStore,
+  allowListPolicy,
+  targetFromInput,
+} from "./approvals/rules.js";
+export {
+  JsonFileApprovalRulePersistence,
+  MemoryApprovalRulePersistence,
+  type ApprovalRulePersistence,
+} from "./approvals/rules-persist.js";
 export { ChannelRegistry } from "./channels/registry.js";
 export { PeerSource } from "./peers/source.js";
 export { PairingStore } from "./auth/pairing.js";
@@ -106,6 +120,13 @@ export {
   type PairingPersistence,
   type PersistedPairing,
 } from "./auth/pairing-persist.js";
+export {
+  RestartManager,
+  RestartUnsupportedError,
+  SQUAD_RESTART_EXIT_CODE,
+  detectRespawnGuarantee,
+} from "./restart/manager.js";
+export { runSupervisor } from "./restart/supervisor.js";
 export { tagMatchPolicy, allowAllPolicy, denyAllPolicy, cascade } from "./approvals/policy.js";
 export { Dispatcher } from "./dispatch/index.js";
 export { runChatTurn } from "./runs.js";
@@ -184,6 +205,12 @@ export interface BootedGateway {
   broadcast: Broadcast;
   commandRegistry: CommandRegistry;
   toolsetRegistry: ToolsetRegistry;
+  /**
+   * Drives the agent's `restart_gateway` tool. Schedules a graceful close
+   * followed by `process.exit(75)`; the supervisor (or external orchestrator)
+   * respawns the process.
+   */
+  restart: RestartManager;
   /**
    * Start every channel lifecycle registered by a plugin. Called after the
    * HTTP/WS server is listening — channels typically dial back to the gateway
@@ -475,6 +502,19 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     registerConfigTools(toolRegistry, configBackend);
   }
 
+  // Restart manager: drives the agent's `restart_gateway` tool. We construct
+  // it now so it can be injected into the tool registry, but `close` is
+  // defined further down — hold a ref and fill it in once `close` exists.
+  const closeRef: { current: (() => Promise<void>) | null } = { current: null };
+  const restartManager = new RestartManager({
+    logger,
+    broadcast,
+    close: async () => {
+      if (closeRef.current) await closeRef.current();
+    },
+  });
+  registerRestartTool(toolRegistry, restartManager);
+
   const deliveryQueue = new DeliveryQueue({
     maxQueued: config.chat.delivery.max_queued,
     collapseDuplicates: config.chat.delivery.collapse_duplicates,
@@ -485,11 +525,75 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     logger,
   });
 
+  // When a backgrounded subagent finishes, walk up to the root chat session
+  // and start a fresh turn announcing the outcome. Without this the parent
+  // sits idle after spawn_subagent (the LLM ended its turn on the spawn ack)
+  // and the user sees the agent "freeze" while subagents quietly complete in
+  // the background.
+  subagentPool.setBackgroundOutcomeHandler((outcome) => {
+    let rootId: string;
+    try {
+      rootId = sessions.rootId(outcome.parentSessionId);
+    } catch {
+      return; // session vanished
+    }
+    // Only wake the root if it's a user-facing chat session — i.e. it has no
+    // subagentDefId. Nested subagents that fired off grandchildren don't get
+    // re-engaged automatically.
+    const rootSession = sessions.tryGet(rootId);
+    if (!rootSession || rootSession.subagentDefId) return;
+
+    const label = outcome.adHoc ? "ad-hoc subagent" : `subagent "${outcome.subagent}"`;
+    const status = outcome.succeeded ? "completed" : "failed";
+    const body = outcome.succeeded
+      ? typeof outcome.result === "string"
+        ? outcome.result
+        : JSON.stringify(outcome.result)
+      : outcome.error ?? "unknown error";
+    const text = [
+      `[${label} ${status} — sessionId: ${outcome.sessionId}]`,
+      "",
+      body,
+    ].join("\n");
+
+    // Defer to the next tick so we don't re-enter the agent loop from inside
+    // the pool's IIFE (it's still holding the running-set entry until the
+    // finally clears).
+    setImmediate(() => {
+      void coordinator
+        .startSyntheticTurn(rootId, [{ type: "text", text }])
+        .catch((err) => {
+          logger.error(
+            { err, parentSessionId: outcome.parentSessionId, rootId },
+            "failed to wake parent on subagent completion",
+          );
+        });
+    });
+  });
+
   const providers = new Map<string, LLMClient>();
   const routinesList: RoutineDescriptor[] = [];
   const skillsList: SkillDescriptor[] = [];
+
+  // Persistent allow-list rules — backs `approvals.allow_path` from the
+  // dashboard's "always allow this path" button. Loaded eagerly so the
+  // policy below sees rules from previous runs on first request.
+  const approvalRulesFile = join(config.server.data_dir, "approval-rules.json");
+  const approvalRules = new ApprovalRuleStore(
+    new JsonFileApprovalRulePersistence(approvalRulesFile),
+    {
+      onAdded: (rule) => broadcast.publish("approvals.rule_added", { rule }),
+      onRemoved: (ruleId) => broadcast.publish("approvals.rule_removed", { ruleId }),
+    },
+  );
+
   const approvalPolicies: ApprovalPolicy[] = [
-    tagMatchPolicy({ requireForTags: config.policy.approvals.require_for_tags }),
+    // User-defined allow-list wins first so a matching rule short-circuits
+    // any tag-match escalation below it.
+    allowListPolicy(approvalRules),
+    tagMatchPolicy({
+      requireForTags: () => liveConfig.current.policy.approvals.require_for_tags,
+    }),
   ];
   const channelHandles: ChannelHandle[] = [];
   const commandsList: SlashCommandDescriptor[] = [];
@@ -700,6 +804,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     version: VERSION,
     plugins,
     approvals,
+    approvalRules,
     channels,
     routineStore,
     cronPaths,
@@ -729,6 +834,27 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     }
   };
 
+  const close = async (): Promise<void> => {
+    routines.stop();
+    peers.stop();
+    if (sessionIngestion) await sessionIngestion.stop();
+    for (const ch of channelHandles) {
+      try {
+        await ch.stop();
+      } catch (err) {
+        logger.error({ err, channel: ch.id }, "channel failed to stop");
+      }
+    }
+    await handle.close();
+    try {
+      await memcoreInstance.close();
+    } catch (err) {
+      logger.error({ err }, "memcore failed to close");
+    }
+    db.close();
+  };
+  closeRef.current = close;
+
   return {
     handle,
     stores: { sessions, messages, toolCalls, tasks, questions, memory: memoryService, approvals, routines: routineStore },
@@ -744,25 +870,8 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     broadcast,
     commandRegistry,
     toolsetRegistry,
+    restart: restartManager,
     startChannels,
-    close: async () => {
-      routines.stop();
-      peers.stop();
-      if (sessionIngestion) await sessionIngestion.stop();
-      for (const ch of channelHandles) {
-        try {
-          await ch.stop();
-        } catch (err) {
-          logger.error({ err, channel: ch.id }, "channel failed to stop");
-        }
-      }
-      await handle.close();
-      try {
-        await memcoreInstance.close();
-      } catch (err) {
-        logger.error({ err }, "memcore failed to close");
-      }
-      db.close();
-    },
+    close,
   };
 }

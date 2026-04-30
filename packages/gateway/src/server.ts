@@ -34,6 +34,7 @@ import type { RunCoordinator } from "./delivery/coordinator.js";
 import type { MemoryService } from "./memory/service.js";
 import type { SessionIngestionService } from "./memory/session-ingest.js";
 import type { ApprovalStore } from "./approvals/store.js";
+import type { ApprovalRuleStore } from "./approvals/rules.js";
 import type { PluginHost } from "./plugins/host.js";
 import type { ChannelRegistry } from "./channels/registry.js";
 import type { RoutineStore, RoutineRunner } from "./routines/store.js";
@@ -79,6 +80,8 @@ export interface GatewayDeps {
   version: string;
   /** Approval prompts state — pending + decided history for `approvals.list/decide`. */
   approvals?: ApprovalStore;
+  /** Persistent allow-list rules powering `approvals.allow_path`. */
+  approvalRules?: ApprovalRuleStore;
   /** Plugin registry — surfaces `plugins.list/enable/disable/reload/configure`. */
   plugins?: PluginHost;
   /** Channel registry — surfaces `channels.list/bind/unbind/capabilities`. */
@@ -343,7 +346,12 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
     defaultModel: deps.config.llm.primary.model,
   });
 
-  if (deps.approvals) registerApprovalMethods(d, deps.approvals);
+  if (deps.approvals) {
+    registerApprovalMethods(d, {
+      approvals: deps.approvals,
+      ...(deps.approvalRules ? { rules: deps.approvalRules } : {}),
+    });
+  }
   if (deps.plugins) registerPluginMethods(d, deps.plugins);
   if (deps.channels) registerChannelMethods(d, deps.channels);
   if (deps.routineStore && deps.routineRunner) {
