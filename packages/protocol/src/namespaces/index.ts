@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { sessionMethods } from "./session.js";
+import { sessionMethods, sessionEvents } from "./session.js";
 import { chatMethods, chatEvents } from "./chat.js";
 import { subagentMethods, subagentEvents } from "./subagents.js";
 import { taskMethods, taskEvents } from "./tasks.js";
@@ -9,6 +9,8 @@ import { pluginMethods, pluginEvents } from "./plugins.js";
 import { channelMethods, channelEvents } from "./channels.js";
 import { routineMethods, routineEvents } from "./routines.js";
 import { adminMethods, adminEvents } from "./admin.js";
+import { commandMethods } from "./commands.js";
+import { toolsetMethods } from "./toolsets.js";
 
 export * from "./session.js";
 export * from "./chat.js";
@@ -20,6 +22,8 @@ export * from "./plugins.js";
 export * from "./channels.js";
 export * from "./routines.js";
 export * from "./admin.js";
+export * from "./commands.js";
+export * from "./toolsets.js";
 
 /**
  * Central method registry. The gateway dispatch layer and typed clients both
@@ -36,6 +40,8 @@ export const methodRegistry = {
   ...channelMethods,
   ...routineMethods,
   ...adminMethods,
+  ...commandMethods,
+  ...toolsetMethods,
 } as const;
 
 export type MethodName = keyof typeof methodRegistry;
@@ -45,6 +51,7 @@ export type MethodName = keyof typeof methodRegistry;
  * schema for a given event topic.
  */
 export const eventRegistry = {
+  ...sessionEvents,
   ...chatEvents,
   ...subagentEvents,
   ...taskEvents,

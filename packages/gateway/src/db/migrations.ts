@@ -201,6 +201,49 @@ const migrations: Migration[] = [
       DROP TABLE IF EXISTS memory_entry;
     `,
   },
+  {
+    id: 10,
+    name: "session_ingest",
+    up: `
+      ALTER TABLE sessions ADD COLUMN ingest_watermark_message_id TEXT;
+      ALTER TABLE sessions ADD COLUMN ingest_status TEXT NOT NULL DEFAULT 'idle';
+      ALTER TABLE sessions ADD COLUMN ingest_attempts INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE sessions ADD COLUMN ingest_last_error TEXT;
+      ALTER TABLE sessions ADD COLUMN ingest_chunks_processed INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE sessions ADD COLUMN ingest_last_run_at TEXT;
+      ALTER TABLE sessions ADD COLUMN ingestable INTEGER NOT NULL DEFAULT 1;
+
+      CREATE INDEX idx_sessions_ingest_status ON sessions(ingest_status);
+    `,
+  },
+  {
+    id: 11,
+    name: "session_title_model",
+    up: `
+      ALTER TABLE sessions ADD COLUMN title_model TEXT;
+    `,
+  },
+  {
+    id: 12,
+    name: "messages_fts_with_content",
+    up: `
+      DROP TABLE IF EXISTS messages_fts;
+
+      CREATE VIRTUAL TABLE messages_fts USING fts5(
+        text,
+        tokenize='porter unicode61'
+      );
+
+      INSERT INTO messages_fts (rowid, text)
+      SELECT m.rowid, COALESCE(
+        (SELECT group_concat(json_extract(value, '$.text'), ' ')
+         FROM json_each(m.content_json)
+         WHERE json_extract(value, '$.type') = 'text'),
+        ''
+      )
+      FROM messages m;
+    `,
+  },
 ];
 
 export function runMigrations(db: DatabaseHandle): void {

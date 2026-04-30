@@ -1,6 +1,7 @@
 export * from "./types.js";
 export * from "./base-tool.js";
 export * from "./registry.js";
+export * from "./groups.js";
 export * from "./tasks/index.js";
 export * from "./questions/index.js";
 export * from "./subagents/index.js";
@@ -53,6 +54,7 @@ export {
   PptxAddChartTool,
   PptxSaveTool,
   PPTX_TOOLS,
+  pptxGroup,
 } from "./pptx.js";
 
 // ── HTML → PDF ────────────────────────────────────────────────────────────────
@@ -67,19 +69,40 @@ export {
   parseMargins,
   parsePaper,
   gatherDiagnostics,
-  PRESETS,
-  PRESET_NAMES,
+  registerPreset,
+  getPreset,
+  listPresetNames,
+  registerTheme,
+  getTheme,
+  listThemeNames,
   themeCss,
   injectStyle,
-} from "./html-to-pdf.js";
-export type { HtmlDiagnostics, HtmlOverflowItem, HtmlBrokenImage, ThemeName } from "./html-to-pdf.js";
+  HTML_TO_PDF_TOOLS,
+  htmlToPdfGroup,
+} from "./html-to-pdf/index.js";
+export type {
+  HtmlDiagnostics,
+  HtmlOverflowItem,
+  HtmlBrokenImage,
+  ThemeName,
+  ThemeContext,
+  ThemeFactory,
+  Preset,
+  PresetFactory,
+  Paper,
+  Margins,
+  PdfFormat,
+} from "./html-to-pdf/index.js";
 
 // ── Default tool set ──────────────────────────────────────────────────────────
 //
-// Everything below powers `BUILTIN_TOOLS` — the set that should be available to
-// the main agent and any subagent that doesn't deliberately opt out. The main
-// agent gets full access by design; subagents filter this list via their
-// `SubagentDefinition.tools` array.
+// `BUILTIN_TOOLS` is the set of tools registered into the ToolRegistry on
+// every gateway boot, regardless of which groups end up in the prompt. The
+// runner uses the tool registry only to *execute* tools the LLM picks; the
+// per-turn allow-list (computed from default groups + unlocked groups in
+// runs.ts) is what determines which schemas the LLM actually sees.
+//
+// Subagents filter this list via their `SubagentDefinition.tools` array.
 
 import { ReadTool } from "./read.js";
 import { WriteTool } from "./write.js";
@@ -101,9 +124,17 @@ import {
   PptxAddTableTool,
   PptxAddChartTool,
   PptxSaveTool,
+  pptxGroup,
 } from "./pptx.js";
-import { HtmlToPdfTool, HtmlCheckTool, HtmlStyleGuideTool } from "./html-to-pdf.js";
+import { HtmlToPdfTool, HtmlCheckTool, HtmlStyleGuideTool, htmlToPdfGroup } from "./html-to-pdf/index.js";
 import type { BaseTool } from "./base-tool.js";
+import type { ToolGroup } from "./groups.js";
+import { cronGroup } from "./cron/index.js";
+import { tasksGroup } from "./tasks/index.js";
+import { memoryGroup } from "./memory/index.js";
+import { configGroup } from "./config/index.js";
+import { questionsGroup } from "./questions/index.js";
+import { subagentsGroup } from "./subagents/index.js";
 
 /** All built-in tool class instances. */
 export const BUILTIN_TOOLS: readonly BaseTool[] = [
@@ -129,4 +160,64 @@ export const BUILTIN_TOOLS: readonly BaseTool[] = [
   new HtmlToPdfTool(),
   new HtmlCheckTool(),
   new HtmlStyleGuideTool(),
+] as const;
+
+// ── Default groups — loaded on every turn ────────────────────────────────────
+
+/** Filesystem read/write/edit + dir listing. Default. */
+export const filesystemGroup: ToolGroup = {
+  name: "filesystem",
+  description: "Read, write, and edit files in the workspace",
+  toolNames: ["read", "write", "edit", "ls"],
+  guidance: "Use Read before Write or Edit. Edit accepts a unique old_string; Write overwrites.",
+  default: true,
+};
+
+/** Fast code/file search across the workspace. Default. */
+export const searchGroup: ToolGroup = {
+  name: "search",
+  description: "Search the workspace by content (grep), name (glob/find_files), or symbols (code_search)",
+  toolNames: ["grep", "glob", "find_files", "code_search"],
+  guidance: "Prefer grep for content; glob/find_files for paths; code_search for symbol-aware lookup.",
+  default: true,
+};
+
+/** Shell exec. Default. */
+export const execGroup: ToolGroup = {
+  name: "exec",
+  description: "Run shell commands (build, test, git, gh, …)",
+  toolNames: ["exec"],
+  guidance:
+    "Prefer the dedicated tools (Read/Edit/Write) over shell equivalents (cat/sed/echo). " +
+    "Use exec for builds, tests, git, gh, and anything truly shell-only. cd via newCwd is sticky.",
+  default: true,
+};
+
+/** Web search / fetch. Default. */
+export const webGroup: ToolGroup = {
+  name: "web",
+  description: "Search the web and fetch URL content",
+  toolNames: ["web_search", "web_fetch"],
+  guidance: "Use web_search to discover sources and web_fetch to read a single URL in detail.",
+  default: true,
+};
+
+/**
+ * Every built-in group, default + lazy. Order matters for the prompt index —
+ * defaults first, lazy second. Callers that build a `ToolGroupRegistry` can
+ * simply `registerAll(BUILTIN_GROUPS)`.
+ */
+export const BUILTIN_GROUPS: readonly ToolGroup[] = [
+  filesystemGroup,
+  searchGroup,
+  execGroup,
+  webGroup,
+  questionsGroup,
+  cronGroup,
+  tasksGroup,
+  subagentsGroup,
+  memoryGroup,
+  configGroup,
+  htmlToPdfGroup,
+  pptxGroup,
 ] as const;

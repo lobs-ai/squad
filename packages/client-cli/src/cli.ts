@@ -8,6 +8,7 @@ import { answerQuestion, listQuestions } from "./commands/ask.js";
 import { showStatus } from "./commands/status.js";
 import { startGateway, stopGateway, restartGateway, gatewayLogs, runOnboard } from "./commands/lifecycle.js";
 import { runMgr } from "./commands/mgr.js";
+import { runTerminal } from "./commands/terminal.js";
 import { runPair, runUnpair, runPairList } from "./commands/pair.js";
 import {
   runPairBrowserApprove,
@@ -44,6 +45,7 @@ function helpText(): string {
     `    ${K("restart")}                     ${D("full stop + start cycle for every registered squad")}`,
     `    ${K("status")}                      ${D("current squad's gateway liveness + session")}`,
     `    ${K("logs")}    ${D("[-f]")}                 ${D("tail current squad's logs")}`,
+    `    ${K("terminal")} ${D("[name] [-- cmd ...]")} ${D("interactive shell in the squad container")}`,
     "",
     `  ${H("Multi-squad")} ${D("— manage multiple squad containers from one host")}`,
     `    ${K("mgr")}     ${D("<subcommand>")}         ${D("create/start/stop/ls squads (try: squad mgr help)")}`,
@@ -59,6 +61,7 @@ function helpText(): string {
     `    ${K("sessions rename")} ${D("<id> <title>")}  ${D("rename an existing session")}`,
     `    ${K("sessions tree")} ${D("[id]")}            ${D("show parent → subagent hierarchy")}`,
     `    ${K("sessions search")} ${D("<q>")}           ${D("FTS search across session transcripts")}`,
+    `    ${K("search")} ${D("<q>")}                    ${D("alias of sessions search")}`,
     `    ${K("tasks")}       ${D("[--session <id>]")}  ${D("list tasks in current session")}`,
     `    ${K("questions")}   ${D("[--session <id>]")}  ${D("list open ask-user questions")}`,
     `    ${K("ask")} ${D("<questionId> <answer>")}     ${D("answer a pending question")}`,
@@ -151,6 +154,12 @@ async function main(): Promise<void> {
       await runMgr(argv);
       return;
 
+    case "terminal":
+    case "shell":
+    case "exec":
+      await runTerminal(argv);
+      return;
+
     case "repl": {
       const resume = hasFlag(argv, "--resume");
       await runRepl({ resume });
@@ -194,6 +203,16 @@ async function main(): Promise<void> {
         return;
       }
       throw new Error(`unknown: sessions ${sub}`);
+    }
+
+    case "search": {
+      // Top-level alias for `squad sessions search <query>`. Same backend,
+      // shorter to type. Lands as a generic full-text search across every
+      // session transcript.
+      const q = argv.join(" ").trim();
+      if (!q) throw new Error('usage: squad search "<query>"');
+      await listSessions({ search: q });
+      return;
     }
 
     case "tasks": {

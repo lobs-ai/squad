@@ -7,6 +7,9 @@ import type {
   SkillDescriptor,
   ApprovalPolicy,
   ChannelHandle,
+  SlashCommandDescriptor,
+  ToolsetDescriptor,
+  PluginDeliveryHandler,
 } from "@squad/plugin-sdk";
 import type { ToolRegistry, BaseTool } from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
@@ -30,6 +33,15 @@ export interface PluginHostDeps {
   approvalPolicies: ApprovalPolicy[];
   /** Channel lifecycles collected from plugins of kind "channel". */
   channels: ChannelHandle[];
+  /** Slash commands contributed by plugins. Surfaced via commands.list. */
+  commands: SlashCommandDescriptor[];
+  /** Toolset bundles. Surfaced via toolsets.list / spawn_subagent. */
+  toolsets: ToolsetDescriptor[];
+  /**
+   * Delivery handlers, keyed by `delivery.kind`. The gateway forwards this
+   * to its DeliveryRegistry on register.
+   */
+  registerDelivery: (kind: string, handler: PluginDeliveryHandler) => void;
   /**
    * Optional notifier called whenever a plugin's record changes (loaded,
    * enabled/disabled, configured, reloaded). The gateway wires this to
@@ -206,6 +218,21 @@ export class PluginHost {
       channels: {
         register: (channel: ChannelHandle) => {
           this.deps.channels.push(channel);
+        },
+      },
+      commands: {
+        register: (cmd: SlashCommandDescriptor) => {
+          this.deps.commands.push(cmd);
+        },
+      },
+      toolsets: {
+        register: (def: ToolsetDescriptor) => {
+          this.deps.toolsets.push(def);
+        },
+      },
+      delivery: {
+        register: (kind: string, handler: PluginDeliveryHandler) => {
+          this.deps.registerDelivery(kind, handler);
         },
       },
       ui: {

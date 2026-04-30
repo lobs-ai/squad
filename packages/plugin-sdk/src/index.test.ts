@@ -38,6 +38,11 @@ describe("definePlugin", () => {
       routines: { register() {} },
       skills: { register() {} },
       approvalPolicies: { register() {} },
+      channels: { register() {} },
+      commands: { register() {} },
+      toolsets: { register() {} },
+      delivery: { register() {} },
+      ui: { contribute() {} },
       logger: { info() {}, warn() {}, error() {} },
       config: {},
     })) as () => void;

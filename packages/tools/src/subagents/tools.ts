@@ -7,6 +7,8 @@ interface SpawnSubagentInput extends Record<string, unknown> {
   input: unknown;
   model?: string;
   wait?: boolean;
+  toolsets?: string[];
+  tools?: string[];
 }
 
 export class SpawnSubagentTool extends BaseTool<SpawnSubagentInput> {
@@ -22,6 +24,10 @@ export class SpawnSubagentTool extends BaseTool<SpawnSubagentInput> {
     "",
     "Subagents inherit the tree's task list. Put enough detail in the",
     "task row for the subagent to pick it up cold.",
+    "",
+    "Optional `toolsets` extend the subagent's tool list with curated",
+    "bundles registered by plugins (see toolsets.list). Optional `tools`",
+    "appends individual tool names. Both union with the definition's tools.",
   ].join("\n");
   readonly inputSchema = {
     type: "object" as const,
@@ -30,6 +36,16 @@ export class SpawnSubagentTool extends BaseTool<SpawnSubagentInput> {
       input: { description: "Input payload to pass to the subagent" },
       model: { type: "string", description: "Override the definition's model" },
       wait: { type: "boolean", description: "Await the final result inline" },
+      toolsets: {
+        type: "array",
+        items: { type: "string" },
+        description: "Toolset bundles to union with the definition's tools",
+      },
+      tools: {
+        type: "array",
+        items: { type: "string" },
+        description: "Extra tool names to union with the definition's tools",
+      },
     },
     required: ["subagent", "input"],
   };
@@ -49,6 +65,8 @@ export class SpawnSubagentTool extends BaseTool<SpawnSubagentInput> {
       subagent: input.subagent,
       input: input.input,
       ...(input.model !== undefined ? { modelOverride: input.model } : {}),
+      ...(input.toolsets !== undefined ? { toolsets: input.toolsets } : {}),
+      ...(input.tools !== undefined ? { tools: input.tools } : {}),
       wait: input.wait ?? false,
     });
     return {

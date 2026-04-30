@@ -5,11 +5,12 @@ import type { MessageStore } from "../db/messages.js";
 import type { ToolCallStore } from "../db/tool-calls.js";
 import type { Broadcast } from "../broadcast.js";
 import type { Logger } from "../logger.js";
-import { ToolRegistry } from "@squad/tools";
+import { ToolRegistry, type ToolGroupRegistry } from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
 import { runChatTurn, textBlocks } from "../runs.js";
 import type { RunCoordinator } from "../delivery/coordinator.js";
 import type { MemoryService } from "../memory/service.js";
+import type { TitleGenerator } from "../title-generator.js";
 import { ProtocolError, ErrorCode, type ContentBlock, type MessageRecord } from "@squad/protocol";
 
 export interface ChatDeps {
@@ -19,6 +20,11 @@ export interface ChatDeps {
   broadcast: Broadcast;
   logger: Logger;
   toolRegistry: ToolRegistry;
+  /**
+   * Lazy tool-group registry. When set, runChatTurn computes the per-turn
+   * allow-list from the default groups + the session's unlocked groups.
+   */
+  toolGroups?: ToolGroupRegistry;
   defaultModel: string;
   defaultFallbacks: string[];
   coordinator: RunCoordinator;
@@ -26,6 +32,12 @@ export interface ChatDeps {
   workspaceDir: string;
   /** Optional memory subsystem; when set, injects eager + retrieval blocks. */
   memory?: MemoryService;
+  /**
+   * When set, every chat.send fires the auto-titler after the first user
+   * message of an untitled session. Skipped silently when undefined (which
+   * is what happens when `chat.auto_title` is false).
+   */
+  titleGenerator?: TitleGenerator;
   /** Testing seam: inject a stub LLMClient to bypass real provider calls. */
   clientOverride?: LLMClient;
 }
@@ -60,6 +72,7 @@ export function registerChatMethods(dispatcher: Dispatcher, deps: ChatDeps): voi
           model,
           fallbacks,
           toolRegistry: deps.toolRegistry,
+          ...(deps.toolGroups ? { toolGroups: deps.toolGroups } : {}),
           cwd: deps.workspaceDir,
           onUserMessagePersisted: (msg) => {
             resolved = true;
@@ -113,6 +126,7 @@ export function registerChatMethods(dispatcher: Dispatcher, deps: ChatDeps): voi
           "run started without a persisted user message",
         );
       }
+      maybeAutoTitle(deps, params.sessionId, content);
       return {
         message: userMessage,
         runId: decision.runId,
@@ -132,6 +146,7 @@ export function registerChatMethods(dispatcher: Dispatcher, deps: ChatDeps): voi
       sessionId: params.sessionId,
       message: userMessage,
     });
+    maybeAutoTitle(deps, params.sessionId, content);
 
     return {
       message: userMessage,
@@ -148,5 +163,33 @@ export function registerChatMethods(dispatcher: Dispatcher, deps: ChatDeps): voi
       params.before,
     );
     return { messages };
+  });
+}
+
+/**
+ * Best-effort: kick off a title-generation pass for a session that doesn't
+ * have a real title yet. Runs in the background — caller never awaits.
+ *
+ * Bailing out cheaply (no titler wired, session already named, message is
+ * empty) keeps this safe to call on every chat.send without paying the LLM
+ * round-trip. The titler's own `needsTitle` re-checks before persisting.
+ */
+function maybeAutoTitle(deps: ChatDeps, sessionId: string, content: ContentBlock[]): void {
+  const titler = deps.titleGenerator;
+  if (!titler) return;
+  const session = deps.sessions.tryGet(sessionId);
+  if (!session) return;
+  if (!titler.needsTitle(session.title)) return;
+  // Subagent transcripts get titled by their parent's reply; don't burn an
+  // LLM call on every spawn.
+  if (session.parentSessionId) return;
+  const text = content
+    .filter((b): b is { type: "text"; text: string } => b.type === "text")
+    .map((b) => b.text)
+    .join("\n")
+    .trim();
+  if (!text) return;
+  void titler.generateIfNeeded(sessionId, text).catch((err) => {
+    deps.logger.warn({ err, sessionId }, "auto-title fire-and-forget failed");
   });
 }

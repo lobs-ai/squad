@@ -20,6 +20,12 @@ export const sessionRecordSchema = z.object({
    * session — once one takes over, the runner stays on it.
    */
   fallbacks: z.array(z.string()).default([]),
+  /**
+   * Per-session override for the model used to auto-generate a title from
+   * the first user message. `null` means "use the gateway default" — which
+   * itself falls back to the session's primary model.
+   */
+  titleModel: z.string().nullable().default(null),
   status: sessionStatus,
   deliveryMode: deliveryMode,
   tokensIn: z.number().int().nonnegative(),
@@ -64,10 +70,22 @@ export const sessionListResult = z.object({
 export const sessionSearchParams = z.object({
   query: z.string().min(1),
   limit: z.number().int().positive().max(200).default(20),
+  /** Optional — restrict the search to messages within a single session. */
+  sessionId: z.string().optional(),
 });
 export const sessionSearchHit = z.object({
+  /**
+   * Full session record. Preserved for back-compat with the v0 stub. New
+   * clients should prefer `sessionId` + `messageId` for jumping straight
+   * to the matched message.
+   */
   session: sessionRecordSchema,
+  sessionId: z.string(),
+  messageId: z.string(),
   snippet: z.string(),
+  ts: z.string(),
+  /** FTS5 relevance score — lower is better (BM25 default). */
+  score: z.number(),
 });
 export const sessionSearchResult = z.object({ hits: z.array(sessionSearchHit) });
 
@@ -87,6 +105,15 @@ export const sessionSetModelParams = z.object({
   fallbacks: z.array(z.string()).optional(),
 });
 export const sessionSetModelResult = z.object({ session: sessionRecordSchema });
+
+// session.setTitleModel — override the model used for this session's
+// auto-generated title. `null` clears the override and falls back to the
+// gateway-wide setting.
+export const sessionSetTitleModelParams = z.object({
+  sessionId: z.string(),
+  titleModel: z.string().nullable(),
+});
+export const sessionSetTitleModelResult = z.object({ session: sessionRecordSchema });
 
 // session.stats — detailed breakdown: turn count, token totals, estimated
 // context fill, message counts. Used by /usage and /compress.
@@ -120,6 +147,29 @@ export const sessionMethods = {
   "session.search": { params: sessionSearchParams, result: sessionSearchResult },
   "session.rename": { params: sessionRenameParams, result: sessionRenameResult },
   "session.setModel": { params: sessionSetModelParams, result: sessionSetModelResult },
+  "session.setTitleModel": {
+    params: sessionSetTitleModelParams,
+    result: sessionSetTitleModelResult,
+  },
   "session.stats": { params: sessionStatsParams, result: sessionStatsResult },
   "session.compact": { params: sessionCompactParams, result: sessionCompactResult },
+} as const;
+
+// ── Events ────────────────────────────────────────────────────────────────────
+
+/**
+ * Fired when a session is created or its persisted record changes
+ * (rename, model swap, title-model override, status flip, token counters).
+ * Subscribers use this to keep their local session list live without
+ * having to poll `session.list`.
+ *
+ * The event is flat (no `/sessionId` suffix) so a single subscription
+ * covers every session in the squad.
+ */
+export const sessionCreatedEvent = z.object({ session: sessionRecordSchema });
+export const sessionUpdatedEvent = z.object({ session: sessionRecordSchema });
+
+export const sessionEvents = {
+  "session.created": sessionCreatedEvent,
+  "session.updated": sessionUpdatedEvent,
 } as const;

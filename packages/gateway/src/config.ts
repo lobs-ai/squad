@@ -62,7 +62,23 @@ const chatConfigSchema = z
       delete normalized.delivery_mode;
     }
     return normalized;
-  }, z.object({ delivery: deliveryObjectSchema }))
+  }, z.object({
+    delivery: deliveryObjectSchema,
+    /**
+     * Model id used to auto-name new sessions from their first user message.
+     * Empty string (the default) inherits the session's primary model — i.e.
+     * "main". Override globally to point title generation at a cheaper model
+     * without changing the chat model. Per-session overrides set via
+     * `session.setTitleModel` win over this.
+     */
+    title_model: z.string().default(""),
+    /**
+     * Master switch for the auto-title behaviour. Off-by-default would force
+     * every new install to opt in to a feature most people want, so we keep
+     * it on; users uncomfortable with the LLM call can flip this to false.
+     */
+    auto_title: z.boolean().default(true),
+  }))
   .default({});
 
 /**
@@ -136,8 +152,52 @@ export const configSchema = z.object({
           embedding_model: z.string().default("text-embedding-3-large"),
           /** Embedding dim — only relevant when overriding the model. */
           embedding_dim: z.number().int().positive().default(3072),
-          /** Extraction model. */
-          extraction_model: z.string().default("claude-haiku-4-5"),
+          /**
+           * Default model for every MemCore processing stage. Empty string
+           * (the default) inherits `llm.primary.model`, so memory ops follow
+           * the squad's main model unless explicitly overridden.
+           */
+          processing_model: z.string().default(""),
+          /**
+           * Per-stage overrides. Each empty string falls back to
+           * `processing_model`, then to `llm.primary.model`. Lets you tune
+           * extraction quality vs. cost without changing the squad's main
+           * model.
+           */
+          extraction_model: z.string().default(""),
+          contextualizer_model: z.string().default(""),
+          conflict_model: z.string().default(""),
+          temporal_parser_model: z.string().default(""),
+          profile_generator_model: z.string().default(""),
+          /**
+           * Idle-driven incremental ingestion: a sweeper periodically picks
+           * sessions that have gone quiet and feeds the unprocessed message
+           * delta into MemCore's extraction pipeline. Watermarks track what's
+           * already been ingested so resuming an old chat just continues.
+           */
+          ingest: z
+            .object({
+              /** Seconds of inactivity before a session is eligible. */
+              idle_threshold_seconds: z.number().int().positive().default(1800),
+              /**
+               * Hard ceiling — once a session has unprocessed content older
+               * than this, force-ingest even if the min-delta gates haven't
+               * been hit. Stops content from leaking forever.
+               */
+              max_idle_seconds: z.number().int().positive().default(86400),
+              /** Skip ingestion when the unprocessed delta is smaller than this. */
+              min_delta_messages: z.number().int().nonnegative().default(4),
+              /** Token budget gate — same role as min_delta_messages. */
+              min_delta_tokens: z.number().int().nonnegative().default(200),
+              /**
+               * Default false: subagent transcripts are usually summarised by
+               * the parent's reply, so ingesting them double-counts learnings.
+               */
+              include_subagents: z.boolean().default(false),
+              /** How often the idle sweeper runs. */
+              sweeper_interval_seconds: z.number().int().positive().default(60),
+            })
+            .default({}),
         })
         .default({}),
       /**

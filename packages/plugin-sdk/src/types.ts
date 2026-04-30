@@ -103,6 +103,62 @@ export interface ChannelHandle {
   stop(): Promise<void>;
 }
 
+/**
+ * Slash command contributed by a plugin. Surfaced via `commands.list` so
+ * each client (CLI, dashboard, channel) can render plugin slash commands
+ * without each client shipping its own registry.
+ */
+export interface SlashCommandDescriptor {
+  name: string;          // canonical lowercase, no leading slash
+  description: string;
+  /** Free-form usage hint, e.g. `/remind <when> <message>`. */
+  usage?: string;
+  /**
+   * Where the command makes sense. `session` shows up in chat REPLs;
+   * `global` shows up in dashboard command palettes / global pickers.
+   * Default: `["session"]`.
+   */
+  scope?: Array<"session" | "global">;
+}
+
+/**
+ * Toolset bundle — a curated `string[]` of tool ids that subagents can pull
+ * in by name instead of listing each tool individually. The gateway exposes
+ * `toolsets.list` and `toolsets.resolve(name)` for clients; `spawn_subagent`
+ * accepts `toolsets?: string[]` and unions them with `tools?: string[]`.
+ */
+export interface ToolsetDescriptor {
+  /** Canonical id, e.g. "@squad/toolset-research". */
+  name: string;
+  description: string;
+  /** Tool ids the toolset bundles. */
+  tools: string[];
+  /** Tool ids that must already be registered for the toolset to resolve. */
+  requires?: string[];
+}
+
+/**
+ * Delivery handler registered by a channel plugin (or any extension). The
+ * gateway routes routine fires whose `delivery.kind` matches `kind` to this
+ * handler. Built-in `silent` and `dashboard` kinds are handled by the
+ * gateway itself; plugins typically register `discord`, `slack`, or future
+ * webhook variants.
+ */
+export interface DeliveryHandlerInput {
+  routineId: string;
+  routineName: string;
+  delivery: { kind: string } & Record<string, unknown>;
+  runId: string;
+  sessionId: string | null;
+  payloadKind: "prompt" | "agentTurn" | "script";
+  output?: string;
+  tokens?: { in: number; out: number };
+  silentGate: boolean;
+}
+export type PluginDeliveryHandler = (
+  ctx: DeliveryHandlerInput,
+) => Promise<{ ok: boolean; error?: string }>;
+
 type AnyTool = BaseTool<Record<string, unknown>>;
 
 export interface GatewayAPI {
@@ -113,6 +169,24 @@ export interface GatewayAPI {
   skills: { register(skill: SkillDescriptor): void };
   approvalPolicies: { register(policy: ApprovalPolicy): void };
   channels: { register(channel: ChannelHandle): void };
+  /**
+   * Slash commands contributed by the plugin. Surfaced via the
+   * `commands.list` protocol method so every client renders them
+   * uniformly — no per-client registry.
+   */
+  commands: { register(cmd: SlashCommandDescriptor): void };
+  /**
+   * Toolset bundles. See {@link ToolsetDescriptor}. The gateway validates
+   * `requires` at registration time and surfaces a clear error to the
+   * `spawn_subagent` caller if a toolset references a missing tool.
+   */
+  toolsets: { register(def: ToolsetDescriptor): void };
+  /**
+   * Routine delivery fan-out. Channels register a handler for the kind
+   * they own (`discord`, `slack`, …). The built-in `silent` and `dashboard`
+   * kinds are handled by the gateway and cannot be overridden.
+   */
+  delivery: { register(kind: string, handler: PluginDeliveryHandler): void };
   /**
    * UI contribution surface. Plugins call `ui.contribute({...})` once per
    * slot they want to claim — the gateway records the metadata and exposes

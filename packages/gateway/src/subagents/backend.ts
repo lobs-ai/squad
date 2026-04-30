@@ -13,6 +13,8 @@ export function subagentBackendFor(
         subagent: input.subagent,
         input: input.input,
         ...(input.modelOverride !== undefined ? { modelOverride: input.modelOverride } : {}),
+        ...(input.toolsets !== undefined ? { toolsets: input.toolsets } : {}),
+        ...(input.tools !== undefined ? { tools: input.tools } : {}),
         wait: input.wait,
       });
       if (input.wait) {

@@ -11,12 +11,43 @@ interface SessionRow {
   remote_id: string | null;
   model: string;
   fallbacks_json: string;
+  title_model: string | null;
   status: SessionStatus;
   delivery_mode: DeliveryMode;
   tokens_in: number;
   tokens_out: number;
   compact_at_start: number;
   created_at: string;
+  updated_at: string;
+}
+
+export type IngestStatus = "idle" | "queued" | "in_progress" | "failed";
+
+export interface SessionIngestState {
+  watermarkMessageId: string | null;
+  status: IngestStatus;
+  attempts: number;
+  lastError: string | null;
+  chunksProcessed: number;
+  lastRunAt: string | null;
+  ingestable: boolean;
+  updatedAt: string;
+}
+
+export interface SessionIdleCandidate {
+  sessionId: string;
+  watermarkMessageId: string | null;
+  updatedAt: string;
+}
+
+interface SessionIngestRow {
+  ingest_watermark_message_id: string | null;
+  ingest_status: IngestStatus;
+  ingest_attempts: number;
+  ingest_last_error: string | null;
+  ingest_chunks_processed: number;
+  ingest_last_run_at: string | null;
+  ingestable: number;
   updated_at: string;
 }
 
@@ -40,6 +71,7 @@ function rowToRecord(row: SessionRow): SessionRecord {
     remoteId: row.remote_id,
     model: row.model,
     fallbacks,
+    titleModel: row.title_model,
     status: row.status,
     deliveryMode: row.delivery_mode,
     tokensIn: row.tokens_in,
@@ -61,13 +93,71 @@ export interface CreateSessionInput {
   deliveryMode?: DeliveryMode;
 }
 
+export type SessionChangeKind = "created" | "updated";
+
 export class SessionStore {
   private readonly db: DatabaseHandle;
+  /**
+   * Per-session set of tool group names the agent has unlocked via
+   * `describe_tool_group`. In-memory only — a gateway restart resets the
+   * set, which simply forces the agent to re-describe (cheap; one tool call).
+   */
+  private readonly unlockedGroups = new Map<string, Set<string>>();
+
+  /**
+   * Subscribers fired after every persisted change. The gateway hooks the
+   * broadcast bus in here so dashboards/CLI clients see new and modified
+   * sessions live, without having to poll `session.list`.
+   *
+   * Update events fire after token-counter mutations too — they're cheap
+   * enough relative to network roundtrip that subscribers can decide whether
+   * to debounce on their end.
+   */
+  private readonly changeListeners = new Set<
+    (kind: SessionChangeKind, session: SessionRecord) => void
+  >();
+
   constructor(
     db: DatabaseHandle,
     private readonly defaults: { deliveryMode: DeliveryMode } = { deliveryMode: "interrupt" },
   ) {
     this.db = db;
+  }
+
+  onChange(listener: (kind: SessionChangeKind, session: SessionRecord) => void): () => void {
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
+  }
+
+  private emit(kind: SessionChangeKind, session: SessionRecord): void {
+    for (const l of this.changeListeners) {
+      try {
+        l(kind, session);
+      } catch {
+        // Listener errors must not interrupt persistence.
+      }
+    }
+  }
+
+  /** Mark a tool group as unlocked for the given session. Idempotent. */
+  unlockGroup(sessionId: string, groupName: string): void {
+    let set = this.unlockedGroups.get(sessionId);
+    if (!set) {
+      set = new Set();
+      this.unlockedGroups.set(sessionId, set);
+    }
+    set.add(groupName);
+  }
+
+  /** Names of tool groups currently unlocked for the session (empty for none). */
+  getUnlockedGroups(sessionId: string): readonly string[] {
+    const set = this.unlockedGroups.get(sessionId);
+    return set ? [...set] : [];
+  }
+
+  /** Forget any unlock state for this session. Called on session removal. */
+  clearUnlockedGroups(sessionId: string): void {
+    this.unlockedGroups.delete(sessionId);
   }
 
   create(input: CreateSessionInput): SessionRecord {
@@ -94,13 +184,16 @@ export class SessionStore {
         now,
         now,
       );
-    return this.get(id);
+    const record = this.get(id);
+    this.emit("created", record);
+    return record;
   }
 
   setDeliveryMode(id: string, mode: DeliveryMode): void {
     this.db
       .prepare("UPDATE sessions SET delivery_mode = ?, updated_at = ? WHERE id = ?")
       .run(mode, new Date().toISOString(), id);
+    this.emit("updated", this.get(id));
   }
 
   get(id: string): SessionRecord {
@@ -154,12 +247,14 @@ export class SessionStore {
     this.db
       .prepare("UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?")
       .run(status, new Date().toISOString(), id);
+    this.emit("updated", this.get(id));
   }
 
   setTitle(id: string, title: string): void {
     this.db
       .prepare("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?")
       .run(title, new Date().toISOString(), id);
+    this.emit("updated", this.get(id));
   }
 
   setModel(id: string, model: string, fallbacks?: string[]): void {
@@ -174,6 +269,14 @@ export class SessionStore {
         .prepare("UPDATE sessions SET model = ?, updated_at = ? WHERE id = ?")
         .run(model, new Date().toISOString(), id);
     }
+    this.emit("updated", this.get(id));
+  }
+
+  setTitleModel(id: string, titleModel: string | null): void {
+    this.db
+      .prepare("UPDATE sessions SET title_model = ?, updated_at = ? WHERE id = ?")
+      .run(titleModel, new Date().toISOString(), id);
+    this.emit("updated", this.get(id));
   }
 
   /**
@@ -204,6 +307,125 @@ export class SessionStore {
         "UPDATE sessions SET tokens_in = tokens_in + ?, tokens_out = tokens_out + ?, updated_at = ? WHERE id = ?",
       )
       .run(tokensIn, tokensOut, new Date().toISOString(), id);
+    this.emit("updated", this.get(id));
+  }
+
+  // ─── ingestion state ────────────────────────────────────────────────────
+  // Memory ingestion runs idle-driven and incremental. The watermark records
+  // the last message already fed to MemCore; the status field gates the
+  // sweeper / queue worker. See packages/gateway/src/memory/session-ingest.ts.
+
+  setIngestable(id: string, ingestable: boolean): void {
+    this.db
+      .prepare("UPDATE sessions SET ingestable = ?, updated_at = ? WHERE id = ?")
+      .run(ingestable ? 1 : 0, new Date().toISOString(), id);
+  }
+
+  setIngestStatus(
+    id: string,
+    status: IngestStatus,
+    opts: { attempts?: number; lastError?: string | null } = {},
+  ): void {
+    const stmt =
+      opts.attempts !== undefined && opts.lastError !== undefined
+        ? "UPDATE sessions SET ingest_status = ?, ingest_attempts = ?, ingest_last_error = ?, updated_at = ? WHERE id = ?"
+        : "UPDATE sessions SET ingest_status = ?, updated_at = ? WHERE id = ?";
+    if (opts.attempts !== undefined && opts.lastError !== undefined) {
+      this.db
+        .prepare(stmt)
+        .run(status, opts.attempts, opts.lastError, new Date().toISOString(), id);
+    } else {
+      this.db.prepare(stmt).run(status, new Date().toISOString(), id);
+    }
+  }
+
+  recordIngestSuccess(
+    id: string,
+    watermarkMessageId: string,
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE sessions
+            SET ingest_status = 'idle',
+                ingest_watermark_message_id = ?,
+                ingest_attempts = 0,
+                ingest_last_error = NULL,
+                ingest_chunks_processed = ingest_chunks_processed + 1,
+                ingest_last_run_at = ?,
+                updated_at = ?
+          WHERE id = ?`,
+      )
+      .run(watermarkMessageId, new Date().toISOString(), new Date().toISOString(), id);
+  }
+
+  getIngestState(id: string): SessionIngestState {
+    const row = this.db
+      .prepare(
+        `SELECT ingest_watermark_message_id, ingest_status, ingest_attempts,
+                ingest_last_error, ingest_chunks_processed, ingest_last_run_at,
+                ingestable, updated_at
+           FROM sessions WHERE id = ?`,
+      )
+      .get(id) as SessionIngestRow | undefined;
+    if (!row) throw new Error(`session ${id} not found`);
+    return {
+      watermarkMessageId: row.ingest_watermark_message_id,
+      status: row.ingest_status,
+      attempts: row.ingest_attempts,
+      lastError: row.ingest_last_error,
+      chunksProcessed: row.ingest_chunks_processed,
+      lastRunAt: row.ingest_last_run_at,
+      ingestable: !!row.ingestable,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  /**
+   * Sessions the idle sweeper should consider: ingestable, idle (status not
+   * `queued`/`in_progress`), updated more than `idleSeconds` ago. Failed
+   * sessions are excluded — they're surfaced via logs instead of retried in
+   * the hot loop.
+   */
+  listIdleForIngest(opts: { idleSeconds: number; limit: number }): SessionIdleCandidate[] {
+    const cutoff = new Date(Date.now() - opts.idleSeconds * 1000).toISOString();
+    const rows = this.db
+      .prepare(
+        `SELECT id, ingest_watermark_message_id, updated_at
+           FROM sessions
+          WHERE ingestable = 1
+            AND ingest_status = 'idle'
+            AND updated_at < ?
+          ORDER BY updated_at ASC
+          LIMIT ?`,
+      )
+      .all(cutoff, opts.limit) as Array<{
+      id: string;
+      ingest_watermark_message_id: string | null;
+      updated_at: string;
+    }>;
+    return rows.map((r) => ({
+      sessionId: r.id,
+      watermarkMessageId: r.ingest_watermark_message_id,
+      updatedAt: r.updated_at,
+    }));
+  }
+
+  /**
+   * Boot-time recovery. Anything stuck in `in_progress` or `queued` from a
+   * previous process gets reset to `idle` so the sweeper picks it up again
+   * on its own schedule. We don't auto-retry `failed` — those need either an
+   * admin re-trigger or a code fix.
+   */
+  resetInFlightIngest(): number {
+    const result = this.db
+      .prepare(
+        `UPDATE sessions
+            SET ingest_status = 'idle',
+                updated_at = ?
+          WHERE ingest_status IN ('queued', 'in_progress')`,
+      )
+      .run(new Date().toISOString());
+    return result.changes;
   }
 
   /**

@@ -24,7 +24,9 @@ async function resolveSession(
       }
     }
   }
-  const { session } = await client.request("session.start", { title: "cli" });
+  // Leave title undefined so the gateway auto-titler names the session
+  // from the first user message instead of a generic "cli".
+  const { session } = await client.request("session.start", {});
   return session.id;
 }
 

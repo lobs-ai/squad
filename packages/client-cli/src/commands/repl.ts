@@ -55,11 +55,11 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
       sessionId = session.id;
     } catch {
       clearLastSessionId();
-      const { session } = await client.request("session.start", { title: "cli" });
+      const { session } = await client.request("session.start", {});
       sessionId = session.id;
     }
   } else {
-    const { session } = await client.request("session.start", { title: "cli" });
+    const { session } = await client.request("session.start", {});
     sessionId = session.id;
   }
   setLastSessionId(sessionId);

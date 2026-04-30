@@ -44,7 +44,7 @@ export function CommandPalette({ open, onClose, setView, onPickSession, onNewCha
       { kind: "view", icon: "plugin", label: "Go to · Plugins", on: () => setView("plugins") },
       { kind: "view", icon: "settings", label: "Go to · Settings", on: () => setView("settings") },
       { kind: "view", icon: "manager", label: "Open · Manager Overview", on: () => setView("manager") },
-      { kind: "view", icon: "spark", label: "Go to · Routines", on: () => setView("routines") },
+      { kind: "view", icon: "spark", label: "Go to · Cron", on: () => setView("routines") },
       ...sessions.map<Item>((s) => ({
         kind: "session",
         icon: "session",

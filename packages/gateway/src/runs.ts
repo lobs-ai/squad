@@ -1,7 +1,7 @@
 import { runAgent, Session, compactMessages } from "@squad/runner";
 import type { AgentSpec, AgentResult } from "@squad/runner";
 import type { ContentBlock as LLMContentBlock } from "@squad/llm";
-import { ToolRegistry } from "@squad/tools";
+import { ToolRegistry, type ToolGroupRegistry, formatGroupIndexForPrompt } from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
 import type { ContentBlock, MessageRecord } from "@squad/protocol";
 import type { SessionStore } from "./db/sessions.js";
@@ -61,8 +61,19 @@ export interface RunOptions {
    * Optional allow-list of tool names. When provided, only tools whose names
    * appear here are exposed to the LLM. Names not present in the registry are
    * silently dropped. Used by cron jobs that scope tool access per-routine.
+   *
+   * When provided, this completely overrides the per-session tool-group
+   * computation — callers that pin a specific tool list bypass lazy loading.
    */
   toolsAllow?: string[];
+  /**
+   * Optional tool-group registry. When provided AND `toolsAllow` is not set,
+   * runs.ts computes the per-turn allow-list from the default groups plus
+   * whichever non-default groups the session has unlocked via
+   * `describe_tool_group`. Without it (or `toolsAllow`), every tool in the
+   * registry is exposed each turn (legacy behavior).
+   */
+  toolGroups?: ToolGroupRegistry;
   clientOverride?: LLMClient;
   /** Fires once the user message row has been written to SQLite. */
   onUserMessagePersisted?: (msg: MessageRecord) => void;
@@ -154,6 +165,24 @@ export async function runChatTurn(
   const memoryRetrieval =
     (await deps.memory?.retrievalForTurn(userQuery, { scopeKey: treeRoot })) ?? [];
 
+  // Compute the per-turn tool allow-list. Priority:
+  //   1. options.toolsAllow — caller pinned a specific list (e.g. cron jobs).
+  //   2. toolGroups + per-session unlocked set — the lazy-loading path.
+  //   3. Fall back to "every registered tool" for legacy callers.
+  let activeTools: string[] | undefined = options.toolsAllow;
+  if (!activeTools && options.toolGroups) {
+    const unlocked = deps.sessions.getUnlockedGroups(options.sessionId);
+    activeTools = [
+      ...options.toolGroups.activeToolNames(unlocked),
+      "describe_tool_group",
+    ];
+  }
+
+  const toolGroupsIndex =
+    options.toolGroups && !options.toolsAllow
+      ? formatGroupIndexForPrompt(options.toolGroups.lazy())
+      : undefined;
+
   const systemPrompt =
     options.systemPrompt ??
     buildSquadSystemPrompt({
@@ -161,6 +190,7 @@ export async function runChatTurn(
       coreFiles: loadCoreFiles(options.cwd),
       memoryEager,
       memoryRetrieval,
+      ...(toolGroupsIndex ? { toolGroupsIndex } : {}),
     });
 
   const spec: AgentSpec = {
@@ -173,8 +203,8 @@ export async function runChatTurn(
     model: options.model,
     fallbacks: options.fallbacks ?? [],
     cwd: options.cwd,
-    tools: options.toolsAllow
-      ? options.toolRegistry.names().filter((n) => options.toolsAllow!.includes(n))
+    tools: activeTools
+      ? options.toolRegistry.names().filter((n) => activeTools!.includes(n))
       : options.toolRegistry.names(),
     toolRegistry: options.toolRegistry,
     timeout: { total: 300 },

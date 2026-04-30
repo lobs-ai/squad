@@ -29,6 +29,9 @@ function makeDeps(extras: Partial<PluginHostDeps> = {}): PluginHostDeps {
     skills: [] as SkillDescriptor[],
     approvalPolicies: [] as ApprovalPolicy[],
     channels: [] as ChannelHandle[],
+    commands: [],
+    toolsets: [],
+    registerDelivery: () => {},
     ...extras,
   };
 }

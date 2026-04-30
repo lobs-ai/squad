@@ -763,3 +763,33 @@ export const PPTX_TOOLS = [
   new PptxAddChartTool(),
   new PptxSaveTool(),
 ] as const;
+
+import type { ToolGroup } from "./groups.js";
+
+/** Lazy-loadable tool group for PowerPoint generation. */
+export const pptxGroup: ToolGroup = {
+  name: "pptx",
+  description: "Build .pptx presentations slide-by-slide (text, images, shapes, tables, charts)",
+  toolNames: [
+    "pptx_create",
+    "pptx_add_slide",
+    "pptx_add_text",
+    "pptx_add_image",
+    "pptx_add_shape",
+    "pptx_add_table",
+    "pptx_add_chart",
+    "pptx_save",
+  ],
+  guidance: [
+    "Build a .pptx in this order:",
+    "  1. pptx_create — start a new deck (handle returned).",
+    "  2. pptx_add_slide — add a slide, get a slide id.",
+    "  3. pptx_add_text / pptx_add_image / pptx_add_shape / pptx_add_table / pptx_add_chart —",
+    "     populate the slide. Coordinates are in inches; default 13.333×7.5 (16:9).",
+    "  4. pptx_save — write the file to disk.",
+    "",
+    "Prefer html_to_pdf for read-only documents; use pptx only when the user explicitly",
+    "wants an editable .pptx. Add slides one at a time and verify with the returned",
+    "thumbnails / sizes before piling on more.",
+  ].join("\n"),
+};

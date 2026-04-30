@@ -2,6 +2,7 @@ import type { Dispatcher } from "./index.js";
 import type { SessionStore } from "../db/sessions.js";
 import type { MessageStore } from "../db/messages.js";
 import type { ToolCallStore } from "../db/tool-calls.js";
+import type { SessionIngestionService } from "../memory/session-ingest.js";
 import { ProtocolError, ErrorCode } from "@squad/protocol";
 import { listAvailableModels } from "@squad/llm";
 
@@ -14,6 +15,18 @@ export interface SessionDispatchDeps {
   messages: MessageStore;
   /** Tool call store for /stats tool-call count. */
   toolCalls: ToolCallStore;
+  /**
+   * When set, `session.end` enqueues an immediate ingestion pass for any
+   * unprocessed delta. Optional — tests and headless deployments leave it
+   * undefined and rely solely on the idle sweeper (or skip ingestion
+   * entirely).
+   */
+  ingestion?: SessionIngestionService;
+  /**
+   * When set, subagent sessions get `ingestable=false` at create time so
+   * the sweeper skips them. Mirrors `memcore.ingest.include_subagents`.
+   */
+  skipSubagentIngestion?: boolean;
 }
 
 export function registerSessionMethods(
@@ -33,6 +46,12 @@ export function registerSessionMethods(
       ...(params.remoteId !== undefined ? { remoteId: params.remoteId } : {}),
       ...(params.deliveryMode !== undefined ? { deliveryMode: params.deliveryMode } : {}),
     });
+    // Subagent sessions are excluded from memory ingestion by default — the
+    // parent's transcript already captures what mattered. Toggle via
+    // memcore.ingest.include_subagents.
+    if (deps.skipSubagentIngestion && session.parentSessionId) {
+      store.setIngestable(session.id, false);
+    }
     return { session };
   });
 
@@ -50,6 +69,11 @@ export function registerSessionMethods(
       throw new ProtocolError(ErrorCode.not_found, `session ${params.sessionId} not found`);
     }
     store.setStatus(params.sessionId, "ended");
+    // Fire-and-forget ingestion. session.end RPCs need to stay cheap, so we
+    // don't await — the ingestion service handles its own logging and retry.
+    if (deps.ingestion) {
+      void deps.ingestion.ingestNow(params.sessionId);
+    }
     return { session: store.get(params.sessionId) };
   });
 
@@ -61,10 +85,31 @@ export function registerSessionMethods(
     return { sessions };
   });
 
-  dispatcher.register("session.search", async () => {
-    // Phase 3: stub. FTS5 UI lands in v1.1 per the roadmap; the index is
-    // populated from day one so we can flip it on without a migration.
-    return { hits: [] };
+  dispatcher.register("session.search", async (params) => {
+    const hits = deps.messages.search({
+      query: params.query,
+      limit: params.limit,
+      ...(params.sessionId !== undefined ? { sessionId: params.sessionId } : {}),
+    });
+    // Resolve each hit's session record once, in batch, so the response
+    // carries the structured metadata that older clients rely on.
+    const sessionIds = Array.from(new Set(hits.map((h) => h.sessionId)));
+    const sessionRecs = new Map(
+      sessionIds.map((id) => [id, store.tryGet(id)] as const),
+    );
+    const enriched = hits.flatMap((h) => {
+      const rec = sessionRecs.get(h.sessionId);
+      if (!rec) return [];
+      return [{
+        session: rec,
+        sessionId: h.sessionId,
+        messageId: h.messageId,
+        snippet: h.snippet,
+        ts: h.ts,
+        score: h.score,
+      }];
+    });
+    return { hits: enriched };
   });
 
   dispatcher.register("session.rename", async (params) => {
@@ -83,6 +128,14 @@ export function registerSessionMethods(
     // model ids outside the built-in catalog. If the id is wrong, the next
     // chat.send will fail with a clear provider-level error.
     store.setModel(params.sessionId, params.model, params.fallbacks);
+    return { session: store.get(params.sessionId) };
+  });
+
+  dispatcher.register("session.setTitleModel", async (params) => {
+    if (!store.tryGet(params.sessionId)) {
+      throw new ProtocolError(ErrorCode.not_found, `session ${params.sessionId} not found`);
+    }
+    store.setTitleModel(params.sessionId, params.titleModel);
     return { session: store.get(params.sessionId) };
   });
 

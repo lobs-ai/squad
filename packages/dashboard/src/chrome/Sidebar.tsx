@@ -90,7 +90,11 @@ export function Sidebar({ setView, onNewChat }: Props): JSX.Element {
       </div>
       <div className="side-item" onClick={() => setView("sessions")}>
         <Icon name="logs" size={12} />
-        <span className="lbl">all sessions · search</span>
+        <span className="lbl">all sessions</span>
+      </div>
+      <div className="side-item" onClick={() => setView("search")}>
+        <Icon name="search" size={12} />
+        <span className="lbl">search</span>
       </div>
       <div className="side-item" onClick={() => setView("plugins")}>
         <Icon name="plugin" size={12} />
@@ -99,7 +103,7 @@ export function Sidebar({ setView, onNewChat }: Props): JSX.Element {
       </div>
       <div className="side-item" onClick={() => setView("routines")}>
         <Icon name="spark" size={12} />
-        <span className="lbl">routines</span>
+        <span className="lbl">cron</span>
         <span className="meta">{routines.length}</span>
       </div>
     </div>

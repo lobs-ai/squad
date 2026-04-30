@@ -63,7 +63,6 @@ describe("buildSquadSystemPrompt", () => {
     });
     expect(prompt).toContain("Squad agent");
     expect(prompt).toContain("/tmp/work");
-    expect(prompt).toContain("spawn_subagent");
     expect(prompt).toContain("ask_user");
     expect(prompt).toContain("interrupt");
     expect(prompt).toContain("queue");
@@ -79,5 +78,24 @@ describe("buildSquadSystemPrompt", () => {
     expect(prompt).toContain("### SOUL.md\nI am calm.");
     expect(prompt).toContain("### MEMORY.md\nno entries yet");
     expect(prompt).not.toContain("### USER.md");
+  });
+
+  it("inserts the tool-groups index when provided", () => {
+    const prompt = buildSquadSystemPrompt({
+      workspaceDir: "/w",
+      coreFiles: { soul: "", user: "", memory: "" },
+      toolGroupsIndex:
+        '## Tool groups (lazy)\n\n<tool_groups>\n  <group name="cron">Schedule…</group>\n</tool_groups>',
+    });
+    expect(prompt).toContain('<group name="cron">Schedule…</group>');
+    expect(prompt).toContain("describe_tool_group");
+  });
+
+  it("omits the tool-groups index when not provided", () => {
+    const prompt = buildSquadSystemPrompt({
+      workspaceDir: "/w",
+      coreFiles: { soul: "", user: "", memory: "" },
+    });
+    expect(prompt).not.toContain("<tool_groups>");
   });
 });

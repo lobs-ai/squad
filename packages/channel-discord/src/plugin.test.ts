@@ -31,6 +31,10 @@ function makeFakeApi(config: Record<string, unknown>): {
     skills: { register: (s) => void skills.push(s) },
     approvalPolicies: { register: noop },
     channels: { register: (c) => void channels.push(c) },
+    commands: { register: noop },
+    toolsets: { register: noop },
+    delivery: { register: noop },
+    ui: { contribute: noop },
     logger: {
       info: (msg) => logs.push(`info:${msg}`),
       warn: (msg) => logs.push(`warn:${msg}`),

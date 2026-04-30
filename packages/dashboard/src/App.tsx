@@ -15,6 +15,7 @@ import { Settings } from "./views/Settings.js";
 import { CommandPalette } from "./views/CommandPalette.js";
 import { Gate } from "./views/Gate.js";
 import { Routines } from "./views/Routines.js";
+import { SearchView } from "./views/Search.js";
 import type { ViewId } from "./views/views.js";
 import "./styles/tokens.css";
 import "./styles/styles.css";
@@ -213,6 +214,7 @@ function Shell(): JSX.Element {
           {view === "sessions" && <Sessions onOpenSession={onOpenSession} />}
           {view === "plugins" && <Plugins />}
           {view === "routines" && <Routines />}
+          {view === "search" && <SearchView onOpenSession={onOpenSession} />}
           {view === "manager" && (
             <Manager
               onPickPeer={(peer) => {

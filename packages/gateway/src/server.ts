@@ -4,7 +4,7 @@ import { readFileSync, existsSync, statSync } from "node:fs";
 import { extname, join, resolve as resolvePath, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
-import { ToolRegistry, type ConfigBackend } from "@squad/tools";
+import { ToolRegistry, type ConfigBackend, type ToolGroupRegistry } from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
 import type { Logger } from "./logger.js";
 import type { Authenticator } from "./auth.js";
@@ -31,6 +31,7 @@ import type { SubagentPool } from "./subagents/pool.js";
 import type { SubagentRegistry } from "./subagents/registry.js";
 import type { RunCoordinator } from "./delivery/coordinator.js";
 import type { MemoryService } from "./memory/service.js";
+import type { SessionIngestionService } from "./memory/session-ingest.js";
 import type { ApprovalStore } from "./approvals/store.js";
 import type { PluginHost } from "./plugins/host.js";
 import type { ChannelRegistry } from "./channels/registry.js";
@@ -38,6 +39,10 @@ import type { RoutineStore, RoutineRunner } from "./routines/store.js";
 import type { CronPaths } from "./routines/persistence.js";
 import { PeerSource } from "./peers/source.js";
 import type { PairingStore } from "./auth/pairing.js";
+import type { CommandRegistry } from "./commands/registry.js";
+import type { ToolsetRegistry } from "./toolsets/registry.js";
+import { registerCommandMethods } from "./dispatch/commands.js";
+import { registerToolsetMethods } from "./dispatch/toolsets.js";
 
 export interface GatewayDeps {
   config: Config;
@@ -53,10 +58,20 @@ export interface GatewayDeps {
   subagentRegistry: SubagentRegistry;
   coordinator: RunCoordinator;
   toolRegistry: ToolRegistry;
+  /** Tool-group registry; runChatTurn uses it for per-turn lazy loading. */
+  toolGroups?: ToolGroupRegistry;
   /** Persistent agent home directory; used as cwd for chat turns. */
   workspaceDir: string;
   /** Memory subsystem — eager + retrieval blocks injected per turn. */
   memory?: MemoryService;
+  /**
+   * Idle-driven session ingestion. When set, `session.end` triggers an
+   * immediate ingestion pass; otherwise sessions only ingest via the
+   * sweeper. Tests/ephemeral deployments leave this undefined.
+   */
+  sessionIngestion?: SessionIngestionService;
+  /** Mirrors `memcore.ingest.include_subagents`. */
+  ingestSubagents?: boolean;
   startedAt: number;
   version: string;
   /** Approval prompts state — pending + decided history for `approvals.list/decide`. */
@@ -75,6 +90,10 @@ export interface GatewayDeps {
   peers?: PeerSource;
   /** Browser pairing store, powering `/pair/*` HTTP + `admin.pair.*` dispatch. */
   pairing?: PairingStore;
+  /** Slash command catalog — surfaces `commands.list`. */
+  commands?: CommandRegistry;
+  /** Toolset bundle registry — surfaces `toolsets.list` / `toolsets.resolve`. */
+  toolsets?: ToolsetRegistry;
   /**
    * Read/write backend for config.json, powering `admin.config.full/set/unset`.
    * Optional — absent in tests/ephemeral deployments. The Settings UI hides
@@ -90,6 +109,12 @@ export interface GatewayDeps {
   liveConfigSnapshot?: () => Record<string, unknown>;
   /** Testing seam: inject an LLMClient to bypass real provider calls. */
   clientOverride?: LLMClient;
+  /**
+   * Optional auto-titler. When present, chat dispatch fires it after the
+   * first user message of an untitled session. Absent when
+   * `chat.auto_title` is false in config.
+   */
+  titleGenerator?: import("./title-generator.js").TitleGenerator;
 }
 
 export interface GatewayHandle {
@@ -285,6 +310,8 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
     defaultFallbacks: fallbackModels,
     messages: deps.messages,
     toolCalls: deps.toolCalls,
+    ...(deps.sessionIngestion ? { ingestion: deps.sessionIngestion } : {}),
+    skipSubagentIngestion: !(deps.ingestSubagents ?? false),
   });
   registerChatMethods(d, {
     sessions: deps.sessions,
@@ -293,12 +320,14 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
     broadcast: deps.broadcast,
     logger: deps.logger,
     toolRegistry: deps.toolRegistry,
+    ...(deps.toolGroups ? { toolGroups: deps.toolGroups } : {}),
     defaultModel: primaryModel,
     defaultFallbacks: fallbackModels,
     coordinator: deps.coordinator,
     workspaceDir: deps.workspaceDir,
     ...(deps.memory !== undefined ? { memory: deps.memory } : {}),
     ...(deps.clientOverride !== undefined ? { clientOverride: deps.clientOverride } : {}),
+    ...(deps.titleGenerator ? { titleGenerator: deps.titleGenerator } : {}),
   });
   registerTaskMethods(d, deps.tasks, deps.broadcast);
   registerQuestionMethods(d, deps.questions);
@@ -314,6 +343,8 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
       ...(deps.cronPaths ? { paths: deps.cronPaths } : {}),
     });
   }
+  if (deps.commands) registerCommandMethods(d, deps.commands);
+  if (deps.toolsets) registerToolsetMethods(d, deps.toolsets);
 
   // Identity + peers need a PeerSource. When boot() doesn't pass one (test
   // harness), synthesize a minimal in-process source so admin.peers still

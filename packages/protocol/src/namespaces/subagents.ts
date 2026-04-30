@@ -12,6 +12,13 @@ export const subagentDefinitionSchema = z.object({
   description: z.string(),
   model: z.string(),
   tools: z.array(z.string()),
+  /**
+   * Toolset names this subagent inherits. Resolved by the gateway at spawn
+   * time and unioned with `tools`. Refusal at spawn is loud — a missing
+   * toolset short-circuits the spawn with a clear error rather than silently
+   * shrinking the available toolset.
+   */
+  toolsets: z.array(z.string()).optional(),
   systemPrompt: z.string(),
   limits: subagentLimitsSchema.optional(),
   // JSON Schema describing the `input` the subagent accepts.

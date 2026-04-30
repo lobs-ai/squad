@@ -6,6 +6,7 @@ import type { SessionStore } from "../db/sessions.js";
 import type { Broadcast } from "../broadcast.js";
 import type { Logger } from "../logger.js";
 import type { SubagentRegistry } from "./registry.js";
+import type { ToolsetRegistry } from "../toolsets/registry.js";
 
 export interface PoolLimits {
   maxConcurrentGlobal: number;
@@ -18,6 +19,17 @@ export interface SpawnInput {
   subagent: string;
   input: unknown;
   modelOverride?: string;
+  /**
+   * Optional list of toolset names. Unioned with the definition's
+   * `toolsets` and the def's explicit `tools`; resolved against the
+   * gateway's ToolsetRegistry at spawn time.
+   */
+  toolsets?: string[];
+  /**
+   * Optional ad-hoc tool list. Unioned with whatever the definition and
+   * any toolsets resolve to.
+   */
+  tools?: string[];
   wait: boolean;
 }
 
@@ -42,6 +54,8 @@ export interface SubagentPoolDeps {
   /** Persistent agent home directory shared with the parent. */
   workspaceDir: string;
   clientOverride?: LLMClient;
+  /** Optional — when set, spawn unions resolved toolset tools. */
+  toolsets?: ToolsetRegistry;
 }
 
 export class SubagentPool {
@@ -65,12 +79,24 @@ export class SubagentPool {
       );
     }
 
+    // Resolve any toolset references up front — a missing toolset throws
+    // here, before we create the session row. The resolved list flows into
+    // runOne via spawn-input shadow on the local entry.
+    const resolvedTools = this.resolveSpawnTools(def, input);
+
     const session = this.deps.sessions.create({
       model: input.modelOverride ?? def.model,
       parentSessionId: input.parentSessionId,
       subagentDefId: def.name,
       title: `${def.name}`,
     });
+
+    // Stash the resolved tool list on the input so runOne uses it instead of
+    // def.tools alone. Avoids changing every internal signature.
+    const spawnInput: SpawnInput & { _resolvedTools?: string[] } = {
+      ...input,
+      _resolvedTools: resolvedTools,
+    };
 
     let cancelled = false;
     const abort: () => void = () => {
@@ -95,7 +121,7 @@ export class SubagentPool {
 
       try {
         if (cancelled) throw new Error("cancelled");
-        const result = await this.runOne(session.id, def, input);
+        const result = await this.runOne(session.id, def, spawnInput);
         this.deps.broadcast.publish(`subagents.completed/${session.id}`, {
           sessionId: session.id,
           result: result.output,
@@ -134,6 +160,38 @@ export class SubagentPool {
         entry.cancel();
       }
     }
+  }
+
+  /**
+   * Resolve the union of (def.tools ∪ resolved-toolsets ∪ explicit input.tools).
+   * Throws on any unknown toolset reference — see ToolsetRegistry.resolve.
+   */
+  private resolveSpawnTools(def: SubagentDefinition, input: SpawnInput): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    const push = (name: string): void => {
+      if (!seen.has(name)) {
+        seen.add(name);
+        out.push(name);
+      }
+    };
+
+    for (const t of def.tools) push(t);
+    for (const t of input.tools ?? []) push(t);
+
+    const toolsetNames = [...(def.toolsets ?? []), ...(input.toolsets ?? [])];
+    if (toolsetNames.length > 0) {
+      if (!this.deps.toolsets) {
+        throw new Error(
+          `subagent "${def.name}" references toolsets but no ToolsetRegistry is configured`,
+        );
+      }
+      for (const ts of toolsetNames) {
+        for (const t of this.deps.toolsets.resolve(ts)) push(t);
+      }
+    }
+
+    return out;
   }
 
   /** Count children of a given session from the running map + SQLite. */
@@ -189,11 +247,12 @@ export class SubagentPool {
   private async runOne(
     sessionId: string,
     def: SubagentDefinition,
-    input: SpawnInput,
+    input: SpawnInput & { _resolvedTools?: string[] },
   ) {
     // Build a filtered tool registry: only tools the subagent definition allows.
+    const allowed = input._resolvedTools ?? def.tools;
     const filtered = new ToolRegistry();
-    for (const name of def.tools) {
+    for (const name of allowed) {
       const full = this.deps.toolRegistry.get(name);
       if (!full) continue;
       filtered.register({
@@ -219,7 +278,7 @@ export class SubagentPool {
       agent: def.name,
       model: input.modelOverride ?? def.model,
       cwd: this.deps.workspaceDir,
-      tools: def.tools,
+      tools: allowed,
       toolRegistry: filtered,
       timeout: { total: def.limits?.timeoutMs ? Math.ceil(def.limits.timeoutMs / 1000) : 300 },
       maxTokens: def.limits?.maxTokens ?? 16384,

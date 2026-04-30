@@ -287,6 +287,12 @@ export interface BuildSquadPromptInput {
   memoryEager?: PromptMemoryEntry[];
   /** Per-turn FTS retrieval results for project + reference entries. */
   memoryRetrieval?: PromptMemoryHit[];
+  /**
+   * Pre-rendered `<tool_groups>` index for the lazy tool-group section.
+   * Built by the runner from `ToolGroupRegistry.lazy()` via
+   * `formatGroupIndexForPrompt`. When omitted, the section is skipped.
+   */
+  toolGroupsIndex?: string;
 }
 
 /**
@@ -302,7 +308,7 @@ export interface BuildSquadPromptInput {
  * files. Keep the static part tight — every token here is paid on every turn.
  */
 export function buildSquadSystemPrompt(input: BuildSquadPromptInput): string {
-  const { workspaceDir, coreFiles, memoryEager, memoryRetrieval } = input;
+  const { workspaceDir, coreFiles, memoryEager, memoryRetrieval, toolGroupsIndex } = input;
   const sections: string[] = [];
 
   sections.push(`# Squad agent
@@ -313,31 +319,19 @@ storage, the subagent pool, the task store, and the question store. Every
 client (Discord, the React dashboard, the CLI, third-party UIs) talks to that
 gateway over the same WebSocket protocol — no client is privileged.
 
-## Primitives you can use
-- **Subagents** — spawn workers with their own model, tools, and budget via
-  \`spawn_subagent\`. They run in parallel, get their own sessions, and report
-  back. Use them for parallelizable subproblems or to protect your context.
-- **Tasks** — a shared task list scoped to this session tree. Create, update,
-  and complete tasks with the task tools so the user (and any subagent) sees
-  the same plan you're working from.
-- **Ask-user questions** — \`ask_user\` poses a structured multiple-choice
-  question with a free-text "other". Each channel renders it natively
-  (Discord buttons, CLI select, etc.). Prefer this over open-ended prose
-  asks when you need a concrete decision.
-- **Config tools** — \`get_config\`, \`set_config\`, \`unset_config\`,
-  \`list_config_paths\` read and write the gateway's config.json. Use them to
-  persist user preferences (model, delivery mode, fallbacks, plugin list)
-  rather than re-asking next session. Treat the config as the source of
-  truth: don't hard-code assumptions you could read from it.
-- **Cron jobs** — \`create_cron_job\`, \`list_cron_jobs\`, \`get_cron_job\`,
-  \`update_cron_job\`, \`delete_cron_job\`, \`run_cron_job\`, \`get_cron_runs\`.
-  Schedule recurring or one-off work: prompts, scripts (no LLM), or full
-  agent turns. Three schedule kinds (cron / interval / once), three payload
-  kinds (prompt / agentTurn / script), three session targets (new / isolated
-  / specific session). Per-job model override, optional skills, optional
-  tool allow-list. Use these whenever the user asks for "every / nightly /
-  weekly", a future one-shot ("remind me next Friday"), or a polling check.
-  Prefer \`script\` for cheap data collection; \`prompt\` for everything else.
+## Tools loaded right now
+A small default set is always loaded:
+- **filesystem** — read, write, edit, ls.
+- **search** — grep, glob, find_files, code_search.
+- **exec** — shell out for builds, tests, git, gh, anything truly shell-only.
+- **web** — web_search and web_fetch.
+- **questions** — \`ask_user\` poses a structured multiple-choice question
+  with a free-text "other". Each channel renders it natively (Discord
+  buttons, CLI select, etc.). Prefer it over open-ended prose asks when you
+  need a concrete decision.
+
+Other capabilities (subagents, tasks, cron, memory, config, html-to-pdf,
+pptx) are NOT loaded yet — see "Tool groups" below.
 
 ## How messages reach you
 Chat delivery is one of two modes set in config:
@@ -348,6 +342,8 @@ Chat delivery is one of two modes set in config:
   fresh turn one-at-a-time in arrival order.
 You don't choose the mode — the user does — but knowing which is active
 shapes how you respond when a new message lands mid-thought.`);
+
+  if (toolGroupsIndex) sections.push(toolGroupsIndex);
 
   sections.push(`## Your workspace
 Your working directory is your persistent home:
@@ -380,16 +376,15 @@ wrong; don't let stale entries rot.`);
   if (live) sections.push(live);
 
   // ── Persistent memory ─────────────────────────────────────────────────────
-  // Mention the system unconditionally so the agent knows the tools are
-  // available even when memory is empty.
+  // Mention the system unconditionally so the agent knows the eager block is
+  // primed even when the memory tool group hasn't been unlocked yet.
   sections.push(`## Persistent memory
-You have a typed, retrievable memory store at \`~/.squad/memory/\`.
-- \`memory_propose\` — save a new entry. Five types: user, feedback, project, reference, working.
-- \`memory_search\` — FTS over the store. **Search before you propose** to avoid duplicates.
-- \`memory_update\` / \`memory_archive\` — refine or retire by id.
+You have a typed, retrievable memory store at \`~/.squad/memory/\`. The eager
+block below is frozen at session start to keep the prompt cache warm; project
++ reference entries are retrieved per-turn when they match the request.
 
-The eager block below is frozen at session start to keep the prompt cache warm.
-Project + reference entries are retrieved per-turn when they match the request.`);
+To **mutate** memory (propose / update / archive / search) call
+\`describe_tool_group\` for \`memory\` first — the tools come online next turn.`);
 
   const eagerBlock = renderEagerBlock(memoryEager);
   if (eagerBlock) sections.push(eagerBlock);

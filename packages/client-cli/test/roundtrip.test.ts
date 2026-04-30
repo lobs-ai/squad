@@ -6,6 +6,8 @@ import { AddressInfo } from "node:net";
 import type { LLMClient, LLMResponse, CreateMessageParams } from "@squad/llm";
 import { ToolRegistry } from "@squad/tools";
 import { boot, type BootedGateway } from "@squad/gateway";
+import type { MemCore } from "memcore";
+import { StubMemCore } from "../../gateway/test/fixtures/stub-memcore.js";
 import { ProtocolClient } from "../src/protocol-client.js";
 
 class ScriptedClient implements LLMClient {
@@ -63,6 +65,7 @@ describe("ProtocolClient", () => {
       },
       toolRegistry: new ToolRegistry(),
       clientOverride: new ScriptedClient(["hello world"]),
+      memcoreOverride: new StubMemCore() as unknown as MemCore,
     });
     await new Promise<void>((resolve) => booted!.handle.http.listen(0, "127.0.0.1", resolve));
     const port = (booted.handle.http.address() as AddressInfo).port;

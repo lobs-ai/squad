@@ -2,6 +2,7 @@ import { Channel, SessionMap, SquadGatewayClient } from "@squad/channel-sdk";
 import { startBot, type BotHandle, type BotLogger, type OutboundHandle } from "./bot.js";
 import { DISCORD_CAPABILITIES } from "./capabilities.js";
 import { resolveBotToken, resolveGatewayToken, type DiscordConfig } from "./config.js";
+import { chunkMessage } from "./formatting.js";
 import { join } from "node:path";
 
 export interface DiscordChannelOptions {
@@ -91,6 +92,24 @@ export class DiscordChannel extends Channel {
     this.bot?.disconnect();
     this.bot = null;
     this.gateway.close();
+  }
+
+  /**
+   * Post a one-shot message to a specific Discord channel — used by the
+   * routine delivery handler ("post the cron run output to #ops"). Errors
+   * propagate so the delivery dispatch can record them in the run log.
+   */
+  async sendToChannel(channelId: string, content: string): Promise<void> {
+    if (!this.bot) {
+      throw new Error("discord channel is not connected");
+    }
+    const limit = this.options.config.max_message_length;
+    const chunks = chunkMessage(content || "(no output)", limit);
+    for (const chunk of chunks) {
+      await this.bot.client.rest.post(`/channels/${channelId}/messages`, {
+        body: { content: chunk },
+      });
+    }
   }
 
   private accumulators: Map<string, string> = new Map();

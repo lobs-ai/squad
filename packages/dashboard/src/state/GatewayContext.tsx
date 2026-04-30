@@ -11,13 +11,18 @@ import {
 import { BrowserProtocolClient } from "../protocol-client.js";
 import type {
   ApprovalRecord,
+  Execution,
   MessageRecord,
   PairingView,
+  Payload,
   PeerRecord,
   PluginRecord,
   QuestionRecord,
   RoutineRecord,
+  RoutineRunLog,
+  Schedule,
   SessionRecord,
+  SessionTarget,
   Task,
 } from "@squad/protocol";
 
@@ -153,6 +158,7 @@ export interface GatewayState {
   startSession: (opts: { title?: string; model?: string; fallbacks?: string[] }) => Promise<void>;
   renameSession: (sessionId: string, title: string) => Promise<void>;
   setSessionModel: (sessionId: string, model: string, fallbacks?: string[]) => Promise<void>;
+  setSessionTitleModel: (sessionId: string, titleModel: string | null) => Promise<void>;
   answerQuestion: (questionId: string, label: string) => Promise<void>;
   decideApproval: (approvalId: string, decision: "approve" | "deny", reason?: string) => Promise<void>;
   createTask: (subject: string, description?: string) => Promise<void>;
@@ -169,17 +175,55 @@ export interface GatewayState {
   setConfigPath: (path: string, value: unknown) => Promise<void>;
   /** Remove a single config path on disk and refresh state. */
   unsetConfigPath: (path: string) => Promise<void>;
-  createRoutine: (input: {
-    name: string;
-    cron: string;
-    prompt: string;
-    model?: string;
-    delivery?: RoutineRecord["delivery"];
-    enabled?: boolean;
-  }) => Promise<void>;
-  updateRoutine: (id: string, patch: Partial<RoutineRecord>) => Promise<void>;
+  /**
+   * Create a routine. Accepts either the legacy flat shape (cron + prompt
+   * + optional model) or the structured shape (schedule + payload + session
+   * + execution). The dashboard form passes the structured shape.
+   */
+  createRoutine: (input: CreateRoutineInput) => Promise<void>;
+  updateRoutine: (id: string, patch: UpdateRoutinePatch) => Promise<void>;
   deleteRoutine: (id: string) => Promise<void>;
   runRoutine: (id: string) => Promise<{ sessionId: string | null }>;
+  /** Fetch the most recent runs for a routine. Newest first. */
+  fetchRoutineRuns: (
+    id: string,
+    opts?: { limit?: number; status?: "ok" | "error" | "skipped" },
+  ) => Promise<RoutineRunLog[]>;
+}
+
+export type CreateRoutineInput =
+  | {
+      // Structured form (preferred from the dashboard).
+      name: string;
+      enabled?: boolean;
+      schedule: Schedule;
+      payload: Payload;
+      session?: SessionTarget;
+      execution?: Execution;
+      delivery?: RoutineRecord["delivery"];
+    }
+  | {
+      // Legacy form — still accepted by the gateway.
+      name: string;
+      cron: string;
+      prompt: string;
+      model?: string;
+      delivery?: RoutineRecord["delivery"];
+      enabled?: boolean;
+    };
+
+export interface UpdateRoutinePatch {
+  name?: string;
+  enabled?: boolean;
+  schedule?: Schedule;
+  payload?: Payload;
+  session?: SessionTarget;
+  execution?: Execution;
+  delivery?: RoutineRecord["delivery"];
+  // Legacy passthroughs — older flows still set these.
+  cron?: string;
+  prompt?: string;
+  model?: string | null;
 }
 
 const GatewayContext = createContext<GatewayState | null>(null);
@@ -563,6 +607,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
   // Subscribe to all event streams once.
   useEffect(() => {
     const wantedTopics = [
+      "session.*",
       "chat.*/*",
       "tasks.*/*",
       "questions.*/*",
@@ -587,7 +632,21 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
         setActivity((cur) => [item, ...cur].slice(0, ACTIVITY_LIMIT));
       }
 
-      if (topic.startsWith("chat.text_delta/")) {
+      if (topic === "session.created") {
+        const next = (data as { session: SessionRecord }).session;
+        // Append at the front so newly-created sessions land at the top of
+        // the list without forcing a refetch.
+        setSessions((cur) => (cur.some((s) => s.id === next.id) ? cur : [next, ...cur]));
+      } else if (topic === "session.updated") {
+        const next = (data as { session: SessionRecord }).session;
+        setSessions((cur) => {
+          const idx = cur.findIndex((s) => s.id === next.id);
+          if (idx === -1) return [next, ...cur];
+          const copy = cur.slice();
+          copy[idx] = next;
+          return copy;
+        });
+      } else if (topic.startsWith("chat.text_delta/")) {
         const tSess = topic.split("/")[1];
         if (activeSessionId && tSess === activeSessionId) {
           setStreaming((s) => s + (data as { delta: string }).delta);
@@ -770,6 +829,13 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     [client, refreshSessions],
   );
 
+  const setSessionTitleModel = useCallback(
+    async (sessionId: string, titleModel: string | null) => {
+      await client.request("session.setTitleModel", { sessionId, titleModel });
+    },
+    [client],
+  );
+
   const reloadPlugin = useCallback(
     async (id: string) => {
       await client.request("plugins.reload", { id });
@@ -786,41 +852,68 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
   );
 
   const createRoutine = useCallback(
-    async (input: {
-      name: string;
-      cron: string;
-      prompt: string;
-      model?: string;
-      delivery?: RoutineRecord["delivery"];
-      enabled?: boolean;
-    }) => {
-      await client.request("routines.create", {
-        name: input.name,
-        cron: input.cron,
-        prompt: input.prompt,
-        ...(input.model !== undefined ? { model: input.model } : {}),
-        delivery: input.delivery ?? { kind: "dashboard" },
-        enabled: input.enabled ?? true,
-      });
+    async (input: CreateRoutineInput) => {
+      const enabled = input.enabled ?? true;
+      const delivery = input.delivery ?? { kind: "dashboard" as const };
+      if ("schedule" in input) {
+        await client.request("routines.create", {
+          name: input.name,
+          enabled,
+          schedule: input.schedule,
+          payload: input.payload,
+          session: input.session ?? { kind: "new" as const },
+          execution: input.execution ?? {},
+          delivery,
+        });
+      } else {
+        await client.request("routines.create", {
+          name: input.name,
+          enabled,
+          cron: input.cron,
+          prompt: input.prompt,
+          ...(input.model !== undefined ? { model: input.model } : {}),
+          delivery,
+        });
+      }
       await refreshRoutines();
     },
     [client, refreshRoutines],
   );
 
   const updateRoutine = useCallback(
-    async (id: string, patch: Partial<RoutineRecord>) => {
+    async (id: string, patch: UpdateRoutinePatch) => {
       await client.request("routines.update", {
         id,
         ...(patch.name !== undefined ? { name: patch.name } : {}),
+        ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+        ...(patch.schedule !== undefined ? { schedule: patch.schedule } : {}),
+        ...(patch.payload !== undefined ? { payload: patch.payload } : {}),
+        ...(patch.session !== undefined ? { session: patch.session } : {}),
+        ...(patch.execution !== undefined ? { execution: patch.execution } : {}),
+        ...(patch.delivery !== undefined ? { delivery: patch.delivery } : {}),
+        // Legacy passthroughs.
         ...(patch.cron !== undefined ? { cron: patch.cron } : {}),
         ...(patch.prompt !== undefined ? { prompt: patch.prompt } : {}),
         ...(patch.model !== undefined ? { model: patch.model } : {}),
-        ...(patch.delivery !== undefined ? { delivery: patch.delivery } : {}),
-        ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
       });
       await refreshRoutines();
     },
     [client, refreshRoutines],
+  );
+
+  const fetchRoutineRuns = useCallback(
+    async (
+      id: string,
+      opts: { limit?: number; status?: "ok" | "error" | "skipped" } = {},
+    ): Promise<RoutineRunLog[]> => {
+      const r = await client.request("routines.runs", {
+        jobId: id,
+        limit: opts.limit ?? 20,
+        ...(opts.status ? { status: opts.status } : {}),
+      });
+      return r.runs;
+    },
+    [client],
   );
 
   const deleteRoutine = useCallback(
@@ -876,6 +969,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     startSession,
     renameSession,
     setSessionModel,
+    setSessionTitleModel,
     answerQuestion,
     decideApproval,
     createTask,
@@ -889,6 +983,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     updateRoutine,
     deleteRoutine,
     runRoutine,
+    fetchRoutineRuns,
   };
 
   return <GatewayContext.Provider value={value}>{children}</GatewayContext.Provider>;

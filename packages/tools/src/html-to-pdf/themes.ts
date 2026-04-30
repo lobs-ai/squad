@@ -1,13 +1,14 @@
 /**
- * Built-in print-safe themes for html_to_pdf / html_check.
+ * Theme registry for html_to_pdf / html_check.
  *
- * Themes are CSS snippets injected at the top of the user's <head> before
- * rendering. User-authored CSS that follows overrides theme defaults (later
- * rules win). All themes use px/pt (never vh/vw) and include
- * `print-color-adjust: exact` so backgrounds survive to the PDF.
+ * A theme is a CSS snippet injected at the top of the document's <head>.
+ * Built-in themes ship with the package; callers can register their own
+ * via {@link registerTheme} before constructing the tools.
+ *
+ * User-authored CSS still wins (later rules override). All built-in themes
+ * use px/pt (never vh/vw) and include `print-color-adjust: exact` so
+ * backgrounds survive to the PDF.
  */
-
-export type ThemeName = "document" | "deck" | "minimal";
 
 export interface ThemeContext {
   /** Paper width in inches AFTER landscape swap. */
@@ -16,21 +17,38 @@ export interface ThemeContext {
   paperHeightIn: number;
 }
 
-/**
- * Return the CSS text for a named theme.
- * The CSS is scoped under `@media print` where appropriate but also works
- * with `emulate_media: "screen"` since Playwright headless applies both.
- */
-export function themeCss(name: ThemeName, ctx: ThemeContext): string {
-  switch (name) {
-    case "document":
-      return DOCUMENT_THEME;
-    case "deck":
-      return deckTheme(ctx.paperWidthIn, ctx.paperHeightIn);
-    case "minimal":
-      return MINIMAL_THEME;
-  }
+export type ThemeFactory = (ctx: ThemeContext) => string;
+
+const themes = new Map<string, ThemeFactory>();
+
+/** Register or override a theme. Names are case-insensitive. */
+export function registerTheme(name: string, factory: ThemeFactory): void {
+  themes.set(name.toLowerCase(), factory);
 }
+
+/** Theme names currently registered. */
+export function listThemeNames(): string[] {
+  return [...themes.keys()];
+}
+
+/** Lookup a theme factory by name (case-insensitive). */
+export function getTheme(name: string): ThemeFactory | undefined {
+  return themes.get(name.toLowerCase());
+}
+
+/** Returns the CSS for `name`, or throws if no such theme is registered. */
+export function themeCss(name: string, ctx: ThemeContext): string {
+  const f = themes.get(name.toLowerCase());
+  if (!f) throw new Error(`Unknown theme "${name}". Known: ${listThemeNames().join(", ")}.`);
+  return f(ctx);
+}
+
+/**
+ * Built-in theme name. Kept as a string-literal union for back-compat with
+ * code that imports the type, but new themes registered at runtime are
+ * also accepted by `themeCss(name)`.
+ */
+export type ThemeName = "document" | "deck" | "minimal";
 
 /**
  * Inject `<style>{css}</style>` into the HTML at the top of <head>.
@@ -41,29 +59,26 @@ export function themeCss(name: ThemeName, ctx: ThemeContext): string {
 export function injectStyle(html: string, css: string): string {
   const styleTag = `<style data-agentic-theme>${css}</style>`;
 
-  // If <head> exists, insert right after it.
   const headOpen = html.match(/<head(\s[^>]*)?>/i);
   if (headOpen) {
     const i = headOpen.index! + headOpen[0].length;
     return html.slice(0, i) + styleTag + html.slice(i);
   }
 
-  // <html> exists but no <head> — inject head after <html>.
   const htmlOpen = html.match(/<html(\s[^>]*)?>/i);
   if (htmlOpen) {
     const i = htmlOpen.index! + htmlOpen[0].length;
     return html.slice(0, i) + `<head>${styleTag}</head>` + html.slice(i);
   }
 
-  // Bare fragment — wrap it.
   const hasDoctype = /^\s*<!doctype/i.test(html);
-  const wrapped =
+  return (
     (hasDoctype ? "" : "<!doctype html>") +
-    `<html><head>${styleTag}</head><body>${html}</body></html>`;
-  return wrapped;
+    `<html><head>${styleTag}</head><body>${html}</body></html>`
+  );
 }
 
-// ── document theme ────────────────────────────────────────────────────────────
+// ── Built-in themes ──────────────────────────────────────────────────────────
 
 const DOCUMENT_THEME = `
 :root { color-scheme: light; }
@@ -127,10 +142,7 @@ h1, h2, h3, h4, pre, blockquote, tr, img { page-break-inside: avoid; break-insid
 h1, h2, h3 { page-break-after: avoid; break-after: avoid; }
 `.trim();
 
-// ── deck theme (computed per paper size) ─────────────────────────────────────
-
 function deckTheme(w: number, h: number): string {
-  // Body/section use concrete sizes — vh/vw is unreliable in print.
   return `
 :root { color-scheme: light; }
 html, body { margin: 0; padding: 0;
@@ -183,8 +195,6 @@ section .footer {
 `.trim();
 }
 
-// ── minimal theme ────────────────────────────────────────────────────────────
-
 const MINIMAL_THEME = `
 html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 body {
@@ -199,6 +209,10 @@ h3 { font-size: 12pt; margin: 12pt 0 4pt; }
 p { margin: 6pt 0; text-indent: 0; }
 img { max-width: 100%; height: auto; }
 `.trim();
+
+registerTheme("document", () => DOCUMENT_THEME);
+registerTheme("deck", (ctx) => deckTheme(ctx.paperWidthIn, ctx.paperHeightIn));
+registerTheme("minimal", () => MINIMAL_THEME);
 
 // ── Design lint ──────────────────────────────────────────────────────────────
 

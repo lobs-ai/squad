@@ -1,0 +1,45 @@
+{
+  "capturedAt": "2026-04-30T19:22:39.430Z",
+  "capturedWith": {
+    "grader": "contains",
+    "embeddingModel": "nomic-embed-text",
+    "extractionModel": "MiniMax-M2.7"
+  },
+  "overall": {
+    "total": 63,
+    "passed": 53,
+    "accuracy": 0.8412698412698413
+  },
+  "byCategory": [
+    {
+      "category": "abstain",
+      "total": 12,
+      "passed": 9,
+      "accuracy": 0.75
+    },
+    {
+      "category": "knowledge_update",
+      "total": 12,
+      "passed": 11,
+      "accuracy": 0.9166666666666666
+    },
+    {
+      "category": "multi_session",
+      "total": 12,
+      "passed": 11,
+      "accuracy": 0.9166666666666666
+    },
+    {
+      "category": "single_session_recall",
+      "total": 15,
+      "passed": 12,
+      "accuracy": 0.8
+    },
+    {
+      "category": "temporal_reasoning",
+      "total": 12,
+      "passed": 10,
+      "accuracy": 0.8333333333333334
+    }
+  ]
+}

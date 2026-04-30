@@ -1,6 +1,10 @@
 // Vendored from lobs/agentic at 7daf6dfde0ac105d19d48908f38abd64817d3782
 // Original path: packages/runner/src/agent-loop.ts
 // Last synced: 2026-04-23
+// Squad local edits:
+//  - sticky-per-session model chain (see "Squad local edit" below)
+//  - before_tool_call hook receives `sessionId` / `parentSessionId` from
+//    spec.context so policy hooks can scope decisions (added 2026-04-30).
 
 /**
  * Agent loop — the core LLM ↔ tool execution cycle.
@@ -346,11 +350,23 @@ export async function runAgent(spec: AgentSpec): Promise<AgentResult> {
           const blockName = block.name ?? "";
           const blockInput = (block.input ?? {}) as Record<string, unknown>;
 
-          // beforeToolCall hook — returning null denies execution
+          // beforeToolCall hook — returning null denies execution.
+          // Squad local edit: forward `sessionId` from spec.context so policy
+          // hooks (e.g. approval escalation) can scope their decision.
           const beforeEvent = await hooks.emit("before_tool_call", {
             agentType: agent,
             taskId,
-            data: { toolName: blockName, toolInput: blockInput, toolUseId },
+            data: {
+              toolName: blockName,
+              toolInput: blockInput,
+              toolUseId,
+              ...(spec.context?.sessionId !== undefined
+                ? { sessionId: spec.context.sessionId }
+                : {}),
+              ...(spec.context?.parentTaskId !== undefined
+                ? { parentSessionId: spec.context.parentTaskId }
+                : {}),
+            },
             timestamp: new Date(),
           });
 

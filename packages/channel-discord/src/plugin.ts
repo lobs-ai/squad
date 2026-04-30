@@ -42,8 +42,23 @@ export default definePlugin({
     const channel = new DiscordChannel({ config: cfg, logger: botLogger });
     api.channels.register({
       id: channel.id,
+      kind: "discord",
+      label: "Discord",
       start: () => channel.connect(),
       stop: () => channel.disconnect(),
+    });
+    api.delivery.register("discord", async (ctx) => {
+      const delivery = ctx.delivery as { kind: "discord"; channelId: string; guildId?: string };
+      if (!delivery.channelId) {
+        return { ok: false, error: "discord delivery missing channelId" };
+      }
+      const text = formatRoutineDelivery(ctx);
+      try {
+        await channel.sendToChannel(delivery.channelId, text);
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
     });
     api.logger.info("discord channel plugin registered", {
       dm_policy: cfg.dm_policy,
@@ -52,3 +67,15 @@ export default definePlugin({
     });
   },
 });
+
+/** Compose the body of a routine fire for posting into a Discord channel. */
+function formatRoutineDelivery(ctx: {
+  routineName: string;
+  payloadKind: "prompt" | "agentTurn" | "script";
+  output?: string;
+}): string {
+  const head = `**${ctx.routineName}** (${ctx.payloadKind})`;
+  const body = (ctx.output ?? "").trim();
+  if (!body) return `${head}\n_(no output)_`;
+  return `${head}\n${body}`;
+}

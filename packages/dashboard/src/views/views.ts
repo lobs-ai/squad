@@ -7,4 +7,5 @@ export type ViewId =
   | "settings"
   | "manager"
   | "routines"
+  | "search"
   | `plugin:${string}`;

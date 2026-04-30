@@ -14,6 +14,10 @@ export interface SubagentBackend {
     subagent: string;
     input: unknown;
     modelOverride?: string;
+    /** Optional toolset bundles unioned with the definition's tools. */
+    toolsets?: string[];
+    /** Optional ad-hoc tool ids unioned with the definition's tools. */
+    tools?: string[];
     wait: boolean;
   }): Promise<{ sessionId: string; result?: unknown; succeeded?: boolean }>;
 

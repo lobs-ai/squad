@@ -1075,6 +1075,7 @@ function ChatEditor({
   fullConfig: FullConfigState | null;
   setConfigPath: (p: string, v: unknown) => Promise<void>;
 }): JSX.Element {
+  const { models } = useGateway();
   const editable = !!fullConfig?.editable;
   const raw = getPath(fullConfig?.config, ["chat", "delivery"]);
   const delivery = (typeof raw === "string"
@@ -1084,6 +1085,13 @@ function ChatEditor({
     max_queued?: number;
     collapse_duplicates?: boolean;
   };
+
+  const titleModelRaw = getPath(fullConfig?.config, ["chat", "title_model"]);
+  const titleModel = typeof titleModelRaw === "string" ? titleModelRaw : "";
+  const autoTitleRaw = getPath(fullConfig?.config, ["chat", "auto_title"]);
+  // The schema default is true — treat undefined the same way so the
+  // checkbox reflects effective behaviour, not just persisted state.
+  const autoTitle = autoTitleRaw === undefined ? true : !!autoTitleRaw;
 
   return (
     <Card title="chat delivery">
@@ -1121,6 +1129,34 @@ function ChatEditor({
         <span className="hint" style={{ marginLeft: 8 }}>
           identical queued messages are deduped before delivery.
         </span>
+      </div>
+
+      <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid var(--border-soft)" }}>
+        <div className="section-label" style={{ marginBottom: 6 }}>auto-title</div>
+        <div className="hint" style={{ marginBottom: 8 }}>
+          when on, new sessions are named from their first user message. agents
+          and users can still override the model per-session.
+        </div>
+        <div className="row gap-2" style={{ alignItems: "center", marginBottom: 10 }}>
+          <input
+            type="checkbox"
+            checked={autoTitle}
+            disabled={!editable}
+            onChange={(e) => void setConfigPath("chat.auto_title", e.target.checked)}
+          />
+          <span>enable auto-title</span>
+        </div>
+        <SelectField
+          label="title_model"
+          hint="which model writes the title. main inherits each session's primary model."
+          value={titleModel}
+          options={[
+            { value: "", label: "main (use session model)" },
+            ...models.map((m) => ({ value: m.id, label: m.displayName ?? m.id })),
+          ]}
+          disabled={!editable || !autoTitle}
+          onChange={(v) => setConfigPath("chat.title_model", v)}
+        />
       </div>
     </Card>
   );

@@ -18,7 +18,7 @@ const TABS: Array<{ id: ViewId; label: string; icon: IconName }> = [
   { id: "chat", label: "Chat", icon: "chat" },
   { id: "tasks", label: "Tasks", icon: "kanban" },
   { id: "sessions", label: "Sessions", icon: "session" },
-  { id: "routines", label: "Routines", icon: "spark" },
+  { id: "routines", label: "Cron", icon: "spark" },
   { id: "plugins", label: "Plugins", icon: "plugin" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];

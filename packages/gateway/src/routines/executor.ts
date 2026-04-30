@@ -11,6 +11,7 @@ import type { Broadcast } from "../broadcast.js";
 import type { MemoryService } from "../memory/service.js";
 import { runChatTurn } from "../runs.js";
 import { appendRunLog, type CronPaths } from "./persistence.js";
+import type { DeliveryRegistry } from "./delivery.js";
 
 export interface ExecutorDeps {
   sessions: SessionStore;
@@ -28,6 +29,8 @@ export interface ExecutorDeps {
   defaultFallbacks: string[];
   /** Filesystem paths for run-log persistence. */
   paths: CronPaths;
+  /** Optional delivery fan-out — when omitted, fires are logged but not delivered. */
+  delivery?: DeliveryRegistry;
 }
 
 export interface ExecutorResult {
@@ -88,9 +91,50 @@ export class CronExecutor {
 
     const durationMs = Date.now() - start;
 
-    // Wake-gate: caller can suppress delivery without affecting status.
-    const trimmed = (output ?? "").trim();
-    const silent = trimmed.startsWith("[SILENT]");
+    // Wake-gate (script): exit-0 + body of `{"wakeAgent":false}` is treated
+    // as "nothing happened" — status flips to skipped, delivery suppressed.
+    const trimmedAll = (output ?? "").trim();
+    if (
+      payloadKind === "script" &&
+      result.status === "ok" &&
+      isWakeAgentFalseJson(trimmedAll)
+    ) {
+      result = { sessionId: null, status: "ok" };
+      appendRunLog(this.deps.paths.runs, rec.id, {
+        ts,
+        status: "skipped",
+        durationMs,
+        payloadKind,
+        ...(output !== undefined ? { output: output.slice(0, SCRIPT_OUTPUT_CAP) } : {}),
+        delivery: { kind: rec.delivery.kind, ok: true, error: "wake-gate-noop" },
+      });
+      // Surface "skipped" up to markFired so the row reflects it.
+      return { sessionId: null, status: "ok", error: "wake-gate-noop" };
+    }
+
+    // Wake-gate (any payload): first line `[SILENT]` suppresses delivery
+    // but keeps the run logged with its real status.
+    const silent = trimmedAll.startsWith("[SILENT]");
+
+    let deliveryReport: { kind: string; ok: boolean; error?: string } | undefined;
+    if (this.deps.delivery && result.status === "ok") {
+      deliveryReport = {
+        kind: rec.delivery.kind,
+        ...(await this.deps.delivery.dispatch({
+          routineId: rec.id,
+          routineName: rec.name,
+          delivery: rec.delivery,
+          runId: `cron_${rec.id}`,
+          sessionId: result.sessionId,
+          payloadKind,
+          ...(output !== undefined ? { output } : {}),
+          ...(tokens ? { tokens } : {}),
+          silentGate: silent,
+        })),
+      };
+    } else if (silent) {
+      deliveryReport = { kind: rec.delivery.kind, ok: true, error: "wake-gate-silent" };
+    }
 
     appendRunLog(this.deps.paths.runs, rec.id, {
       ts,
@@ -101,9 +145,7 @@ export class CronExecutor {
       ...(output !== undefined ? { output: output.slice(0, SCRIPT_OUTPUT_CAP) } : {}),
       ...(result.error ? { error: result.error } : {}),
       ...(tokens ? { tokens } : {}),
-      ...(silent
-        ? { delivery: { kind: rec.delivery.kind, ok: true, error: "wake-gate-silent" } }
-        : {}),
+      ...(deliveryReport ? { delivery: deliveryReport } : {}),
     });
 
     return result;
@@ -267,4 +309,26 @@ export class CronExecutor {
     // is still passed in so tool execution itself can find the executor.
     return this.deps.toolRegistry;
   }
+}
+
+/**
+ * Recognise `{"wakeAgent": false}` (whitespace-tolerant) anywhere in a
+ * script's stdout. Honored only when the script exits 0 — the caller does
+ * the exit-code check.
+ */
+function isWakeAgentFalseJson(text: string): boolean {
+  if (!text) return false;
+  const candidates = text.split(/\r?\n/).filter(Boolean);
+  candidates.push(text);
+  for (const c of candidates) {
+    const trimmed = c.trim();
+    if (!trimmed.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(trimmed) as { wakeAgent?: unknown };
+      if (parsed && typeof parsed === "object" && parsed.wakeAgent === false) return true;
+    } catch {
+      // try the next line
+    }
+  }
+  return false;
 }

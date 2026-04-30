@@ -247,8 +247,23 @@ async function main(): Promise<void> {
     ...(settings.llmBaseUrl ? { llmBaseUrl: settings.llmBaseUrl } : {}),
   });
 
-  // Shared container per run so cases compete against each other at retrieval.
-  const containerTag = `eval_run_${Date.now()}`;
+  // Per-case isolated containers. Every case represents a distinct user with
+  // a distinct memory state — they shouldn't share a container, because:
+  //   1. Every setup uses "I" / "the user". The conflict detector across
+  //      cases starts treating fact A from case X as "superseded" by fact B
+  //      from case Y (e.g. "drives a Subaru" gets flipped to past-tense by
+  //      another case's "drives a Rivian"). Cross-case leakage corrupts the
+  //      memory state under test.
+  //   2. Recall queries score against the *closest* memory in the entire
+  //      pool, not the case's own memory — so a query for case X's
+  //      neighbourhood happily returns case Y's neighbourhood.
+  //
+  // We previously shared so cases would compete at retrieval. The right way
+  // to add competition is a per-container noise corpus, not cross-case
+  // contamination. For now: isolation. Numbers will drop in raw count but
+  // are now actually measuring what each category is named for.
+  const runId = Date.now();
+  const tagFor = (c: EvalCase) => `eval_${c.category}_${c.case_id}_${runId}`;
 
   const results: EvalResult[] = [];
   try {
@@ -256,6 +271,7 @@ async function main(): Promise<void> {
     // each session as its own conversation so the conflict detector and
     // multi-session retrieval are exercised end-to-end.
     for (const c of cases) {
+      const containerTag = tagFor(c);
       if (c.setup_sessions && c.setup_sessions.length > 0) {
         for (let i = 0; i < c.setup_sessions.length; i += 1) {
           const session = c.setup_sessions[i];
@@ -275,9 +291,12 @@ async function main(): Promise<void> {
       }
     }
 
-    // Then query each.
+    // Then query each in its appropriate container.
     for (const c of cases) {
-      const result = await runCase({ memcore, containerTag, grader: args.grader, llmGrader }, c);
+      const result = await runCase(
+        { memcore, containerTag: tagFor(c), grader: args.grader, llmGrader },
+        c,
+      );
       results.push(result);
       logger.info(
         { caseId: c.case_id, passed: result.passed, latencyMs: result.latencyMs },
