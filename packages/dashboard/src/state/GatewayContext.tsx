@@ -125,6 +125,13 @@ export interface GatewayState {
   channels: ChannelRecord[];
   sessions: SessionRecord[];
   pendingQuestions: QuestionRecord[];
+  /**
+   * Every question record for the active session, regardless of status.
+   * Used by the chat transcript so answered/cancelled questions stay
+   * visible inline rather than disappearing the moment the user clicks
+   * an option.
+   */
+  sessionQuestions: QuestionRecord[];
   pendingApprovals: ApprovalRecord[];
   routines: RoutineRecord[];
   pairings: PairingView[];
@@ -159,7 +166,15 @@ export interface GatewayState {
   renameSession: (sessionId: string, title: string) => Promise<void>;
   setSessionModel: (sessionId: string, model: string, fallbacks?: string[]) => Promise<void>;
   setSessionTitleModel: (sessionId: string, titleModel: string | null) => Promise<void>;
-  answerQuestion: (questionId: string, label: string) => Promise<void>;
+  /**
+   * Submit answers for one ask_user record. The caller must pass an answer
+   * for every sub-question keyed by the question text — that's the same
+   * shape the gateway persists and the agent receives.
+   */
+  answerQuestion: (
+    questionId: string,
+    answers: Record<string, string>,
+  ) => Promise<void>;
   decideApproval: (approvalId: string, decision: "approve" | "deny", reason?: string) => Promise<void>;
   createTask: (subject: string, description?: string) => Promise<void>;
   updateTaskStatus: (taskId: string, status: Task["status"]) => Promise<void>;
@@ -316,6 +331,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
   const [channels, setChannels] = useState<ChannelRecord[]>([]);
   const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [pendingQuestions, setPendingQuestions] = useState<QuestionRecord[]>([]);
+  const [sessionQuestions, setSessionQuestions] = useState<QuestionRecord[]>([]);
   const [pendingApprovals, setPendingApprovals] = useState<ApprovalRecord[]>([]);
   const [routines, setRoutines] = useState<RoutineRecord[]>([]);
   const [pairings, setPairings] = useState<PairingView[]>([]);
@@ -362,6 +378,21 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     setPendingQuestions(qs);
     setPendingApprovals(aps);
   }, [client]);
+
+  // Pulls every question record (any status) for the given session so the
+  // chat transcript can show both pending and answered Q/A inline. Cheap —
+  // it's a single SQLite scan filtered by session.
+  const refreshSessionQuestions = useCallback(
+    async (sessionId: string) => {
+      const list = await tryRequest(
+        () =>
+          client.request("questions.list", { sessionId }).then((r) => r.questions),
+        [] as QuestionRecord[],
+      );
+      setSessionQuestions(list);
+    },
+    [client],
+  );
 
   const refreshPlugins = useCallback(async () => {
     const list = await tryRequest(
@@ -573,12 +604,16 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
 
   // Load chat history + tasks + subagent tree when the active session changes.
   useEffect(() => {
-    if (!activeSession) return;
+    if (!activeSession) {
+      setSessionQuestions([]);
+      return;
+    }
     setMessages([]);
     setStreaming("");
     setAwaitingResponse(false);
     setChatError(null);
     setTasks([]);
+    setSessionQuestions([]);
     let cancelled = false;
     void (async () => {
       const [hist, taskList] = await Promise.all([
@@ -598,11 +633,12 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
       setMessages(hist.messages);
       setTasks(taskList);
     })();
+    void refreshSessionQuestions(activeSession.id);
     if (rootSessionId) void refreshTreeFor(rootSessionId);
     return () => {
       cancelled = true;
     };
-  }, [client, activeSession, rootSessionId, refreshTreeFor]);
+  }, [client, activeSession, rootSessionId, refreshTreeFor, refreshSessionQuestions]);
 
   // Subscribe to all event streams once.
   useEffect(() => {
@@ -694,6 +730,14 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
         }
       } else if (topic.startsWith("questions.")) {
         void refreshPending();
+        // Topic format: `questions.<event>/<sessionId>`. Only re-pull the
+        // active session's full list when the event is for it — keeps the
+        // chat transcript in sync (answered/cancelled questions stay
+        // visible after the status change).
+        const tSess = topic.split("/")[1];
+        if (activeSessionId && tSess === activeSessionId) {
+          void refreshSessionQuestions(activeSessionId);
+        }
       } else if (topic.startsWith("approvals.")) {
         void refreshPending();
       } else if (topic.startsWith("subagents.spawned")) {
@@ -721,6 +765,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     activeSession,
     rootSessionId,
     refreshPending,
+    refreshSessionQuestions,
     refreshSessions,
     refreshPlugins,
     refreshTreeFor,
@@ -765,17 +810,18 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
   );
 
   const answerQuestion = useCallback(
-    async (questionId: string, label: string) => {
-      const q = pendingQuestions.find((x) => x.id === questionId);
+    async (questionId: string, answers: Record<string, string>) => {
+      const q =
+        sessionQuestions.find((x) => x.id === questionId) ??
+        pendingQuestions.find((x) => x.id === questionId);
       if (!q) return;
-      const first = q.input.questions[0]!;
       await client.request("questions.answer", {
         sessionId: q.sessionId,
         questionId,
-        answers: { [first.question]: label },
+        answers,
       });
     },
-    [client, pendingQuestions],
+    [client, sessionQuestions, pendingQuestions],
   );
 
   const decideApproval = useCallback(
@@ -944,6 +990,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     channels,
     sessions,
     pendingQuestions,
+    sessionQuestions,
     pendingApprovals,
     routines,
     pairings,

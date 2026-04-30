@@ -45,6 +45,7 @@ export function Chat(): JSX.Element {
     tasks,
     subagentTree,
     pendingQuestions,
+    sessionQuestions,
     pendingApprovals,
     setActiveSessionId,
     sendChat,
@@ -114,7 +115,12 @@ export function Chat(): JSX.Element {
   }
 
   const isSubagent = !!activeSession.parentSessionId;
-  const sessQuestions = pendingQuestions.filter((q) => q.sessionId === activeSession.id);
+  // Use the full session-question list (any status) so answered + cancelled
+  // questions stay in the transcript instead of vanishing the moment the
+  // user clicks an option. Pending ones still drive the typing indicator
+  // suppression below via pendingForSession.
+  const sessQuestions = sessionQuestions;
+  const pendingForSession = pendingQuestions.filter((q) => q.sessionId === activeSession.id);
   const sessApprovals = pendingApprovals.filter((a) => a.sessionId === activeSession.id);
   const cost = estimateCost(activeSession.model, activeSession.tokensIn, activeSession.tokensOut);
 
@@ -343,11 +349,11 @@ export function Chat(): JSX.Element {
               row={r}
               question={r.questionId ? sessQuestions.find((q) => q.id === r.questionId) : undefined}
               approval={r.approvalId ? sessApprovals.find((a) => a.id === r.approvalId) : undefined}
-              onAnswer={(qid, label) => void answerQuestion(qid, label)}
+              onAnswer={(qid, answers) => void answerQuestion(qid, answers)}
               onDecide={(aid, dec) => void decideApproval(aid, dec)}
             />
           ))}
-          {awaitingResponse && !streaming && <TypingIndicator />}
+          {awaitingResponse && !streaming && pendingForSession.length === 0 && <TypingIndicator />}
         </div>
         <div style={{ borderTop: "1px solid var(--border)", padding: 10, background: "var(--bg-elevated)" }}>
           <form
@@ -677,7 +683,7 @@ function ChatRow({
   row: ChatRowMessage;
   question?: QuestionRecord;
   approval?: ApprovalRecord;
-  onAnswer: (questionId: string, label: string) => void;
+  onAnswer: (questionId: string, answers: Record<string, string>) => void;
   onDecide: (approvalId: string, decision: "approve" | "deny") => void;
 }): JSX.Element | null {
   if (row.kind === "user") {
@@ -795,42 +801,7 @@ function ChatRow({
     );
   }
   if (row.kind === "question" && question) {
-    const first = question.input.questions[0];
-    if (!first) return null;
-    return (
-      <div
-        style={{
-          marginBottom: 14,
-          border: "1px solid var(--accent-line)",
-          borderRadius: 4,
-          background: "var(--accent-soft)",
-          padding: 12,
-        }}
-      >
-        <div className="row gap-2" style={{ marginBottom: 6 }}>
-          <Icon name="ask" size={12} style={{ color: "var(--accent)" }} />
-          <span className="strong">question · {question.id.slice(-8)}</span>
-          <span className="spacer" />
-          <span className="hint">{fmtAgo(question.askedAt)}</span>
-        </div>
-        <div style={{ fontFamily: "var(--font-ui)", fontSize: "var(--t-md)", marginBottom: 8 }}>
-          {first.question}
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-          {first.options.map((o, i) => (
-            <button
-              key={o.label}
-              className="btn"
-              onClick={() => onAnswer(question.id, o.label)}
-              style={{ justifyContent: "flex-start", textAlign: "left" }}
-            >
-              <span className="bracket faint">{String.fromCharCode(97 + i)}</span>
-              <span style={{ textAlign: "left" }}>{o.label}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-    );
+    return <QuestionCard question={question} onAnswer={onAnswer} />;
   }
   if (row.kind === "approval" && approval) {
     return (
@@ -868,6 +839,187 @@ function ChatRow({
     );
   }
   return null;
+}
+
+/**
+ * One ask_user record may carry up to 4 sub-questions. We render every
+ * sub-question with its own option grid and a free-text "other" input so
+ * the user picks an answer for each, then submits them all at once. After
+ * the record is no longer pending we keep the card around in the
+ * transcript and show the chosen answers inline so the conversation reads
+ * coherently on reload.
+ */
+function QuestionCard({
+  question,
+  onAnswer,
+}: {
+  question: QuestionRecord;
+  onAnswer: (questionId: string, answers: Record<string, string>) => void;
+}): JSX.Element | null {
+  const [picks, setPicks] = useState<Record<string, string>>({});
+  // Tracks which sub-questions have the freeform "other" input revealed.
+  // Indexed by sub-question text so identical labels in the same record
+  // (rare but legal) don't collide.
+  const [otherOpen, setOtherOpen] = useState<Record<string, boolean>>({});
+  const [submitting, setSubmitting] = useState(false);
+
+  const subQs = question.input.questions;
+  if (subQs.length === 0) return null;
+  const isPending = question.status === "pending";
+
+  const allFilled = subQs.every((sq) => {
+    const v = picks[sq.question];
+    return typeof v === "string" && v.trim().length > 0;
+  });
+
+  const submit = (): void => {
+    if (!allFilled || submitting) return;
+    setSubmitting(true);
+    const answers: Record<string, string> = {};
+    for (const sq of subQs) answers[sq.question] = picks[sq.question]!.trim();
+    onAnswer(question.id, answers);
+  };
+
+  return (
+    <div
+      style={{
+        marginBottom: 14,
+        border: "1px solid var(--accent-line)",
+        borderRadius: 4,
+        background: "var(--accent-soft)",
+        padding: 12,
+        opacity: isPending ? 1 : 0.92,
+      }}
+    >
+      <div className="row gap-2" style={{ marginBottom: 6 }}>
+        <Icon name="ask" size={12} style={{ color: "var(--accent)" }} />
+        <span className="strong">
+          question{subQs.length > 1 ? `s · ${subQs.length}` : ""} · {question.id.slice(-8)}
+        </span>
+        {!isPending && (
+          <span className={"tag " + (question.status === "answered" ? "ok" : "warn")}>
+            {question.status}
+          </span>
+        )}
+        <span className="spacer" />
+        <span className="hint">{fmtAgo(question.askedAt)}</span>
+      </div>
+      {subQs.map((sq, qi) => {
+        const recorded = question.answers?.[sq.question];
+        const picked = picks[sq.question];
+        const showOther = otherOpen[sq.question] ?? false;
+        return (
+          <div key={`${sq.question}-${qi}`} style={{ marginTop: qi === 0 ? 0 : 12 }}>
+            <div
+              style={{
+                fontFamily: "var(--font-ui)",
+                fontSize: "var(--t-md)",
+                marginBottom: 6,
+              }}
+            >
+              {subQs.length > 1 && (
+                <span className="faint" style={{ marginRight: 6 }}>
+                  Q{qi + 1}.
+                </span>
+              )}
+              {sq.question}
+            </div>
+            {!isPending ? (
+              <div
+                className="row gap-2"
+                style={{
+                  fontSize: "var(--t-sm)",
+                  padding: "6px 8px",
+                  border: "1px solid var(--border-soft)",
+                  borderRadius: 3,
+                  background: "var(--bg-inset)",
+                }}
+              >
+                <Icon name="check" size={11} style={{ color: "var(--ok)" }} />
+                <span className="strong">{recorded ?? "(no answer)"}</span>
+              </div>
+            ) : (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                  {sq.options.map((o, i) => {
+                    const active = picked === o.label;
+                    return (
+                      <button
+                        key={o.label}
+                        className={"btn " + (active ? "primary" : "")}
+                        onClick={() => {
+                          setPicks((p) => ({ ...p, [sq.question]: o.label }));
+                          setOtherOpen((s) => ({ ...s, [sq.question]: false }));
+                        }}
+                        style={{ justifyContent: "flex-start", textAlign: "left" }}
+                        title={o.description}
+                      >
+                        <span className="bracket faint">
+                          {String.fromCharCode(97 + i)}
+                        </span>
+                        <span style={{ textAlign: "left" }}>{o.label}</span>
+                      </button>
+                    );
+                  })}
+                  <button
+                    className={"btn " + (showOther ? "primary" : "")}
+                    onClick={() =>
+                      setOtherOpen((s) => ({ ...s, [sq.question]: !showOther }))
+                    }
+                    style={{ justifyContent: "flex-start", textAlign: "left" }}
+                    title="type a freeform answer"
+                  >
+                    <span className="bracket faint">o</span>
+                    <span style={{ textAlign: "left" }}>Other…</span>
+                  </button>
+                </div>
+                {showOther && (
+                  <input
+                    autoFocus
+                    className="input"
+                    placeholder="type your answer"
+                    value={
+                      // If the current pick came from a static option, don't
+                      // pre-fill the freeform box with it — that would be
+                      // confusing. Only echo back picks the user typed here.
+                      sq.options.some((o) => o.label === picked) ? "" : picked ?? ""
+                    }
+                    onChange={(e) =>
+                      setPicks((p) => ({ ...p, [sq.question]: e.target.value }))
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && allFilled) {
+                        e.preventDefault();
+                        submit();
+                      }
+                    }}
+                    style={{ marginTop: 6, width: "100%" }}
+                  />
+                )}
+              </>
+            )}
+          </div>
+        );
+      })}
+      {isPending && (
+        <div className="row gap-2" style={{ marginTop: 10 }}>
+          <span className="hint">
+            {allFilled
+              ? "ready to send"
+              : `pick ${subQs.length - subQs.filter((sq) => picks[sq.question]?.trim()).length} more`}
+          </span>
+          <span className="spacer" />
+          <button
+            className="btn primary sm"
+            disabled={!allFilled || submitting}
+            onClick={submit}
+          >
+            {submitting ? "sending…" : subQs.length > 1 ? "send answers" : "send answer"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function TypingIndicator(): JSX.Element {

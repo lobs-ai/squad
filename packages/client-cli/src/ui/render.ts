@@ -290,33 +290,69 @@ export function renderTaskList(tasks: Task[]): void {
 
 // ─── ask-user panel ──────────────────────────────────────────────────────────
 
-export function renderAskPrompt(q: QuestionRecord): string {
+/**
+ * Render the ask_user panel for a question record. When the record has
+ * multiple sub-questions the panel walks through them one at a time —
+ * `subIdx` is the index the REPL is currently asking the user to answer,
+ * and earlier sub-questions are shown with the previously-given answer
+ * inline so the running record is easy to follow.
+ */
+export function renderAskPrompt(
+  q: QuestionRecord,
+  subIdx: number = 0,
+  givenAnswers: Record<string, string> = {},
+): string {
   const border = fg(roleColor("question_border", "#FFB84D"));
   const accent = fg(roleColor("accent", "#FFB84D"));
   const muted = fg(roleColor("muted", "#8A8A8A"));
   const text = fg(roleColor("text", "#E8E8E8"));
+  const ok = fg(roleColor("ok", "#7FD184"));
 
   const width = Math.min(termWidth(), 100);
   const top = color("╭" + "─".repeat(width - 2) + "╮", border);
   const bot = color("╰" + "─".repeat(width - 2) + "╯", border);
 
-  const first = q.input.questions[0]!;
+  const subQs = q.input.questions;
+  const total = subQs.length;
   const lines: string[] = [];
   lines.push(top);
-  lines.push(`${color("│", border)} ${C.BOLD}${accent}?${C.RESET} ${text}${first.question}${C.RESET}`);
-  lines.push(`${color("│", border)}`);
-  first.options.forEach((opt, i) => {
-    const numBadge = color(`[${i + 1}]`, accent, C.BOLD);
-    const label = `${text}${opt.label}${C.RESET}`;
-    const desc = opt.description ? color(` — ${opt.description}`, muted) : "";
-    lines.push(`${color("│", border)}   ${numBadge} ${label}${desc}`);
-    if (opt.preview) {
-      for (const pl of opt.preview.split("\n")) {
-        lines.push(`${color("│", border)}       ${color(pl, muted, C.DIM)}`);
-      }
+
+  for (let i = 0; i < total; i++) {
+    const sq = subQs[i]!;
+    const counter = total > 1 ? color(`(${i + 1}/${total}) `, muted) : "";
+    if (i < subIdx) {
+      // Already-answered sub-question — collapse to a one-liner so the
+      // user can still see the chain without it dominating the panel.
+      const ans = givenAnswers[sq.question] ?? "(?)";
+      lines.push(
+        `${color("│", border)} ${ok}✓${C.RESET} ${counter}${muted}${sq.question}${C.RESET}` +
+          ` ${muted}→${C.RESET} ${text}${ans}${C.RESET}`,
+      );
+      continue;
     }
-  });
-  lines.push(`${color("│", border)}   ${color("[o]", accent, C.BOLD)} ${text}Other…${C.RESET} ${muted}(type a freeform answer)${C.RESET}`);
+    const isCurrent = i === subIdx;
+    const marker = isCurrent ? color("?", accent, C.BOLD) : color("·", muted);
+    lines.push(
+      `${color("│", border)} ${marker} ${counter}${text}${sq.question}${C.RESET}`,
+    );
+    if (!isCurrent) continue;
+    lines.push(`${color("│", border)}`);
+    sq.options.forEach((opt, oi) => {
+      const numBadge = color(`[${oi + 1}]`, accent, C.BOLD);
+      const label = `${text}${opt.label}${C.RESET}`;
+      const desc = opt.description ? color(` — ${opt.description}`, muted) : "";
+      lines.push(`${color("│", border)}   ${numBadge} ${label}${desc}`);
+      if (opt.preview) {
+        for (const pl of opt.preview.split("\n")) {
+          lines.push(`${color("│", border)}       ${color(pl, muted, C.DIM)}`);
+        }
+      }
+    });
+    lines.push(
+      `${color("│", border)}   ${color("[o]", accent, C.BOLD)} ${text}Other…${C.RESET} ${muted}(type a freeform answer)${C.RESET}`,
+    );
+    if (i < total - 1) lines.push(`${color("│", border)}`);
+  }
   lines.push(bot);
 
   return "\n" + lines.join("\n") + "\n";

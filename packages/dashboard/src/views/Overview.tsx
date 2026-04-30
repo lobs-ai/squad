@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { ApprovalRecord, PluginRecord, QuestionRecord, SessionRecord, Task } from "@squad/protocol";
 import { Card, PageHead } from "../ui/primitives.js";
 import { Icon, type IconName } from "../ui/Icon.js";
@@ -58,7 +58,7 @@ export function Overview({ setView, onOpenSession, onNewChat }: Props): JSX.Elem
           questions={pendingQuestions}
           approvals={pendingApprovals}
           onOpenSession={onOpenSession}
-          onAnswer={(qid, label) => void answerQuestion(qid, label)}
+          onAnswer={(qid, answers) => void answerQuestion(qid, answers)}
           onDecide={(id, dec) => void decideApproval(id, dec)}
         />
         <RecentActivity activity={activity} onOpenSession={onOpenSession} />
@@ -219,7 +219,7 @@ interface NeedsYouProps {
   questions: QuestionRecord[];
   approvals: ApprovalRecord[];
   onOpenSession: (id: string) => void;
-  onAnswer: (questionId: string, label: string) => void;
+  onAnswer: (questionId: string, answers: Record<string, string>) => void;
   onDecide: (approvalId: string, decision: "approve" | "deny") => void;
 }
 
@@ -232,64 +232,14 @@ function NeedsYou({ questions, approvals, onOpenSession, onAnswer, onDecide }: N
           inbox zero — no pending questions or approvals.
         </div>
       )}
-      {questions.map((q) => {
-        const first = q.input.questions[0];
-        if (!first) return null;
-        return (
-          <div key={q.id} style={{ borderBottom: "1px solid var(--border-soft)", padding: "8px 0" }}>
-            <div className="row gap-2" style={{ marginBottom: 4 }}>
-              <Icon name="ask" size={12} className="strong" />
-              <span className="strong">question</span>
-              <span className="faint mono" style={{ fontSize: "var(--t-xs)" }}>
-                {q.id.slice(-8)}
-              </span>
-              <span className="spacer" />
-              <span className="hint">{fmtAgo(q.askedAt)}</span>
-            </div>
-            <div style={{ fontFamily: "var(--font-ui)", fontSize: "var(--t-md)", color: "var(--fg)", marginBottom: 6 }}>
-              {first.question}
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {first.options.map((o, i) => (
-                <div
-                  key={o.label}
-                  className="row gap-2"
-                  onClick={() => onAnswer(q.id, o.label)}
-                  style={{
-                    padding: "5px 8px",
-                    border: "1px solid var(--border-soft)",
-                    borderRadius: 3,
-                    background: "var(--bg-inset)",
-                    cursor: "pointer",
-                    fontSize: "var(--t-sm)",
-                  }}
-                >
-                  <span className="bracket faint">{String.fromCharCode(97 + i)}</span>
-                  <span>{o.label}</span>
-                  {o.description && (
-                    <>
-                      <span className="spacer" />
-                      <span className="hint">{o.description}</span>
-                    </>
-                  )}
-                </div>
-              ))}
-              <div className="row gap-2 hint" style={{ marginTop: 2 }}>
-                {q.input.allowCustom && (
-                  <>
-                    <span>or</span>
-                    <span className="kbd">other…</span>
-                  </>
-                )}
-                <span className="spacer" />
-                <span className="link" onClick={() => onOpenSession(q.sessionId)}>
-                  open session ↗
-                </span>
-              </div>
-            </div>
-          </div>
-        );
-      })}
+      {questions.map((q) => (
+        <NeedsYouQuestion
+          key={q.id}
+          question={q}
+          onAnswer={onAnswer}
+          onOpenSession={onOpenSession}
+        />
+      ))}
       {approvals.map((a) => (
         <div key={a.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--border-soft)" }}>
           <div className="row gap-2" style={{ marginBottom: 4 }}>
@@ -327,6 +277,166 @@ function NeedsYou({ questions, approvals, onOpenSession, onAnswer, onDecide }: N
         </div>
       )}
     </Card>
+  );
+}
+
+/**
+ * Inbox-style row for a pending question on the Overview. Shows every
+ * sub-question with its options + an always-available freeform "other"
+ * input, then submits all answers in one click. The Chat view has a
+ * fancier inline version of the same control — both go through the same
+ * onAnswer(questionId, answers: Record<string, string>) path.
+ */
+function NeedsYouQuestion({
+  question,
+  onAnswer,
+  onOpenSession,
+}: {
+  question: QuestionRecord;
+  onAnswer: (questionId: string, answers: Record<string, string>) => void;
+  onOpenSession: (id: string) => void;
+}): JSX.Element | null {
+  const [picks, setPicks] = useState<Record<string, string>>({});
+  const [otherOpen, setOtherOpen] = useState<Record<string, boolean>>({});
+  const subQs = question.input.questions;
+  if (subQs.length === 0) return null;
+  const allFilled = subQs.every((sq) => {
+    const v = picks[sq.question];
+    return typeof v === "string" && v.trim().length > 0;
+  });
+  const submit = (): void => {
+    if (!allFilled) return;
+    const answers: Record<string, string> = {};
+    for (const sq of subQs) answers[sq.question] = picks[sq.question]!.trim();
+    onAnswer(question.id, answers);
+  };
+  return (
+    <div style={{ borderBottom: "1px solid var(--border-soft)", padding: "8px 0" }}>
+      <div className="row gap-2" style={{ marginBottom: 4 }}>
+        <Icon name="ask" size={12} className="strong" />
+        <span className="strong">
+          question{subQs.length > 1 ? `s · ${subQs.length}` : ""}
+        </span>
+        <span className="faint mono" style={{ fontSize: "var(--t-xs)" }}>
+          {question.id.slice(-8)}
+        </span>
+        <span className="spacer" />
+        <span className="hint">{fmtAgo(question.askedAt)}</span>
+      </div>
+      {subQs.map((sq, qi) => {
+        const picked = picks[sq.question];
+        const showOther = otherOpen[sq.question] ?? false;
+        return (
+          <div key={`${sq.question}-${qi}`} style={{ marginTop: qi === 0 ? 0 : 10 }}>
+            <div
+              style={{
+                fontFamily: "var(--font-ui)",
+                fontSize: "var(--t-md)",
+                color: "var(--fg)",
+                marginBottom: 6,
+              }}
+            >
+              {subQs.length > 1 && (
+                <span className="faint" style={{ marginRight: 6 }}>
+                  Q{qi + 1}.
+                </span>
+              )}
+              {sq.question}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {sq.options.map((o, i) => {
+                const active = picked === o.label;
+                return (
+                  <div
+                    key={o.label}
+                    className="row gap-2"
+                    onClick={() => {
+                      setPicks((p) => ({ ...p, [sq.question]: o.label }));
+                      setOtherOpen((s) => ({ ...s, [sq.question]: false }));
+                    }}
+                    style={{
+                      padding: "5px 8px",
+                      border:
+                        "1px solid " +
+                        (active ? "var(--accent)" : "var(--border-soft)"),
+                      borderRadius: 3,
+                      background: active ? "var(--accent-soft)" : "var(--bg-inset)",
+                      cursor: "pointer",
+                      fontSize: "var(--t-sm)",
+                    }}
+                  >
+                    <span className="bracket faint">
+                      {String.fromCharCode(97 + i)}
+                    </span>
+                    <span>{o.label}</span>
+                    {o.description && (
+                      <>
+                        <span className="spacer" />
+                        <span className="hint">{o.description}</span>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+              <div
+                className="row gap-2"
+                onClick={() =>
+                  setOtherOpen((s) => ({ ...s, [sq.question]: !showOther }))
+                }
+                style={{
+                  padding: "5px 8px",
+                  border:
+                    "1px solid " +
+                    (showOther ? "var(--accent)" : "var(--border-soft)"),
+                  borderRadius: 3,
+                  background: showOther ? "var(--accent-soft)" : "var(--bg-inset)",
+                  cursor: "pointer",
+                  fontSize: "var(--t-sm)",
+                }}
+              >
+                <span className="bracket faint">o</span>
+                <span>Other…</span>
+                <span className="spacer" />
+                <span className="hint">type a freeform answer</span>
+              </div>
+              {showOther && (
+                <input
+                  autoFocus
+                  className="input"
+                  placeholder="type your answer"
+                  value={
+                    sq.options.some((o) => o.label === picked) ? "" : picked ?? ""
+                  }
+                  onChange={(e) =>
+                    setPicks((p) => ({ ...p, [sq.question]: e.target.value }))
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && allFilled) {
+                      e.preventDefault();
+                      submit();
+                    }
+                  }}
+                  style={{ marginTop: 4, width: "100%" }}
+                />
+              )}
+            </div>
+          </div>
+        );
+      })}
+      <div className="row gap-2" style={{ marginTop: 6 }}>
+        <button
+          className="btn primary sm"
+          disabled={!allFilled}
+          onClick={submit}
+        >
+          {subQs.length > 1 ? "send answers" : "send answer"}
+        </button>
+        <span className="spacer" />
+        <span className="link" onClick={() => onOpenSession(question.sessionId)}>
+          open session ↗
+        </span>
+      </div>
+    </div>
   );
 }
 

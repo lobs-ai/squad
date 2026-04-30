@@ -13,7 +13,7 @@ import { renderStatusbar, isStatusbarEnabled } from "../ui/statusbar.js";
 import { runSlash, matchCommands } from "../ui/slash.js";
 import { Spinner } from "../ui/spinner.js";
 import { LineInput, type MenuItem } from "../ui/line-input.js";
-import type { Task, QuestionRecord } from "@squad/protocol";
+import type { Task, QuestionRecord, ApprovalRecord } from "@squad/protocol";
 
 const HISTORY_PATH = join(homedir(), ".squad", "history");
 const HISTORY_MAX = 1000;
@@ -68,6 +68,10 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
     `chat.*/${sid}`,
     `tasks.*/${sid}`,
     `questions.*/${sid}`,
+    `approvals.*/${sid}`,
+    `subagents.spawned/${sid}`,
+    `subagents.completed/${sid}`,
+    `subagents.failed/${sid}`,
   ];
 
   // Mutable state shared with slash handlers.
@@ -76,8 +80,13 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
     verbose: "compact" as import("../ui/render.js").VerboseLevel,
     shouldExit: false,
     pendingQuestion: null as QuestionRecord | null,
+    pendingApproval: null as ApprovalRecord | null,
     taskCount: 0,
     openQuestions: 0,
+    pendingApprovals: 0,
+    activeSubagents: 0,
+    tokensIn: 0,
+    tokensOut: 0,
     onSessionChange: async (newId: string) => {
       try {
         await client.unsubscribe(subscribedTopics(state.sessionId));
@@ -86,9 +95,13 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
       }
       state.sessionId = newId;
       setLastSessionId(newId);
+      state.activeSubagents = 0;
+      state.pendingApprovals = 0;
+      state.pendingApproval = null;
       await client.subscribe(subscribedTopics(newId));
       await refreshTaskCount(client, state);
       await refreshOpenQuestions(client, state);
+      await refreshSessionTokens(client, state);
     },
   };
 
@@ -222,6 +235,8 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
       streamedRuns.delete(d.runId);
       render.renderNewline();
       activeRunId = null;
+      // Refresh the cumulative token counts for the statusbar second line.
+      void refreshSessionTokens(client, state);
       prePrompt();
     } else if (topic.startsWith("chat.tool_call/")) {
       const d = data as {
@@ -269,6 +284,32 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
     ) {
       state.pendingQuestion = null;
       state.openQuestions = Math.max(0, (state.openQuestions ?? 1) - 1);
+    } else if (
+      topic.startsWith("approvals.requested/") ||
+      topic.startsWith("approvals.pending/")
+    ) {
+      const approval = (data as { approval: ApprovalRecord }).approval;
+      // Coalesce the two events: `pending` and `requested` fire together.
+      if (state.pendingApproval?.id === approval.id) return;
+      state.pendingApproval = approval;
+      state.pendingApprovals += 1;
+      printSafely(() => {
+        process.stdout.write(renderApprovalPrompt(approval));
+      });
+      prePrompt();
+    } else if (topic.startsWith("approvals.decided/")) {
+      const approval = (data as { approval: ApprovalRecord }).approval;
+      if (state.pendingApproval?.id === approval.id) {
+        state.pendingApproval = null;
+      }
+      state.pendingApprovals = Math.max(0, state.pendingApprovals - 1);
+    } else if (topic.startsWith("subagents.spawned/")) {
+      state.activeSubagents += 1;
+    } else if (
+      topic.startsWith("subagents.completed/") ||
+      topic.startsWith("subagents.failed/")
+    ) {
+      state.activeSubagents = Math.max(0, state.activeSubagents - 1);
     }
   });
 
@@ -285,6 +326,10 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
         pendingQuestion: Boolean(state.pendingQuestion),
         taskCount: state.taskCount,
         openQuestions: state.openQuestions,
+        tokensIn: state.tokensIn,
+        tokensOut: state.tokensOut,
+        activeSubagents: state.activeSubagents,
+        pendingApprovals: state.pendingApprovals,
       });
     }
     if (!input.isRunning()) input.start();
@@ -305,6 +350,15 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
     try {
       if (trimmed.startsWith("/")) {
         await runSlash(trimmed, { client, state, input });
+      } else if (state.pendingApproval) {
+        const handled = await handleApprovalAnswer(client, state.pendingApproval, trimmed);
+        if (handled) {
+          state.pendingApproval = null;
+        } else {
+          // Unrecognised shorthand — leave the approval pending and tell
+          // the user how to answer.
+          render.renderInfo("type a / allow, d / deny, or w / why?");
+        }
       } else if (state.pendingQuestion) {
         await handleAnswer(client, state.pendingQuestion, trimmed);
         state.pendingQuestion = null;
@@ -347,6 +401,40 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
   });
   input.stop();
   client.close();
+}
+
+/**
+ * Route an approval answer typed at the REPL prompt to `approvals.decide`.
+ * Returns true if the line matched a known shortcut. `w` / `why` prints
+ * the input again without deciding.
+ */
+async function handleApprovalAnswer(
+  client: ProtocolClient,
+  approval: ApprovalRecord,
+  line: string,
+): Promise<boolean> {
+  const norm = line.toLowerCase().trim();
+  if (norm === "a" || norm === "allow" || norm === "approve" || norm === "yes" || norm === "y") {
+    await client.request("approvals.decide", {
+      approvalId: approval.id,
+      decision: "approve",
+    });
+    render.renderSuccess(`approved ${approval.toolName}`);
+    return true;
+  }
+  if (norm === "d" || norm === "deny" || norm === "no" || norm === "n") {
+    await client.request("approvals.decide", {
+      approvalId: approval.id,
+      decision: "deny",
+    });
+    render.renderInfo(`denied ${approval.toolName}`);
+    return true;
+  }
+  if (norm === "w" || norm === "why" || norm === "?") {
+    process.stdout.write(renderApprovalPrompt(approval));
+    return true;
+  }
+  return false;
 }
 
 async function handleAnswer(
@@ -395,5 +483,48 @@ async function refreshOpenQuestions(
     state.openQuestions = questions.length;
   } catch {
     // Non-fatal.
+  }
+}
+
+async function refreshSessionTokens(
+  client: ProtocolClient,
+  state: { sessionId: string; tokensIn: number; tokensOut: number },
+): Promise<void> {
+  try {
+    const { session } = await client.request("session.resume", {
+      sessionId: state.sessionId,
+    });
+    state.tokensIn = session.tokensIn;
+    state.tokensOut = session.tokensOut;
+  } catch {
+    // Non-fatal — statusbar just shows zeros until the next refresh.
+  }
+}
+
+/**
+ * Render the in-band approval prompt — `[a]llow / [d]eny / [w]hy?`. Shown
+ * above the input row, like the ask-user prompt. The user types `a`, `d`,
+ * or `w` (or the full word) on the next line; the line handler routes the
+ * answer to `approvals.decide`.
+ */
+function renderApprovalPrompt(approval: ApprovalRecord): string {
+  const accent = fg(roleColor("accent"));
+  const muted = fg(roleColor("muted"));
+  const warn = fg(roleColor("warn"));
+  const tags = approval.tags.length > 0 ? approval.tags.join(", ") : "(no tags)";
+  const head = color(`🔒 approval requested · ${approval.toolName}`, warn, C.BOLD);
+  const sub = color(`tags: ${tags}`, muted);
+  const choice = color(`[a]llow  [d]eny  [w]hy?`, accent, C.BOLD);
+  const inputPreview = previewInput(approval.input);
+  return [head, sub, color(inputPreview, muted), choice, ""].join("\n");
+}
+
+function previewInput(input: unknown): string {
+  try {
+    const json = JSON.stringify(input, null, 2);
+    if (json.length <= 240) return json;
+    return json.slice(0, 240) + "…";
+  } catch {
+    return "(unprintable input)";
   }
 }

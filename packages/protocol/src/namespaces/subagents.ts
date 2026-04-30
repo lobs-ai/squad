@@ -19,7 +19,12 @@ export const subagentDefinitionSchema = z.object({
    * shrinking the available toolset.
    */
   toolsets: z.array(z.string()).optional(),
-  systemPrompt: z.string(),
+  /**
+   * Optional preface seeded into the named subagent's SOUL.md the first time
+   * it spawns. The system prompt slot itself is always the Squad system
+   * prompt — per-subagent character lives in its own SOUL.md file.
+   */
+  systemPrompt: z.string().optional(),
   limits: subagentLimitsSchema.optional(),
   // JSON Schema describing the `input` the subagent accepts.
   inputSchema: z.record(z.unknown()).optional(),
@@ -43,8 +48,29 @@ export const subagentsListResult = z.object({
 // subagents.spawn
 export const subagentsSpawnParams = z.object({
   parentSessionId: z.string(),
-  subagent: z.string(),           // definition name
-  input: z.unknown(),
+  /**
+   * Name of a registered subagent. When omitted the spawn is ad-hoc —
+   * `prompt` becomes the first user message, no per-subagent SOUL/USER/MEMORY
+   * is loaded, and `tools`/`toolsets`/`model` come from the call directly.
+   */
+  subagent: z.string().optional(),
+  /**
+   * First user message handed to the subagent. Required for ad-hoc spawns.
+   * For named spawns it's optional — the input/structured payload may be
+   * enough — but a free-form prompt is usually clearer.
+   */
+  prompt: z.string().optional(),
+  /**
+   * Optional structured payload. Stringified and prepended to the first user
+   * message when both `prompt` and `input` are set.
+   */
+  input: z.unknown().optional(),
+  /** Optional human label for telemetry on ad-hoc spawns. */
+  name: z.string().optional(),
+  /** Tool ids unioned with the definition's tools (or used directly ad-hoc). */
+  tools: z.array(z.string()).optional(),
+  /** Toolset bundles unioned with the definition's tools. */
+  toolsets: z.array(z.string()).optional(),
   model: z.string().optional(),   // override
   wait: z.boolean().default(false),
 });
@@ -53,6 +79,35 @@ export const subagentsSpawnResult = z.object({
   status: subagentStatusSchema,
   result: z.unknown().optional(), // populated when wait=true and the run completed
 });
+
+// subagents.create — register or replace a definition at runtime. Persists
+// to subagent_defs so the registration survives a restart, and seeds the
+// subagent's per-name core directory under <workspace>/.squad/subagents/.
+export const subagentsCreateParams = z.object({
+  name: z.string().min(1),
+  description: z.string(),
+  model: z.string().optional(),
+  tools: z.array(z.string()).optional(),
+  toolsets: z.array(z.string()).optional(),
+  /**
+   * Optional preface for the named subagent's SOUL.md. Only seeded the first
+   * time the subagent is created; subsequent updates leave the file alone.
+   */
+  systemPrompt: z.string().optional(),
+  limits: subagentLimitsSchema.optional(),
+  inputSchema: z.record(z.unknown()).optional(),
+  /** Replace an existing definition with the same name. Defaults to false. */
+  overwrite: z.boolean().optional(),
+});
+export const subagentsCreateResult = z.object({
+  definition: subagentDefinitionSchema,
+  coreDir: z.string(),
+});
+
+// subagents.delete — remove a definition. Always in-memory; passes through
+// to the persistence layer when one is wired.
+export const subagentsDeleteParams = z.object({ name: z.string() });
+export const subagentsDeleteResult = z.object({ name: z.string(), removed: z.boolean() });
 
 // subagents.cancel
 export const subagentsCancelParams = z.object({ sessionId: z.string() });
@@ -92,6 +147,8 @@ export const subagentMethods = {
   "subagents.cancel": { params: subagentsCancelParams, result: subagentsCancelResult },
   "subagents.tree": { params: subagentsTreeParams, result: subagentsTreeResult },
   "subagents.history": { params: subagentsHistoryParams, result: subagentsHistoryResult },
+  "subagents.create": { params: subagentsCreateParams, result: subagentsCreateResult },
+  "subagents.delete": { params: subagentsDeleteParams, result: subagentsDeleteResult },
 } as const;
 
 // ── Events ────────────────────────────────────────────────────────────────────

@@ -43,6 +43,13 @@ export interface StatusbarState {
   taskCount?: number;
   openQuestions?: number;
   gatewayUrl?: string;
+  /** Cumulative tokens for the active session (input/output). */
+  tokensIn?: number;
+  tokensOut?: number;
+  /** Active subagent count for the session tree. */
+  activeSubagents?: number;
+  /** Pending approvals waiting for the operator. */
+  pendingApprovals?: number;
 }
 
 function termWidth(): number {
@@ -55,7 +62,7 @@ function padTo(text: string, width: number): string {
   return text + " ".repeat(width - visible);
 }
 
-/** Render the bar as one full-width line. Caller writes it to stdout. */
+/** Render the bar as one or two full-width lines. Caller writes it to stdout. */
 export function buildStatusbar(s: StatusbarState): string {
   if (!enabled) return "";
 
@@ -65,23 +72,51 @@ export function buildStatusbar(s: StatusbarState): string {
   const warn = fg(roleColor("warn", "#FFB84D"));
 
   const sep = `${text} · ${C.RESET}`;
-  const pieces: string[] = [];
-  pieces.push(`${strong}squad${C.RESET}`);
-  pieces.push(`${text}session ${strong}${s.sessionId.slice(0, 8)}${C.RESET}`);
+
+  // ── Top line: identity + counters ──────────────────────────────────────
+  const topPieces: string[] = [];
+  topPieces.push(`${strong}squad${C.RESET}`);
+  topPieces.push(`${text}session ${strong}${s.sessionId.slice(0, 8)}${C.RESET}`);
   if (typeof s.taskCount === "number") {
-    pieces.push(`${text}tasks ${strong}${s.taskCount}${C.RESET}`);
+    topPieces.push(`${text}tasks ${strong}${s.taskCount}${C.RESET}`);
   }
   if (typeof s.openQuestions === "number" && s.openQuestions > 0) {
-    pieces.push(`${warn}? ${s.openQuestions} open${C.RESET}`);
+    topPieces.push(`${warn}? ${s.openQuestions} open${C.RESET}`);
   } else if (s.pendingQuestion) {
-    pieces.push(`${warn}? awaiting answer${C.RESET}`);
+    topPieces.push(`${warn}? awaiting answer${C.RESET}`);
+  }
+  if (typeof s.pendingApprovals === "number" && s.pendingApprovals > 0) {
+    topPieces.push(`${warn}🔒 ${s.pendingApprovals} approval(s)${C.RESET}`);
   }
   if (s.runningTurns) {
-    pieces.push(`${warn}running${C.RESET}`);
+    topPieces.push(`${warn}running${C.RESET}`);
   }
-  const body = pieces.join(sep);
-  const line = padTo(` ${body} `, termWidth());
-  return `${bgCode}${line}${C.RESET}\n`;
+  const topBody = topPieces.join(sep);
+  const topLine = padTo(` ${topBody} `, termWidth());
+
+  // ── Bottom line: token usage + active subagents ────────────────────────
+  // Suppressed when there's nothing interesting to report — keeps the bar
+  // single-line for fresh sessions.
+  const hasTokens =
+    typeof s.tokensIn === "number" || typeof s.tokensOut === "number";
+  const hasSub = typeof s.activeSubagents === "number" && s.activeSubagents > 0;
+  if (!hasTokens && !hasSub) {
+    return `${bgCode}${topLine}${C.RESET}\n`;
+  }
+  const bottomPieces: string[] = [];
+  if (hasTokens) {
+    const tIn = (s.tokensIn ?? 0).toLocaleString();
+    const tOut = (s.tokensOut ?? 0).toLocaleString();
+    bottomPieces.push(`${text}tokens ${strong}${tIn}${C.RESET}${text}↦${strong}${tOut}${C.RESET}`);
+  }
+  if (hasSub) {
+    bottomPieces.push(
+      `${text}subagents ${strong}${s.activeSubagents}${C.RESET}${text} active${C.RESET}`,
+    );
+  }
+  const bottomBody = bottomPieces.join(sep);
+  const bottomLine = padTo(` ${bottomBody} `, termWidth());
+  return `${bgCode}${topLine}${C.RESET}\n${bgCode}${bottomLine}${C.RESET}\n`;
 }
 
 /** Convenience: print the bar directly. */

@@ -93,6 +93,20 @@ export class LineInput extends EventEmitter {
   } | null = null;
   private pickerResolver: ((choice: MenuItem | null) => void) | null = null;
 
+  /**
+   * Reverse-i-search mode (`Ctrl+R`). The displayed line shows the latest
+   * matching history entry; further characters tighten the search. Enter
+   * accepts and submits the matched line; Esc cancels back to the prior
+   * buffer; Ctrl+R re-fires to find the next older match.
+   */
+  private rsearchState: {
+    pattern: string;
+    matchIdx: number | null;
+    /** Saved buffer + cursor to restore on cancel. */
+    savedBuffer: string;
+    savedCursor: number;
+  } | null = null;
+
   constructor(private readonly opts: LineInputOptions) {
     super();
     this.history = (opts.initialHistory ?? []).slice(
@@ -286,6 +300,29 @@ export class LineInput extends EventEmitter {
         this.pickerResolve(this.visibleMenuItems()[this.menuSelected] ?? null);
         return;
       }
+      // Multi-line: a buffer ending in a single trailing `\` is taken as
+      // "soft newline — keep typing". Replace the `\` with a real newline
+      // and don't submit. Alt+Enter (key.meta) does the same without the
+      // backslash, for users with a terminal that sends meta on option.
+      if (k.meta) {
+        this.buffer =
+          this.buffer.slice(0, this.cursor) + "\n" + this.buffer.slice(this.cursor);
+        this.cursor += 1;
+        this.refreshMenu();
+        this.render();
+        return;
+      }
+      if (
+        this.buffer.length > 0 &&
+        this.buffer.endsWith("\\") &&
+        !this.buffer.endsWith("\\\\")
+      ) {
+        this.buffer = this.buffer.slice(0, -1) + "\n";
+        this.cursor = this.buffer.length;
+        this.refreshMenu();
+        this.render();
+        return;
+      }
       // Slash mode with the menu open: if the buffer already matches an
       // item exactly (user fully typed `/help`), submit as-is. Otherwise
       // accept the highlighted selection first (arrow-key picked or partial
@@ -318,10 +355,39 @@ export class LineInput extends EventEmitter {
         this.pickerResolve(null);
         return;
       }
+      if (this.rsearchState) {
+        // Cancel: restore the buffer the user had before Ctrl+R.
+        this.buffer = this.rsearchState.savedBuffer;
+        this.cursor = this.rsearchState.savedCursor;
+        this.rsearchState = null;
+        this.refreshMenu();
+        this.render();
+        return;
+      }
       if (this.menuOpen) {
         this.menuOpen = false;
         this.render();
       }
+      return;
+    }
+
+    // Ctrl+R: enter / advance reverse-i-search.
+    if (k.ctrl && k.name === "r") {
+      if (!this.rsearchState) {
+        this.rsearchState = {
+          pattern: "",
+          matchIdx: null,
+          savedBuffer: this.buffer,
+          savedCursor: this.cursor,
+        };
+        this.menuOpen = false;
+        this.menuItems = [];
+        this.render();
+        return;
+      }
+      // Already in r-search: find the next older match for the same pattern.
+      this.advanceReverseSearch();
+      this.render();
       return;
     }
 
@@ -360,6 +426,13 @@ export class LineInput extends EventEmitter {
     }
 
     if (k.name === "backspace") {
+      if (this.rsearchState) {
+        this.rsearchState.pattern = this.rsearchState.pattern.slice(0, -1);
+        this.rsearchState.matchIdx = null;
+        this.findReverseSearch();
+        this.render();
+        return;
+      }
       if (this.cursor > 0) {
         this.buffer = this.buffer.slice(0, this.cursor - 1) + this.buffer.slice(this.cursor);
         this.cursor--;
@@ -408,12 +481,64 @@ export class LineInput extends EventEmitter {
 
     // Printable input.
     if (str && !k.ctrl && !k.meta && str.length >= 1 && str.charCodeAt(0) >= 32) {
+      if (this.rsearchState) {
+        this.rsearchState.pattern += str;
+        this.rsearchState.matchIdx = null;
+        this.findReverseSearch();
+        this.render();
+        return;
+      }
       this.buffer = this.buffer.slice(0, this.cursor) + str + this.buffer.slice(this.cursor);
       this.cursor += str.length;
       this.refreshMenu();
       this.render();
     }
   };
+
+  /** Search history (newest first) for the latest match of the pattern. */
+  private findReverseSearch(): void {
+    if (!this.rsearchState) return;
+    const pat = this.rsearchState.pattern.toLowerCase();
+    if (!pat) {
+      this.buffer = "";
+      this.cursor = 0;
+      this.rsearchState.matchIdx = null;
+      return;
+    }
+    for (let i = this.history.length - 1; i >= 0; i--) {
+      const entry = this.history[i] ?? "";
+      if (entry.toLowerCase().includes(pat)) {
+        this.buffer = entry;
+        this.cursor = entry.length;
+        this.rsearchState.matchIdx = i;
+        return;
+      }
+    }
+    // No match — leave the buffer empty so the user sees the failure clearly.
+    this.buffer = "";
+    this.cursor = 0;
+    this.rsearchState.matchIdx = null;
+  }
+
+  /** Find the next older match (called on Ctrl+R while already searching). */
+  private advanceReverseSearch(): void {
+    if (!this.rsearchState) return;
+    const pat = this.rsearchState.pattern.toLowerCase();
+    if (!pat) return;
+    const start =
+      this.rsearchState.matchIdx !== null ? this.rsearchState.matchIdx - 1 : this.history.length - 1;
+    for (let i = start; i >= 0; i--) {
+      const entry = this.history[i] ?? "";
+      if (entry.toLowerCase().includes(pat)) {
+        this.buffer = entry;
+        this.cursor = entry.length;
+        this.rsearchState.matchIdx = i;
+        return;
+      }
+    }
+    // Wrap around to the bottom for the next press.
+    this.rsearchState.matchIdx = null;
+  }
 
   // ── menu + history ─────────────────────────────────────────────────────
 
@@ -511,6 +636,8 @@ export class LineInput extends EventEmitter {
   }
 
   private submit(): void {
+    // Exit reverse-i-search mode if we're submitting from inside it.
+    this.rsearchState = null;
     const line = this.buffer;
     // Finalize the current render — commit the line as a permanent row.
     this.clearRender();
@@ -546,6 +673,15 @@ export class LineInput extends EventEmitter {
       color(`? ${label} `, accent, C.BOLD) +
       color("(type to filter · ↑↓ cycle · enter pick · esc cancel) ", muted)
     );
+  }
+
+  private rsearchPrompt(): string {
+    const accent = fg(roleColor("accent"));
+    const muted = fg(roleColor("muted"));
+    const pat = this.rsearchState?.pattern ?? "";
+    const noMatch = this.rsearchState?.matchIdx === null && pat.length > 0;
+    const tag = noMatch ? "(failed reverse-i-search)" : "(reverse-i-search)";
+    return color(`${tag} \`${pat}': `, noMatch ? muted : accent, C.BOLD);
   }
 
   private renderMenuRow(item: MenuItem, selected: boolean): string {
@@ -588,7 +724,9 @@ export class LineInput extends EventEmitter {
 
     const prompt = this.pickerState
       ? this.pickerPrompt(this.pickerState.label)
-      : this.opts.prompt();
+      : this.rsearchState
+        ? this.rsearchPrompt()
+        : this.opts.prompt();
     const promptWidth = visibleWidth(prompt);
     // Truncate displayed buffer if it's wider than the terminal minus prompt,
     // so we never wrap (keeps cursor math trivial).
@@ -604,7 +742,12 @@ export class LineInput extends EventEmitter {
     }
 
     stdout.write("\r");
-    stdout.write(prompt + display);
+    // Multi-line buffer: collapse internal newlines into a visible glyph
+    // so the input stays on one row. The newlines are preserved in the
+    // submitted line; users see ↵ where they pressed Alt+Enter / typed `\`.
+    const muted = fg(roleColor("muted"));
+    const visualDisplay = display.replace(/\n/g, color("↵", muted));
+    stdout.write(prompt + visualDisplay);
 
     let extra = 0;
     if (this.menuOpen && this.menuItems.length > 0) {
