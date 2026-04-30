@@ -105,6 +105,62 @@ describe("subagent pool", () => {
     expect(visible[0]?.taskListId).toBe(root.id);
   });
 
+  it("spawns an ad-hoc subagent without registration", async () => {
+    const b = await bootForTest();
+    const { sessions } = b.stores;
+    const { pool } = b.subagents;
+
+    const root = sessions.create({ model: "claude-sonnet-4-5", title: "root" });
+
+    const handle = pool.spawn({
+      parentSessionId: root.id,
+      prompt: "do this one-off thing",
+      name: "research",
+      tools: [],
+      wait: true,
+    });
+    const outcome = await handle.done;
+    expect(outcome.succeeded).toBe(true);
+    expect(outcome.result).toContain("subagent finished");
+
+    const child = sessions.get(handle.sessionId);
+    // Ad-hoc spawns leave subagentDefId null so the row marks the run as one-off.
+    expect(child.subagentDefId).toBeNull();
+    expect(child.parentSessionId).toBe(root.id);
+  });
+
+  it("registers a subagent at runtime, spawns it by name, then deletes it", async () => {
+    const b = await bootForTest();
+    const { sessions } = b.stores;
+    const { registry } = b.subagents;
+
+    // Use the dispatch path the way a tool / WS client would.
+    registry.register(
+      {
+        name: "doc-writer",
+        description: "Writes docs",
+        model: "claude-sonnet-4-5",
+        tools: [],
+        systemPrompt: "You are a doc writer.",
+      },
+      "user",
+    );
+    expect(registry.get("doc-writer")).toBeDefined();
+
+    const root = sessions.create({ model: "claude-sonnet-4-5", title: "root" });
+    const handle = b.subagents.pool.spawn({
+      parentSessionId: root.id,
+      subagent: "doc-writer",
+      prompt: "draft a doc",
+      wait: true,
+    });
+    const outcome = await handle.done;
+    expect(outcome.succeeded).toBe(true);
+
+    expect(registry.unregister("doc-writer")).toBe(true);
+    expect(registry.get("doc-writer")).toBeUndefined();
+  });
+
   it("enforces per-parent concurrency", async () => {
     const b = await bootForTest();
     const { sessions } = b.stores;

@@ -60,9 +60,9 @@ export class SetConfigTool extends BaseTool<SetInput> {
   readonly description = [
     "Write a value to the gateway config, persisting to config.json. The new",
     "config is validated through the same schema used at boot; invalid values",
-    "are rejected without touching disk. Some changes (subagent pool limits,",
-    "server port, provider keys, loaded plugins) only take effect on restart —",
-    "the return payload flags these. " + PATH_GUIDANCE,
+    "are rejected without touching disk. Some changes (server port, provider",
+    "keys, loaded plugins) only take effect on restart — the return payload",
+    "flags these. " + PATH_GUIDANCE,
   ].join(" ");
   readonly inputSchema = {
     type: "object" as const,
@@ -86,7 +86,7 @@ export class SetConfigTool extends BaseTool<SetInput> {
       ok: true,
       path: input.path,
       config,
-      note: "Persisted to config.json. Restart required for: server.*, subagents.*, llm.providers.*, plugins, auth.tokens.",
+      note: "Persisted to config.json. Restart required for: server.*, llm.providers.*, plugins, auth.tokens.",
     });
   }
 }
