@@ -216,12 +216,15 @@ describe("admin.identity / admin.peers / extension methods", () => {
   it("routines.create / list / run_now publishes routines.fired", async () => {
     harness = await bootHarness();
     const { request } = harness;
+    // Use a `script` payload so run_now exercises the full executor path
+    // without requiring an LLM API key in test environments.
     const { routine } = await request<{ routine: { id: string } }>("routines.create", {
       name: "ping",
-      cron: "* * * * *",
-      prompt: "say hi",
-      delivery: { kind: "silent" },
       enabled: true,
+      schedule: { kind: "cron", expr: "* * * * *" },
+      payload: { kind: "script", command: "true" },
+      session: { kind: "new" },
+      delivery: { kind: "silent" },
     });
     const { routines } = await request<{ routines: Array<{ id: string }> }>("routines.list", {});
     expect(routines.find((r) => r.id === routine.id)).toBeDefined();

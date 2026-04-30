@@ -35,6 +35,7 @@ import type { ApprovalStore } from "./approvals/store.js";
 import type { PluginHost } from "./plugins/host.js";
 import type { ChannelRegistry } from "./channels/registry.js";
 import type { RoutineStore, RoutineRunner } from "./routines/store.js";
+import type { CronPaths } from "./routines/persistence.js";
 import { PeerSource } from "./peers/source.js";
 import type { PairingStore } from "./auth/pairing.js";
 
@@ -68,6 +69,8 @@ export interface GatewayDeps {
   routineStore?: RoutineStore;
   /** Runner used by `routines.run_now`. */
   routineRunner?: RoutineRunner;
+  /** Cron filesystem paths — required to expose `routines.runs` / `routines.tail`. */
+  cronPaths?: CronPaths;
   /** Peer enumeration source for `admin.peers`. */
   peers?: PeerSource;
   /** Browser pairing store, powering `/pair/*` HTTP + `admin.pair.*` dispatch. */
@@ -305,7 +308,11 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
   if (deps.plugins) registerPluginMethods(d, deps.plugins);
   if (deps.channels) registerChannelMethods(d, deps.channels);
   if (deps.routineStore && deps.routineRunner) {
-    registerRoutineMethods(d, deps.routineStore, deps.routineRunner);
+    registerRoutineMethods(d, {
+      store: deps.routineStore,
+      runner: deps.routineRunner,
+      ...(deps.cronPaths ? { paths: deps.cronPaths } : {}),
+    });
   }
 
   // Identity + peers need a PeerSource. When boot() doesn't pass one (test

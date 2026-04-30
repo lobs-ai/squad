@@ -179,7 +179,7 @@ export interface GatewayState {
   }) => Promise<void>;
   updateRoutine: (id: string, patch: Partial<RoutineRecord>) => Promise<void>;
   deleteRoutine: (id: string) => Promise<void>;
-  runRoutine: (id: string) => Promise<{ sessionId: string }>;
+  runRoutine: (id: string) => Promise<{ sessionId: string | null }>;
 }
 
 const GatewayContext = createContext<GatewayState | null>(null);

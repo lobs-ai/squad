@@ -57,6 +57,12 @@ export interface RunOptions {
   fallbacks?: string[];
   systemPrompt?: string;
   toolRegistry: ToolRegistry;
+  /**
+   * Optional allow-list of tool names. When provided, only tools whose names
+   * appear here are exposed to the LLM. Names not present in the registry are
+   * silently dropped. Used by cron jobs that scope tool access per-routine.
+   */
+  toolsAllow?: string[];
   clientOverride?: LLMClient;
   /** Fires once the user message row has been written to SQLite. */
   onUserMessagePersisted?: (msg: MessageRecord) => void;
@@ -167,7 +173,9 @@ export async function runChatTurn(
     model: options.model,
     fallbacks: options.fallbacks ?? [],
     cwd: options.cwd,
-    tools: options.toolRegistry.names(),
+    tools: options.toolsAllow
+      ? options.toolRegistry.names().filter((n) => options.toolsAllow!.includes(n))
+      : options.toolRegistry.names(),
     toolRegistry: options.toolRegistry,
     timeout: { total: 300 },
     session,

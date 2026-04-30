@@ -24,6 +24,30 @@ export interface RoutineDescriptor {
   cron: string;
   prompt: string;
   model?: string;
+  /**
+   * Optional structured fields. When omitted, the gateway fills sensible
+   * defaults: schedule = cron, payload = prompt, session = new.
+   * Plugin authors that need scripts, intervals, or session reuse can
+   * supply them directly.
+   */
+  schedule?:
+    | { kind: "cron"; expr: string; tz?: string; staggerMs?: number }
+    | { kind: "interval"; everyMs: number; anchor?: string }
+    | { kind: "once"; at: string };
+  payload?:
+    | { kind: "prompt"; text: string; skills?: string[] }
+    | { kind: "agentTurn"; messages: Array<{ role: "user" | "system"; text: string }> }
+    | { kind: "script"; command: string; args?: string[]; cwd?: string };
+  session?:
+    | { kind: "new" }
+    | { kind: "isolated" }
+    | { kind: "session"; sessionId: string };
+  execution?: {
+    model?: string | null;
+    fallbacks?: string[];
+    toolsAllow?: string[];
+    timeoutSec?: number;
+  };
   delivery?: "silent" | "dashboard" | { kind: "discord"; channelId: string; guildId?: string };
 }
 

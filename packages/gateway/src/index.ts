@@ -30,6 +30,8 @@ import { RunCoordinator } from "./delivery/coordinator.js";
 import { PluginHost } from "./plugins/host.js";
 import { RoutineScheduler } from "./routines/scheduler.js";
 import { RoutineStore } from "./routines/store.js";
+import { CronExecutor } from "./routines/executor.js";
+import { ensureCronPaths, pruneOrphanedRunLogs } from "./routines/persistence.js";
 import { ApprovalStore } from "./approvals/store.js";
 import { ChannelRegistry } from "./channels/registry.js";
 import { PeerSource } from "./peers/source.js";
@@ -70,8 +72,15 @@ export { subagentBackendFor } from "./subagents/backend.js";
 export { DeliveryQueue } from "./delivery/queue.js";
 export { RunCoordinator } from "./delivery/coordinator.js";
 export { PluginHost } from "./plugins/host.js";
-export { RoutineScheduler, matchesCron } from "./routines/scheduler.js";
+export { RoutineScheduler, matchesCron, computeNextRunAt, isDue } from "./routines/scheduler.js";
 export { RoutineStore } from "./routines/store.js";
+export { CronExecutor } from "./routines/executor.js";
+export {
+  ensureCronPaths,
+  appendRunLog,
+  readRunLog,
+  staggerOffsetMs,
+} from "./routines/persistence.js";
 export { ApprovalStore } from "./approvals/store.js";
 export { ChannelRegistry } from "./channels/registry.js";
 export { PeerSource } from "./peers/source.js";
@@ -373,9 +382,15 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     onPending: (a) => broadcast.publish(`approvals.pending/${a.sessionId}`, { approval: a }),
     onDecided: (a) => broadcast.publish(`approvals.decided/${a.sessionId}`, { approval: a }),
   });
-  const routineStore = new RoutineStore({
-    onFired: (e) => broadcast.publish(`routines.fired/${e.sessionId}`, e),
-  });
+  const cronPaths = ensureCronPaths(config.server.data_dir);
+  const routineStore = new RoutineStore(
+    {
+      onFired: (e) =>
+        broadcast.publish(`routines.fired/${e.sessionId ?? "no-session"}`, e),
+      onChanged: (rec) => broadcast.publish("routines.changed", { routine: rec }),
+    },
+    { dataDir: config.server.data_dir },
+  );
 
   const plugins = new PluginHost({
     toolRegistry,
@@ -405,26 +420,33 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   for (const ch of channelHandles) channels.add(ch);
   for (const r of routinesList) routineStore.adoptFromPlugin(r);
 
+  // Drop run-log files for jobs that have been deleted from disk.
+  pruneOrphanedRunLogs(cronPaths.runs, routineStore.ids());
+
+  const cronExecutor = new CronExecutor({
+    sessions,
+    messages,
+    toolCalls,
+    broadcast,
+    toolRegistry,
+    logger,
+    workspaceDir,
+    ...(memoryService ? { memory: memoryService } : {}),
+    ...(sharedClient ? { clientOverride: sharedClient } : {}),
+    defaultModel: config.llm.primary.model,
+    defaultFallbacks: config.llm.fallbacks.map((f) => f.model),
+    paths: cronPaths,
+  });
+
   const routines = new RoutineScheduler(
-    async (r) => {
-      logger.info({ routine: r.name }, "routine fired");
-      const session = sessions.create({
-        model: r.model ?? config.llm.primary.model,
-        fallbacks: config.llm.fallbacks.map((f) => f.model),
-        title: `routine:${r.name}`,
-      });
-      // Tie the cron-fired session back to the routine record so dashboards
-      // can show "last run" / link to the session that ran it.
-      const rec = routineStore.list().find((rr) => rr.name === r.name);
-      if (rec) routineStore.markFired(rec.id, session.id);
-      // Phase 10 runs the routine prompt through the agent loop via the
-      // existing runChatTurn path. Delivery lands in the broadcast stream;
-      // channel-specific delivery is a post-v1 refinement.
-      void session;
+    routineStore,
+    async (rec) => {
+      logger.info({ routineId: rec.id, name: rec.name }, "routine fired");
+      return cronExecutor.execute(rec);
     },
     logger,
+    { staggerSeed: config.server.squad_name, paths: cronPaths },
   );
-  for (const r of routinesList) routines.register(r);
 
   // Persist approved browser pairings to <data_dir>/pairings.json so a
   // gateway restart doesn't force every browser to re-pair.
@@ -485,6 +507,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     approvals,
     channels,
     routineStore,
+    cronPaths,
     peers,
     pairing,
     ...(sharedClient !== undefined ? { clientOverride: sharedClient } : {}),
@@ -492,13 +515,9 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     ...(opts.configPath ? { configPath: opts.configPath } : {}),
     liveConfigSnapshot: () => liveConfig.current as unknown as Record<string, unknown>,
     routineRunner: async (record) => {
-      const session = sessions.create({
-        model: record.model ?? config.llm.primary.model,
-        fallbacks: config.llm.fallbacks.map((f) => f.model),
-        title: `routine:${record.name}`,
-      });
-      logger.info({ routineId: record.id, sessionId: session.id }, "routine run_now");
-      return { sessionId: session.id };
+      logger.info({ routineId: record.id }, "routine run_now");
+      const result = await cronExecutor.execute(record);
+      return { sessionId: result.sessionId };
     },
     ...(opts.clientOverride !== undefined ? { clientOverride: opts.clientOverride } : {}),
   });
