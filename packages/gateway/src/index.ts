@@ -687,6 +687,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     questions,
     subagentPool,
     subagentRegistry,
+    subagentDefStore,
     coordinator,
     toolRegistry,
     toolGroups,

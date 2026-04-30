@@ -29,6 +29,7 @@ import type { TaskStore } from "./tasks/store.js";
 import type { QuestionStore } from "./questions/store.js";
 import type { SubagentPool } from "./subagents/pool.js";
 import type { SubagentRegistry } from "./subagents/registry.js";
+import type { SubagentDefStore } from "./db/subagent-defs.js";
 import type { RunCoordinator } from "./delivery/coordinator.js";
 import type { MemoryService } from "./memory/service.js";
 import type { SessionIngestionService } from "./memory/session-ingest.js";
@@ -56,6 +57,8 @@ export interface GatewayDeps {
   questions: QuestionStore;
   subagentPool: SubagentPool;
   subagentRegistry: SubagentRegistry;
+  /** Optional persistence for user-created subagent definitions. */
+  subagentDefStore?: SubagentDefStore;
   coordinator: RunCoordinator;
   toolRegistry: ToolRegistry;
   /** Tool-group registry; runChatTurn uses it for per-turn lazy loading. */
