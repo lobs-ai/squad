@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Pull the latest squad source on the current branch and re-install the global
+# binary. Counterpart to scripts/install.sh — same machinery, but starts with
+# a `git fetch + ff pull` so the user gets new code, not just a rebuild.
+#
+# Usage:
+#   scripts/update.sh           # fetch, ff-only pull, reinstall
+#   scripts/update.sh --check   # fetch only, list new commits, no changes
+#   scripts/update.sh --force   # autostash dirty working tree through the pull
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+force=0
+check=0
+for a in "$@"; do
+  case "$a" in
+    --force) force=1 ;;
+    --check) check=1 ;;
+    -h|--help) echo "Usage: squad update [--check] [--force]"; exit 0 ;;
+    *) echo "✗ unknown flag: $a" >&2; exit 2 ;;
+  esac
+done
+
+if [ ! -d .git ]; then
+  echo "✗ $REPO_ROOT is not a git checkout — can't self-update." >&2
+  echo "  reinstall manually: cd $REPO_ROOT && scripts/install.sh" >&2
+  exit 1
+fi
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+remote_ref="origin/$branch"
+
+echo "→ fetching $remote_ref"
+git fetch --quiet origin "$branch" || { echo "✗ git fetch failed" >&2; exit 1; }
+
+if ! git rev-parse --verify --quiet "$remote_ref" >/dev/null; then
+  echo "✗ remote tracking branch '$remote_ref' not found." >&2
+  echo "  push it once with: git push -u origin $branch" >&2
+  exit 1
+fi
+
+before="$(git rev-parse HEAD)"
+remote="$(git rev-parse "$remote_ref")"
+
+if [ "$before" = "$remote" ]; then
+  echo "✓ up to date ($branch @ $(git rev-parse --short HEAD))"
+  exit 0
+fi
+
+behind="$(git rev-list --count "HEAD..$remote_ref")"
+ahead="$(git rev-list --count "$remote_ref..HEAD")"
+echo "  $behind new commit(s) on $remote_ref (local is $ahead ahead)"
+
+if [ "$check" = "1" ]; then
+  echo
+  git --no-pager log --oneline "HEAD..$remote_ref" | sed 's/^/  /'
+  echo
+  echo "  run 'squad update' to apply"
+  exit 0
+fi
+
+if [ -n "$(git status --porcelain)" ]; then
+  if [ "$force" != "1" ]; then
+    echo "✗ working tree has local changes. Commit/stash them, or rerun with --force." >&2
+    git status --short
+    exit 1
+  fi
+  echo "→ git pull --ff-only --autostash (--force)"
+  git pull --ff-only --autostash origin "$branch"
+else
+  echo "→ git pull --ff-only"
+  git pull --ff-only origin "$branch"
+fi
+
+after="$(git rev-parse HEAD)"
+echo "  $(git rev-parse --short "$before") → $(git rev-parse --short "$after")"
+
+echo "→ reinstalling"
+"$SCRIPT_DIR/install.sh"
+
+echo "✓ updated to $(git rev-parse --short "$after")"

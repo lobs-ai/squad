@@ -6,7 +6,14 @@ import { listSessions, newSession, renameSession, sessionTree } from "./commands
 import { listTasks } from "./commands/tasks.js";
 import { answerQuestion, listQuestions } from "./commands/ask.js";
 import { showStatus } from "./commands/status.js";
-import { startGateway, stopGateway, restartGateway, gatewayLogs, runOnboard } from "./commands/lifecycle.js";
+import {
+  startGateway,
+  stopGateway,
+  restartGateway,
+  gatewayLogs,
+  runOnboard,
+  runUpdate,
+} from "./commands/lifecycle.js";
 import { runMgr } from "./commands/mgr.js";
 import { runTerminal } from "./commands/terminal.js";
 import { runPair, runUnpair, runPairList } from "./commands/pair.js";
@@ -46,6 +53,7 @@ function helpText(): string {
     `    ${K("status")}                      ${D("current squad's gateway liveness + session")}`,
     `    ${K("logs")}    ${D("[-f]")}                 ${D("tail current squad's logs")}`,
     `    ${K("terminal")} ${D("[name] [-- cmd ...]")} ${D("interactive shell in the squad container")}`,
+    `    ${K("update")}  ${D("[--check] [--force]")}  ${D("git pull squad source + rebuild + relink")}`,
     "",
     `  ${H("Multi-squad")} ${D("— manage multiple squad containers from one host")}`,
     `    ${K("mgr")}     ${D("<subcommand>")}         ${D("create/start/stop/ls squads (try: squad mgr help)")}`,
@@ -148,6 +156,10 @@ async function main(): Promise<void> {
       return;
     case "logs":
       await gatewayLogs(argv);
+      return;
+    case "update":
+    case "upgrade":
+      await runUpdate(argv);
       return;
 
     case "mgr":

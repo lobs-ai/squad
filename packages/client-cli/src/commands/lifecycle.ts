@@ -49,6 +49,11 @@ export async function restartGateway(args: string[]): Promise<void> {
   if (code !== 0) process.exitCode = code;
 }
 
+export async function runUpdate(args: string[]): Promise<void> {
+  const code = await runScript("update.sh", args);
+  if (code !== 0) process.exitCode = code;
+}
+
 // Log level → color + rank. Used to colorize and filter pino output.
 const LEVEL_INFO: Record<
   string,
