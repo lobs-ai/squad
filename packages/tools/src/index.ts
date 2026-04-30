@@ -6,6 +6,7 @@ export * from "./questions/index.js";
 export * from "./subagents/index.js";
 export * from "./config/index.js";
 export * from "./memory/index.js";
+export * from "./cron/index.js";
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 export { capOutput, DEFAULT_OUTPUT_CAP, DEFAULT_MAX_LINES } from "./output-cap.js";

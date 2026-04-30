@@ -8,6 +8,7 @@ import {
   registerSpawnSubagentTool,
   registerConfigTools,
   registerMemoryTools,
+  registerCronTools,
 } from "@squad/tools";
 import { JsonConfigBackend } from "./config-backend.js";
 import { logger } from "./logger.js";
@@ -32,6 +33,7 @@ import { RoutineScheduler } from "./routines/scheduler.js";
 import { RoutineStore } from "./routines/store.js";
 import { CronExecutor } from "./routines/executor.js";
 import { ensureCronPaths, pruneOrphanedRunLogs } from "./routines/persistence.js";
+import { cronBackendFor } from "./routines/backend.js";
 import { ApprovalStore } from "./approvals/store.js";
 import { ChannelRegistry } from "./channels/registry.js";
 import { PeerSource } from "./peers/source.js";
@@ -438,6 +440,11 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     paths: cronPaths,
   });
 
+  const cronRunner: import("./routines/store.js").RoutineRunner = async (record) => {
+    const result = await cronExecutor.execute(record);
+    return { sessionId: result.sessionId };
+  };
+
   const routines = new RoutineScheduler(
     routineStore,
     async (rec) => {
@@ -446,6 +453,13 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     },
     logger,
     { staggerSeed: config.server.squad_name, paths: cronPaths },
+  );
+
+  // Expose the cron CRUD as agent tools so the agent can schedule its own
+  // recurring/one-shot work without going through the dispatch layer.
+  registerCronTools(
+    toolRegistry,
+    cronBackendFor({ store: routineStore, runner: cronRunner, paths: cronPaths }),
   );
 
   // Persist approved browser pairings to <data_dir>/pairings.json so a
@@ -516,8 +530,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     liveConfigSnapshot: () => liveConfig.current as unknown as Record<string, unknown>,
     routineRunner: async (record) => {
       logger.info({ routineId: record.id }, "routine run_now");
-      const result = await cronExecutor.execute(record);
-      return { sessionId: result.sessionId };
+      return cronRunner(record);
     },
     ...(opts.clientOverride !== undefined ? { clientOverride: opts.clientOverride } : {}),
   });

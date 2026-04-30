@@ -14,6 +14,7 @@ interface Harness {
   ws: WebSocket;
   booted: BootedGateway;
   dataDir: string;
+  toolRegistry: ToolRegistry;
   request: <T = unknown>(method: string, params: unknown) => Promise<T>;
   next: () => Promise<Frame>;
   send: (frame: unknown) => void;
@@ -21,6 +22,7 @@ interface Harness {
 
 async function bootHarness(extras: { plugins?: Array<string | { path: string; config?: unknown }> } = {}): Promise<Harness> {
   const dataDir = mkdtempSync(join(tmpdir(), "squad-admin-it-"));
+  const toolRegistry = new ToolRegistry();
   const booted = await boot({
     memcoreOverride: new StubMemCore() as unknown as MemCore,
     config: {
@@ -41,7 +43,7 @@ async function bootHarness(extras: { plugins?: Array<string | { path: string; co
       plugins: extras.plugins ?? [],
       channels: {},
     },
-    toolRegistry: new ToolRegistry(),
+    toolRegistry,
   });
   await new Promise<void>((resolve) => booted.handle.http.listen(0, "127.0.0.1", resolve));
   const address = booted.handle.http.address() as AddressInfo;
@@ -85,7 +87,15 @@ async function bootHarness(extras: { plugins?: Array<string | { path: string; co
     return frame.result as T;
   };
 
-  return { ws, booted, dataDir, request, next, send: (f) => ws.send(JSON.stringify(f)) };
+  return {
+    ws,
+    booted,
+    dataDir,
+    toolRegistry,
+    request,
+    next,
+    send: (f) => ws.send(JSON.stringify(f)),
+  };
 }
 
 describe("admin.identity / admin.peers / extension methods", () => {
@@ -252,6 +262,22 @@ describe("admin.identity / admin.peers / extension methods", () => {
     await request("routines.run_now", { id: routine.id });
     const event = await fired;
     expect(event.type).toBe("event");
+  });
+
+  it("registers cron tools on the agent's tool registry at boot", async () => {
+    harness = await bootHarness();
+    const names = harness.toolRegistry.names();
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "create_cron_job",
+        "update_cron_job",
+        "delete_cron_job",
+        "list_cron_jobs",
+        "get_cron_job",
+        "run_cron_job",
+        "get_cron_runs",
+      ]),
+    );
   });
 
   it("channels.list reflects plugin-supplied channels", async () => {

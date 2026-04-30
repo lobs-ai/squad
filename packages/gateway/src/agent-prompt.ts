@@ -329,6 +329,15 @@ gateway over the same WebSocket protocol — no client is privileged.
   persist user preferences (model, delivery mode, fallbacks, plugin list)
   rather than re-asking next session. Treat the config as the source of
   truth: don't hard-code assumptions you could read from it.
+- **Cron jobs** — \`create_cron_job\`, \`list_cron_jobs\`, \`get_cron_job\`,
+  \`update_cron_job\`, \`delete_cron_job\`, \`run_cron_job\`, \`get_cron_runs\`.
+  Schedule recurring or one-off work: prompts, scripts (no LLM), or full
+  agent turns. Three schedule kinds (cron / interval / once), three payload
+  kinds (prompt / agentTurn / script), three session targets (new / isolated
+  / specific session). Per-job model override, optional skills, optional
+  tool allow-list. Use these whenever the user asks for "every / nightly /
+  weekly", a future one-shot ("remind me next Friday"), or a polling check.
+  Prefer \`script\` for cheap data collection; \`prompt\` for everything else.
 
 ## How messages reach you
 Chat delivery is one of two modes set in config:
