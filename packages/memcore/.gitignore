@@ -1,0 +1,23 @@
+# Node / TS
+node_modules/
+dist/
+*.tsbuildinfo
+.vitest-cache/
+coverage/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+
+# Project artifacts
+report.json
+*.log

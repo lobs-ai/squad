@@ -39,7 +39,16 @@ export class ProtocolClient {
     this.ws = new WebSocket(url);
     await new Promise<void>((resolve, reject) => {
       this.ws!.once("open", () => resolve());
-      this.ws!.once("error", reject);
+      this.ws!.once("error", (err: Error & { code?: string; errors?: Error[] }) => {
+        // Node 22+ surfaces connection failures as an AggregateError (one per
+        // resolved address — typically ::1 and 127.0.0.1). Its .message is
+        // empty; the actual reason lives on .code or .errors[0].
+        const inner = err?.errors?.[0];
+        const detail = err.message || inner?.message || err.code || "connection failed";
+        const wrapped = new Error(detail);
+        if (err.code) (wrapped as Error & { code?: string }).code = err.code;
+        reject(wrapped);
+      });
     });
     this.ws.on("message", (raw) => this.handleMessage(raw.toString()));
   }

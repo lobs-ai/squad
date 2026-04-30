@@ -28,7 +28,7 @@
     "@squad/protocol": "workspace:*",
     "@squad/runner": "workspace:*",
     "@squad/tools": "workspace:*",
-    "memcore": "file:../../../MemCore",
+    "memcore": "workspace:*",
     "better-sqlite3": "^11.3.0",
     "pino": "^9.4.0",
     "ws": "^8.18.0",

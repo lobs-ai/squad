@@ -72,6 +72,8 @@ fi
 ensure_pnpm
 ensure_pnpm_bin_dir
 
+"$SCRIPT_DIR/sync-memcore.sh"
+
 if [ ! -d node_modules ] || [ pnpm-lock.yaml -nt node_modules ]; then
   echo "→ pnpm install"
   pnpm install

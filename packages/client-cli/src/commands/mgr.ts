@@ -62,6 +62,17 @@ function ensureRepo(reg: Registry): Registry {
 
 // ─── docker compose plumbing ───────────────────────────────────────────────
 
+function syncMemcore(buildContext: string): void {
+  const script = join(buildContext, "scripts", "sync-memcore.sh");
+  if (!existsSync(script)) return;
+  try {
+    execSync(`"${script}"`, { stdio: "inherit", cwd: buildContext });
+  } catch {
+    // Sync is best-effort: a missing source dir, perm issue, or rsync absence
+    // shouldn't block a docker build. The vendored copy is still valid.
+  }
+}
+
 function composeCmd(): string[] {
   try {
     execSync("docker compose version", { stdio: "ignore" });
@@ -362,6 +373,7 @@ async function cmdStart(args: string[]): Promise<void> {
   const reg = ensureRepo(loadRegistry());
   // Always regen first so config edits in squads.json land before docker reads it.
   regenCompose(reg);
+  syncMemcore(reg.build_context);
 
   if (hasFlag(args, "--all")) {
     const services = reg.squads.map((s) => `squad-${s.name}`);
@@ -401,6 +413,7 @@ async function cmdRestart(args: string[]): Promise<void> {
   if (hasFlag(args, "--all")) {
     if (reg.squads.length === 0) throw new Error("no squads registered");
     regenCompose(reg);
+    syncMemcore(reg.build_context);
     if (existsSync(COMPOSE_PATH)) {
       const stopCode = await runComposeAsync(["down"]);
       if (stopCode !== 0) {
