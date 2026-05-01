@@ -1150,30 +1150,45 @@ function ApprovalsEditor({
         onSave={(n) => setConfigPath("policy.approvals.timeout_seconds", n)}
       />
 
-      {tagMatchActive && (
-        <>
-          <div
-            style={{
-              marginTop: 12,
-              padding: "8px 10px",
-              background: "var(--bg-inset)",
-              border: "1px solid var(--border-soft)",
-              borderRadius: 4,
-              fontSize: "var(--t-xs)",
-              color: "var(--fg-muted)",
-            }}
-          >
-            {catalog === null
-              ? "loading tool catalog…"
-              : catalog.length === 0
-                ? "no registered tools were reported by the gateway."
-                : (
-                  <>
-                    <strong style={{ color: "var(--fg)" }}>{willPrompt.size}</strong> of{" "}
-                    {catalog.length} registered tools will prompt for approval.
-                  </>
-                )}
-          </div>
+      {!tagMatchActive && (
+        <div
+          style={{
+            marginTop: 12,
+            padding: "8px 10px",
+            background: "var(--accent-soft)",
+            border: "1px solid var(--accent-line)",
+            borderRadius: 4,
+            fontSize: "var(--t-xs)",
+            color: "var(--fg)",
+          }}
+        >
+          The default policy is <strong>{defaultPolicy}</strong>, so the tag and tool selections
+          below are saved but not applied. Switch to <code>tag-match</code> to use them.
+        </div>
+      )}
+
+      <div
+        style={{
+          marginTop: 12,
+          padding: "8px 10px",
+          background: "var(--bg-inset)",
+          border: "1px solid var(--border-soft)",
+          borderRadius: 4,
+          fontSize: "var(--t-xs)",
+          color: "var(--fg-muted)",
+        }}
+      >
+        {catalog === null
+          ? "loading tool catalog…"
+          : catalog.length === 0
+            ? "no registered tools were reported by the gateway."
+            : (
+              <>
+                <strong style={{ color: "var(--fg)" }}>{willPrompt.size}</strong> of{" "}
+                {catalog.length} registered tools will prompt for approval.
+              </>
+            )}
+      </div>
 
           <div className="section-label" style={{ marginTop: 16, marginBottom: 4 }}>
             require approval by tag
@@ -1405,8 +1420,6 @@ function ApprovalsEditor({
               })
             )}
           </div>
-        </>
-      )}
     </Card>
   );
 }

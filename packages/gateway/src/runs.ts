@@ -1,6 +1,5 @@
 import { runAgent, Session, compactMessages } from "@squad/runner";
 import type { AgentSpec, AgentResult } from "@squad/runner";
-import type { ContentBlock as LLMContentBlock } from "@squad/llm";
 import { ToolRegistry, type ToolGroupRegistry, formatGroupIndexForPrompt } from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
 import type { ContentBlock, MessageRecord } from "@squad/protocol";
@@ -18,12 +17,41 @@ import type { MemoryService } from "./memory/service.js";
 
 /**
  * Convert wire ContentBlocks into the LLM's content shape for message
- * history. For Phase 3 we accept text blocks only; richer types roll in
- * with the ask-user/subagent phases.
+ * history. tool_result blocks need camelCase→snake_case remap (Anthropic
+ * API uses tool_use_id/is_error); text and tool_use blocks pass through.
  */
 function toLLMContent(blocks: ContentBlock[]): string | Array<Record<string, unknown>> {
   if (blocks.length === 1 && blocks[0]!.type === "text") return blocks[0]!.text;
-  return blocks.map((b) => b as unknown as Record<string, unknown>);
+  return blocks.map((b) => {
+    if (b.type === "tool_result") {
+      return {
+        type: "tool_result",
+        tool_use_id: b.toolUseId,
+        content: b.content,
+        ...(b.isError ? { is_error: true } : {}),
+      };
+    }
+    return b as unknown as Record<string, unknown>;
+  });
+}
+
+/**
+ * Convert LLM content (Anthropic shape) into wire ContentBlocks for
+ * persistence. Inverse of toLLMContent — tool_result fields go snake→camel.
+ */
+function llmToWireBlocks(content: string | Array<Record<string, unknown>>): ContentBlock[] {
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  return content.map((b) => {
+    if (b.type === "tool_result") {
+      return {
+        type: "tool_result" as const,
+        toolUseId: b.tool_use_id as string,
+        content: b.content as string | Array<unknown>,
+        ...(b.is_error ? { isError: true } : {}),
+      };
+    }
+    return b as unknown as ContentBlock;
+  });
 }
 
 function textBlocks(content: ContentBlock[] | string): ContentBlock[] {
@@ -132,12 +160,15 @@ export async function runChatTurn(
     options.onUserMessagePersisted?.(userMessage);
   }
 
-  // Pull the full session history and feed it to the runner.
+  // Pull the full session history and feed it to the runner. Persisted
+  // role:"tool" messages (containing tool_result blocks) get folded back
+  // into role:"user" the way the runner produced them — the LLM doesn't
+  // see a "tool" role; tool results ride inside user turns.
   const history = deps.messages.listForSession(options.sessionId, 1000);
   let runnerMessages = history
-    .filter((m) => m.role === "user" || m.role === "assistant")
+    .filter((m) => m.role === "user" || m.role === "assistant" || m.role === "tool")
     .map((m) => ({
-      role: m.role as "user" | "assistant",
+      role: (m.role === "tool" ? "user" : m.role) as "user" | "assistant",
       content: toLLMContent(m.content),
     }));
 
@@ -156,6 +187,9 @@ export async function runChatTurn(
   deps.sessions.setStatus(options.sessionId, "running");
   deps.traceRegistry?.register(runId, options.sessionId);
 
+  // High-water mark: anything beyond this in session._ref() at end-of-run
+  // is new this turn and needs to be persisted.
+  const messageCountBefore = runnerMessages.length;
   const session = new Session(runnerMessages);
   options.onRunStart?.({ runId, sessionId: options.sessionId, session });
 
@@ -312,32 +346,51 @@ export async function runChatTurn(
     result.usage.outputTokens,
   );
 
-  // The final assistant message is whatever Session accumulated last.
+  // Persist every message the runner produced this turn so a refresh can
+  // replay tool_use/tool_result blocks alongside text. The runner emits
+  // tool results as role:"user" with tool_result blocks + a reminder text;
+  // we drop the reminder and store them as role:"tool" for the dashboard.
   const finalMessages = session._ref();
-  const lastAssistant = [...finalMessages].reverse().find((m) => m.role === "assistant");
+  const newMessages = finalMessages.slice(messageCountBefore);
 
-  const assistantBlocks: ContentBlock[] = lastAssistant
-    ? toWireBlocks(lastAssistant.content)
-    : [{ type: "text", text: result.output }];
+  let finalAssistant: MessageRecord | null = null;
+  for (const m of newMessages) {
+    if (m.role === "assistant") {
+      finalAssistant = deps.messages.append({
+        sessionId: options.sessionId,
+        role: "assistant",
+        content: llmToWireBlocks(m.content),
+      });
+    } else if (m.role === "user" && Array.isArray(m.content)) {
+      const toolResults = m.content.filter(
+        (b) => (b as { type?: string }).type === "tool_result",
+      );
+      if (toolResults.length === 0) continue;
+      deps.messages.append({
+        sessionId: options.sessionId,
+        role: "tool",
+        content: llmToWireBlocks(toolResults),
+      });
+    }
+  }
 
-  const assistantMessage = deps.messages.append({
-    sessionId: options.sessionId,
-    role: "assistant",
-    content: assistantBlocks,
-  });
+  // Safety net: if the runner produced no assistant message (edge cases
+  // around fallbacks), persist result.output so callers still see a reply.
+  if (!finalAssistant) {
+    finalAssistant = deps.messages.append({
+      sessionId: options.sessionId,
+      role: "assistant",
+      content: [{ type: "text", text: result.output }],
+    });
+  }
 
   deps.broadcast.publish(`chat.assistant_message/${options.sessionId}`, {
     sessionId: options.sessionId,
-    message: assistantMessage,
+    message: finalAssistant,
     runId,
   });
 
   return { userMessage, runId, result };
-}
-
-function toWireBlocks(content: string | Array<Record<string, unknown>>): ContentBlock[] {
-  if (typeof content === "string") return [{ type: "text", text: content }];
-  return content.map((b) => b as unknown as LLMContentBlock as unknown as ContentBlock);
 }
 
 // Re-export textBlocks for the chat dispatcher to normalize input.

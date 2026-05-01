@@ -78,12 +78,25 @@ export class ToolGroupRegistry {
  */
 export function formatGroupIndexForPrompt(lazyGroups: readonly ToolGroup[]): string {
   if (lazyGroups.length === 0) return "";
+  const allNames = lazyGroups.map((g) => g.name);
   const lines: string[] = [
     "## Tool groups (lazy)",
     "",
-    "Tools below are NOT loaded yet. Call `describe_tool_group` with one or",
-    "more group names to read the guidance and unlock the schemas for the",
-    "next turn. Pick a group only when its description matches the task.",
+    "You have these tools — they're real and available. Their schemas are",
+    "kept out of the prompt this turn to save context, that's all. To make",
+    "them callable, invoke `describe_tool_group` with one or more group",
+    "names; the schemas come online next turn.",
+    "",
+    "- **One group:** `describe_tool_group({groups: \"cron\"})`",
+    "- **Several at once:** `describe_tool_group({groups: [\"cron\", \"tasks\"]})`",
+    `- **All of them** (e.g. the user says "use all your tools", "what tools`,
+    `  do you have?", or asks you to demonstrate every capability): pass`,
+    `  every name from the index in one call —`,
+    `  \`describe_tool_group({groups: ${JSON.stringify(allNames)}})\`.`,
+    "",
+    "Never tell the user you don't have a tool when its group is listed",
+    "here. Unlock it and use it. When in doubt, unlock — the cost is one",
+    "turn, the cost of *not* unlocking is failing the user's request.",
     "",
     "<tool_groups>",
   ];
@@ -116,7 +129,9 @@ export class DescribeToolGroupTool extends BaseTool<DescribeInput> {
     "Load guidance and unlock tools for one or more lazy tool groups.",
     "The unlocked tools become callable on the next turn — this turn you",
     "only get the guidance text. Pass a single name or an array of names",
-    "from the <tool_groups> index in the system prompt.",
+    "from the <tool_groups> index in the system prompt; batch-unlock by",
+    "passing an array. If the user asks you to use, list, or demonstrate",
+    "all your tools, pass every group name from the index in one call.",
   ].join("\n");
   readonly inputSchema = {
     type: "object" as const,

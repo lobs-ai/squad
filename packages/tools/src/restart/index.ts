@@ -7,7 +7,7 @@ export { RestartGatewayTool, registerRestartTool } from "./tools.js";
 export const restartGroup: ToolGroup = {
   name: "restart",
   description:
-    "Restart the gateway process — needed after edits to server.*, llm.providers.*, plugins, or auth.tokens",
+    "Restart the gateway process — needed after edits to server.*, llm.providers.*, plugins, or auth.tokens. Call describe_tool_group('restart') for the schema; only restart when actually required.",
   toolNames: ["restart_gateway"],
   guidance: [
     "Use restart_gateway only after a config edit (or plugin install/upgrade) that the",
