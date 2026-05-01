@@ -11,7 +11,7 @@
  * surface and makes the embedder follow the rest of the LLM config.
  */
 
-import { inferProvider, type Provider } from "@squad/llm";
+import { inferProvider, providerRequiresApiKey, type Provider } from "@squad/llm";
 import type { Logger } from "pino";
 import type { Embedder } from "memcore";
 
@@ -62,7 +62,18 @@ function defaultEnvVar(provider: string): string {
   return `${provider.toUpperCase().replace(/-/g, "_")}_API_KEY`;
 }
 
-export function resolveMemoryEmbedder(inputs: EmbedderResolverInputs): Embedder {
+export type EmbedderKind = "openai" | "stub";
+
+export interface ResolvedEmbedder {
+  embedder: Embedder;
+  kind: EmbedderKind;
+  /** Inferred provider (may be null when the model name doesn't match any prefix). */
+  provider: Provider | null;
+  /** True when the resolver decided no key was needed (local provider). */
+  keylessLocal: boolean;
+}
+
+export function resolveMemoryEmbedder(inputs: EmbedderResolverInputs): ResolvedEmbedder {
   const { embeddingModel, embeddingDim, providers, memcoreMod, logger } = inputs;
   const provider = inferProvider(embeddingModel);
   const providerCfg = provider ? providers[provider] : undefined;
@@ -92,6 +103,33 @@ export function resolveMemoryEmbedder(inputs: EmbedderResolverInputs): Embedder 
   // provider-config base_url, then OpenAIEmbedder's built-in default.
   const baseUrl = inputs.legacyBaseUrl || providerCfg?.base_url || undefined;
 
+  // "No key needed" cases:
+  //   1. Inferred provider is local (ollama / lmstudio / llamacpp / vllm).
+  //   2. The user explicitly set a custom base_url — they're pointing at a
+  //      non-OpenAI endpoint and have chosen not to set a key, which is the
+  //      typical shape of a self-hosted/local server.
+  // OpenAIEmbedder requires a non-empty apiKey string, so pass a placeholder.
+  const isLocalProvider = !providerRequiresApiKey(provider);
+  const hasCustomBaseUrl = Boolean(baseUrl);
+  const keylessLocal = !picked && (isLocalProvider || hasCustomBaseUrl);
+
+  if (keylessLocal) {
+    logger.info(
+      { embeddingModel, provider, baseUrl: baseUrl ?? "default" },
+      "memcore embedder resolved (local/custom endpoint — no api key needed)",
+    );
+    return {
+      embedder: new memcoreMod.OpenAIEmbedder({
+        apiKey: "not-required",
+        model: embeddingModel,
+        ...(baseUrl ? { baseUrl } : {}),
+      }),
+      kind: "openai",
+      provider,
+      keylessLocal: true,
+    };
+  }
+
   if (!picked) {
     logger.warn(
       {
@@ -101,16 +139,26 @@ export function resolveMemoryEmbedder(inputs: EmbedderResolverInputs): Embedder 
       },
       "memcore embedder has no resolvable api key — using StubEmbedder (semantic recall will be degraded)",
     );
-    return new memcoreMod.StubEmbedder(embeddingDim, embeddingModel);
+    return {
+      embedder: new memcoreMod.StubEmbedder(embeddingDim, embeddingModel),
+      kind: "stub",
+      provider,
+      keylessLocal: false,
+    };
   }
 
   logger.info(
     { embeddingModel, provider, keySource: picked.source, baseUrl: baseUrl ?? "default" },
     "memcore embedder resolved",
   );
-  return new memcoreMod.OpenAIEmbedder({
-    apiKey: picked.value!,
-    model: embeddingModel,
-    ...(baseUrl ? { baseUrl } : {}),
-  });
+  return {
+    embedder: new memcoreMod.OpenAIEmbedder({
+      apiKey: picked.value!,
+      model: embeddingModel,
+      ...(baseUrl ? { baseUrl } : {}),
+    }),
+    kind: "openai",
+    provider,
+    keylessLocal: false,
+  };
 }

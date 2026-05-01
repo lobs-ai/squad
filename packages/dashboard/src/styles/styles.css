@@ -238,6 +238,7 @@ a { color: inherit; text-decoration: none; }
   background: var(--bg);
   overflow: auto;
   position: relative;
+  min-width: 0;
 }
 
 .side-section {

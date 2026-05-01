@@ -14,7 +14,13 @@ import {
   renderContextFilesSection,
 } from "./context-discovery.js";
 import type { MemoryService } from "./memory/service.js";
-import { toLLMContent, persistRunMessages } from "./run-persistence.js";
+import {
+  toLLMContent,
+  RunPersister,
+  ensureIncrementalFlushHook,
+  registerActivePersister,
+  unregisterActivePersister,
+} from "./run-persistence.js";
 
 function textBlocks(content: ContentBlock[] | string): ContentBlock[] {
   if (typeof content === "string") return [{ type: "text", text: content }];
@@ -155,6 +161,22 @@ export async function runChatTurn(
   const session = new Session(runnerMessages);
   options.onRunStart?.({ runId, sessionId: options.sessionId, session });
 
+  // Incremental persister: flushes after every LLM call so a crash
+  // mid-run doesn't strand the dashboard with a turn's worth of missing
+  // tool calls. The flush itself is driven by the shared `before_llm_call`
+  // hook installed below; we register this run's persister into the
+  // module-level map keyed by runId.
+  ensureIncrementalFlushHook(deps.logger);
+  const persister = new RunPersister({
+    messages: deps.messages,
+    broadcast: deps.broadcast,
+    sessionId: options.sessionId,
+    session,
+    runId,
+    messageCountBefore,
+  });
+  registerActivePersister(runId, persister);
+
   // Default system prompt: Squad onboarding + the live core files. Read core
   // files at the top of every turn so edits the agent makes mid-session
   // (write/edit on .squad/*.md) take effect on the next turn. Caller-supplied
@@ -288,8 +310,18 @@ export async function runChatTurn(
   try {
     result = await runAgent(spec);
   } catch (err) {
-    // Tell every subscriber the run failed — otherwise CLI/dashboard sit
-    // waiting for a chat.assistant_message that will never arrive.
+    // Persist whatever made it onto Session._ref() before the throw so the
+    // dashboard's transcript reflects the partial turn instead of going
+    // blank. Then tell subscribers the run failed — otherwise CLI/dashboard
+    // sit waiting for a chat.assistant_message that will never arrive.
+    try {
+      persister.flush();
+    } catch (flushErr) {
+      deps.logger.error(
+        { err: flushErr, runId },
+        "final flush after run error failed",
+      );
+    }
     deps.broadcast.publish(`chat.error/${options.sessionId}`, {
       sessionId: options.sessionId,
       runId,
@@ -297,6 +329,7 @@ export async function runChatTurn(
     });
     throw err;
   } finally {
+    unregisterActivePersister(runId);
     deps.sessions.setStatus(options.sessionId, "idle");
     deps.traceRegistry?.unregister(runId);
     await options.onRunEnd?.({ runId, sessionId: options.sessionId });
@@ -308,15 +341,7 @@ export async function runChatTurn(
     result.usage.outputTokens,
   );
 
-  persistRunMessages({
-    messages: deps.messages,
-    broadcast: deps.broadcast,
-    sessionId: options.sessionId,
-    session,
-    messageCountBefore,
-    runId,
-    fallbackText: result.output,
-  });
+  persister.finalize(result.output);
 
   return { userMessage, runId, result };
 }

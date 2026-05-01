@@ -429,6 +429,20 @@ export class SessionStore {
   }
 
   /**
+   * Boot-time recovery for chat runs. Returns the ids of every session
+   * left in `running` from a previous process — these are the sessions
+   * whose turn the gateway was mid-flight on when it crashed/restarted.
+   * The caller (run recovery in index.ts) repairs the message tail and
+   * re-fires a turn, then sets each back to `idle`.
+   */
+  listRunningSessionIds(): string[] {
+    const rows = this.db
+      .prepare(`SELECT id FROM sessions WHERE status = 'running'`)
+      .all() as Array<{ id: string }>;
+    return rows.map((r) => r.id);
+  }
+
+  /**
    * Walk up parent_session_id until we hit NULL. Used to resolve the
    * task_list_id for a session tree.
    */

@@ -27,7 +27,12 @@ import {
   discoverContextFiles,
   renderContextFilesSection,
 } from "../context-discovery.js";
-import { persistRunMessages } from "../run-persistence.js";
+import {
+  RunPersister,
+  ensureIncrementalFlushHook,
+  registerActivePersister,
+  unregisterActivePersister,
+} from "../run-persistence.js";
 
 export interface PoolLimits {
   maxConcurrentGlobal: number;
@@ -566,27 +571,43 @@ export class SubagentPool {
       },
     };
 
+    // Incremental persister: same shape as the primary chat path. Each
+    // completed turn lands on disk before the next LLM call, so a crash
+    // mid-run doesn't lose the subagent's tool calls from the transcript.
+    ensureIncrementalFlushHook(this.deps.logger);
+    const persister = new RunPersister({
+      messages: this.deps.messages,
+      broadcast: this.deps.broadcast,
+      sessionId,
+      session,
+      runId,
+      messageCountBefore,
+    });
+    registerActivePersister(runId, persister);
+
     let result;
     try {
       result = await runAgent(spec);
     } catch (err) {
+      try {
+        persister.flush();
+      } catch (flushErr) {
+        this.deps.logger.error(
+          { err: flushErr, runId },
+          "subagent final flush after run error failed",
+        );
+      }
       this.deps.broadcast.publish(`chat.error/${sessionId}`, {
         sessionId,
         runId,
         message: err instanceof Error ? err.message : String(err),
       });
       throw err;
+    } finally {
+      unregisterActivePersister(runId);
     }
 
-    persistRunMessages({
-      messages: this.deps.messages,
-      broadcast: this.deps.broadcast,
-      sessionId,
-      session,
-      messageCountBefore,
-      runId,
-      fallbackText: result.output,
-    });
+    persister.finalize(result.output);
 
     return result;
   }

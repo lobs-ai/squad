@@ -173,10 +173,11 @@ export function Chat(): JSX.Element {
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "220px 1fr",
+        gridTemplateColumns: "220px minmax(0, 1fr)",
         gridTemplateRows: "1fr",
         height: "100%",
         minHeight: 0,
+        minWidth: 0,
         position: "relative",
       }}
     >
@@ -243,7 +244,7 @@ export function Chat(): JSX.Element {
       </div>
 
       {/* main column */}
-      <div className="col" style={{ minHeight: 0 }}>
+      <div className="col" style={{ minHeight: 0, minWidth: 0 }}>
         <div className="row gap-3" style={{ padding: "12px 18px", borderBottom: "1px solid var(--border)" }}>
           <span className={"dot " + (activeSession.status === "running" ? "ok pulse" : "off")} />
           {isSubagent && <span className="tag info">subagent</span>}

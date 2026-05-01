@@ -47,8 +47,13 @@ export interface BuiltinDeps {
   sessions: SessionStore;
   /** Memcore instance — checked via `ping()`. */
   memcore: MemCore;
-  /** Whether the OpenAI embedder key was present at boot. */
-  embedderKeyPresent: boolean;
+  /**
+   * Which embedder the gateway resolved at boot. `"openai"` covers the real
+   * OpenAI-compatible client (including local providers like Ollama that
+   * accept any key); `"stub"` means the resolver fell back because no key
+   * could be found.
+   */
+  embedderKind: "openai" | "stub";
   containerTag: string;
   squadName: string;
   workspaceDir: string;
@@ -168,16 +173,20 @@ function memoryEmbedderCheck(deps: BuiltinDeps): Check {
     category: "memory",
     title: "Memory embedder is configured (not stub)",
     async run() {
-      if (deps.embedderKeyPresent) {
-        return ok("memory.embedder", "Memory embedder is configured (not stub)", "OpenAI embedder key resolved at boot");
+      if (deps.embedderKind === "openai") {
+        return ok(
+          "memory.embedder",
+          "Memory embedder is configured (not stub)",
+          "embedder resolved at boot (api key or local-provider endpoint)",
+        );
       }
       return warn(
         "memory.embedder",
         "Memory embedder is configured (not stub)",
-        "no embedding API key — falling back to StubEmbedder. Semantic recall will be meaningless.",
+        "embedder fell back to StubEmbedder — no api key resolved and no local-provider model configured. Semantic recall will be meaningless.",
         {
           remediation:
-            "set the env var named by `server.memcore.embedding_api_key_env` (or change it in config) and restart",
+            "either set the env var named by `server.memcore.embedding_api_key_env`, configure a provider in `llm.providers`, or use a local provider model (e.g. `ollama:nomic-embed-text`) and restart",
         },
       );
     },

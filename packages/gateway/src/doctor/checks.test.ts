@@ -26,7 +26,7 @@ interface Harness {
   deps: BuiltinDeps;
   cleanup: () => void;
   setLlm: (snap: LlmResolutionSnapshot) => void;
-  setEmbedderKey: (present: boolean) => void;
+  setEmbedderKind: (kind: "openai" | "stub") => void;
 }
 
 function harness(overrides: Partial<BuiltinDeps> = {}): Harness {
@@ -46,7 +46,7 @@ function harness(overrides: Partial<BuiltinDeps> = {}): Harness {
     resolvedProviders: ["anthropic"],
     missingKeys: [],
   };
-  let embedderKey = true;
+  let embedderKind: "openai" | "stub" = "openai";
 
   const deps: BuiltinDeps = {
     logger: silentLogger(),
@@ -57,7 +57,7 @@ function harness(overrides: Partial<BuiltinDeps> = {}): Harness {
       resetInFlightIngest: () => 0,
     } as unknown as BuiltinDeps["sessions"],
     memcore: { ping: async () => true } as unknown as BuiltinDeps["memcore"],
-    embedderKeyPresent: true,
+    embedderKind: "openai",
     containerTag: "default",
     squadName: "default",
     workspaceDir,
@@ -82,9 +82,9 @@ function harness(overrides: Partial<BuiltinDeps> = {}): Harness {
   };
   // Splice in dynamic toggles after destructuring, so overrides can replace
   // them but tests get the convenience setters too.
-  if (!overrides.embedderKeyPresent && overrides.embedderKeyPresent !== false) {
-    Object.defineProperty(deps, "embedderKeyPresent", {
-      get: () => embedderKey,
+  if (overrides.embedderKind === undefined) {
+    Object.defineProperty(deps, "embedderKind", {
+      get: () => embedderKind,
       configurable: true,
     });
   }
@@ -101,8 +101,8 @@ function harness(overrides: Partial<BuiltinDeps> = {}): Harness {
     setLlm: (snap) => {
       llmSnap = snap;
     },
-    setEmbedderKey: (present) => {
-      embedderKey = present;
+    setEmbedderKind: (kind) => {
+      embedderKind = kind;
     },
   };
 }
@@ -143,11 +143,17 @@ describe("memory checks", () => {
     expect(d.message).toContain("ECONNREFUSED");
   });
 
-  it("warns when no embedder key is present (StubEmbedder fallback)", async () => {
-    h.setEmbedderKey(false);
+  it("warns when embedder fell back to StubEmbedder", async () => {
+    h.setEmbedderKind("stub");
     const d = await diagnose(h.deps, "memory.embedder");
     expect(d.severity).toBe("warn");
     expect(d.remediation).toMatch(/embedding_api_key_env/);
+  });
+
+  it("reports ok for local-provider embedder (no key needed)", async () => {
+    h.setEmbedderKind("openai");
+    const d = await diagnose(h.deps, "memory.embedder");
+    expect(d.severity).toBe("ok");
   });
 });
 

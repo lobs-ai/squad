@@ -101,6 +101,24 @@ export function inferProvider(model: string): Provider | null {
   return null;
 }
 
+/**
+ * Providers that run locally and accept any (or no) API key. Callers that
+ * resolve credentials should treat these as "key not required" rather than
+ * misconfigured.
+ */
+export const LOCAL_PROVIDERS: ReadonlySet<Provider> = new Set([
+  "ollama",
+  "lmstudio",
+  "llamacpp",
+  "vllm",
+]);
+
+/** True when this provider runs locally and does not require an API key. */
+export function providerRequiresApiKey(provider: Provider | null | undefined): boolean {
+  if (!provider) return true;
+  return !LOCAL_PROVIDERS.has(provider);
+}
+
 // ── parseModelString ──────────────────────────────────────────────────────────
 
 const KNOWN_PROVIDERS: Provider[] = [
@@ -294,7 +312,13 @@ export function createClient(model: string, config?: ClientConfig): LLMClient {
     }
     return buildCompatibleClient({
       provider: "openai-compatible",
-      apiKey: getKey("openai-compatible") ?? process.env.OPENAI_COMPATIBLE_API_KEY,
+      // openai-compatible always points at a custom baseURL, so a missing
+      // key means "self-hosted, no auth" — pass a placeholder rather than
+      // failing.
+      apiKey:
+        getKey("openai-compatible") ??
+        process.env.OPENAI_COMPATIBLE_API_KEY ??
+        "not-required",
       baseURL,
     });
   }
@@ -305,9 +329,11 @@ export function createClient(model: string, config?: ClientConfig): LLMClient {
   const apiKey = getKey(provider) ?? process.env[envVarName];
   const baseURL = getBaseUrl(provider);
 
-  // Local providers that don't need an API key
-  const LOCAL_PROVIDERS = new Set(["ollama", "lmstudio", "llamacpp", "vllm"]);
-  const effectiveApiKey = apiKey ?? (LOCAL_PROVIDERS.has(provider) ? "not-required" : undefined);
+  // No API key required for: known local providers, or any provider where
+  // the user explicitly set a custom baseURL (self-hosted / proxy endpoints
+  // typically don't need a key, and warning when it's working fine is noise).
+  const isLocalOrCustomEndpoint = LOCAL_PROVIDERS.has(provider) || Boolean(baseURL);
+  const effectiveApiKey = apiKey ?? (isLocalOrCustomEndpoint ? "not-required" : undefined);
 
   // OpenRouter gets an identifying header for their dashboard
   const defaultHeaders = provider === "openrouter"

@@ -66,6 +66,7 @@ describe("buildSquadSystemPrompt", () => {
     expect(prompt).toContain("ask_user");
     expect(prompt).toContain("interrupt");
     expect(prompt).toContain("queue");
+    expect(prompt).toContain("docs/agent/INDEX.md");
     expect(prompt).not.toContain(`Loaded from ${CORE_DIR}`);
   });
 

@@ -17,6 +17,7 @@ import {
 } from "@squad/tools";
 import { JsonConfigBackend } from "./config-backend.js";
 import { RestartManager } from "./restart/manager.js";
+import { recoverInFlightRuns } from "./restart/recovery.js";
 import { logger } from "./logger.js";
 import { resolveTokenSecrets, configSchema, type Config } from "./config.js";
 import { Authenticator } from "./auth.js";
@@ -142,6 +143,11 @@ export {
   detectRespawnGuarantee,
 } from "./restart/manager.js";
 export { runSupervisor } from "./restart/supervisor.js";
+export {
+  recoverInFlightRuns,
+  repairTrailingToolUse,
+  type RecoveryResult,
+} from "./restart/recovery.js";
 export { tagMatchPolicy, allowAllPolicy, denyAllPolicy, cascade } from "./approvals/policy.js";
 export { RotatingLLMClient, shouldRotateKeys } from "./rotating-client.js";
 export { McpRegistry } from "./mcp/registry.js";
@@ -458,6 +464,11 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   const memcoreCfg = config.server.memcore;
   let memcoreInstance: MemCore;
   let memcoreLlmConfigured = false;
+  // Tracks whether the resolved embedder is the real OpenAI-compatible one
+  // (including local providers that don't need a key) or the stub fallback.
+  // The override branch never builds an embedder, so default to "openai" —
+  // the doctor check is meaningful only on real boots.
+  let embedderKind: import("./memory/embedder-resolver.js").EmbedderKind = "openai";
   if (opts.memcoreOverride) {
     memcoreInstance = opts.memcoreOverride;
   } else {
@@ -472,7 +483,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     // means we surface a clean error here rather than at module-resolution time.
     const memcoreMod = await import("memcore");
     const { MemCore: MemCoreCtor } = memcoreMod;
-    const memcoreEmbedder = resolveMemoryEmbedder({
+    const resolvedEmbedder = resolveMemoryEmbedder({
       embeddingModel: memcoreCfg.embedding_model,
       embeddingDim: memcoreCfg.embedding_dim,
       legacyBaseUrl: memcoreCfg.embedding_base_url,
@@ -484,6 +495,8 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
       memcoreMod,
       logger,
     });
+    const memcoreEmbedder = resolvedEmbedder.embedder;
+    embedderKind = resolvedEmbedder.kind;
     // Resolve per-stage model: explicit override → processing_model → primary.
     // Empty string at any layer falls through; `claude-haiku-4-5` is the
     // historical extraction default and stays as a last-resort fallback so
@@ -946,7 +959,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
       db,
       sessions,
       memcore: memcoreInstance,
-      embedderKeyPresent: Boolean(process.env[memcoreCfg.embedding_api_key_env]),
+      embedderKind,
       containerTag,
       squadName: config.server.squad_name,
       workspaceDir,
@@ -1082,6 +1095,30 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
       }
     }
   };
+
+  // Boot-time recovery for chat runs: any session left in `running` from a
+  // previous process gets its message tail repaired (synthetic tool_results
+  // for unmatched tool_use blocks) and a fresh turn fired so the agent
+  // continues where it left off. Non-fatal — errors are logged and the
+  // gateway boots normally.
+  //
+  // This runs *after* `createGatewayServer` (which registers chat methods
+  // and wires `coordinator.setStarter`) but *before* the listener is bound,
+  // so resumed turns are queued through the normal coordinator path before
+  // any new client traffic arrives.
+  try {
+    await recoverInFlightRuns({
+      sessions,
+      messages,
+      toolCalls,
+      coordinator,
+      broadcast,
+      logger,
+      db,
+    });
+  } catch (err) {
+    logger.error({ err }, "in-flight run recovery failed — continuing boot");
+  }
 
   const close = async (): Promise<void> => {
     routines.stop();

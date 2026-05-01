@@ -49,7 +49,7 @@ describe("resolveMemoryEmbedder", () => {
   });
 
   it("uses provider literal api_key when configured", () => {
-    resolveMemoryEmbedder({
+    const result = resolveMemoryEmbedder({
       embeddingModel: "text-embedding-3-large",
       embeddingDim: 3072,
       legacyBaseUrl: "",
@@ -62,6 +62,8 @@ describe("resolveMemoryEmbedder", () => {
       apiKey: "sk-from-config",
       model: "text-embedding-3-large",
     });
+    expect(result.kind).toBe("openai");
+    expect(result.keylessLocal).toBe(false);
   });
 
   it("falls back to provider env var, then legacy env var", () => {
@@ -108,8 +110,8 @@ describe("resolveMemoryEmbedder", () => {
     expect(FakeOpenAIEmbedder.lastOpts?.baseUrl).toBe("https://override.example/v1");
   });
 
-  it("returns StubEmbedder when no key is resolvable", () => {
-    resolveMemoryEmbedder({
+  it("returns StubEmbedder when no key is resolvable for a non-local provider", () => {
+    const result = resolveMemoryEmbedder({
       embeddingModel: "text-embedding-3-large",
       embeddingDim: 3072,
       legacyBaseUrl: "",
@@ -123,5 +125,71 @@ describe("resolveMemoryEmbedder", () => {
       model: "text-embedding-3-large",
     });
     expect(FakeOpenAIEmbedder.lastOpts).toBeNull();
+    expect(result.kind).toBe("stub");
+  });
+
+  it("uses OpenAIEmbedder (with placeholder key) for ollama-prefixed models", () => {
+    const result = resolveMemoryEmbedder({
+      embeddingModel: "ollama:nomic-embed-text",
+      embeddingDim: 768,
+      legacyBaseUrl: "http://localhost:11434/v1",
+      legacyApiKeyEnv: "",
+      providers: {},
+      memcoreMod,
+      logger: fakeLogger,
+    });
+    expect(FakeStubEmbedder.lastOpts).toBeNull();
+    expect(FakeOpenAIEmbedder.lastOpts).toMatchObject({
+      model: "ollama:nomic-embed-text",
+      baseUrl: "http://localhost:11434/v1",
+    });
+    expect(FakeOpenAIEmbedder.lastOpts?.apiKey).toBeTruthy();
+    expect(result.kind).toBe("openai");
+    expect(result.keylessLocal).toBe(true);
+    expect(result.provider).toBe("ollama");
+  });
+
+  it("uses OpenAIEmbedder when an explicit base_url is set (custom endpoint, no key needed)", () => {
+    const warnSpy = vi.fn();
+    const logger = { ...fakeLogger, warn: warnSpy } as unknown as Parameters<
+      typeof resolveMemoryEmbedder
+    >[0]["logger"];
+    const result = resolveMemoryEmbedder({
+      // No provider prefix — inferProvider() returns null. The custom
+      // base_url is the only signal the user is pointing at a local endpoint.
+      embeddingModel: "nomic-embed-text",
+      embeddingDim: 768,
+      legacyBaseUrl: "http://localhost:11434/v1",
+      legacyApiKeyEnv: "",
+      providers: {},
+      memcoreMod,
+      logger,
+    });
+    expect(FakeStubEmbedder.lastOpts).toBeNull();
+    expect(FakeOpenAIEmbedder.lastOpts).toMatchObject({
+      model: "nomic-embed-text",
+      baseUrl: "http://localhost:11434/v1",
+    });
+    expect(result.kind).toBe("openai");
+    expect(result.keylessLocal).toBe(true);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not warn when ollama provider config has no key", () => {
+    const warnSpy = vi.fn();
+    const logger = { ...fakeLogger, warn: warnSpy } as unknown as Parameters<
+      typeof resolveMemoryEmbedder
+    >[0]["logger"];
+    resolveMemoryEmbedder({
+      embeddingModel: "ollama:nomic-embed-text",
+      embeddingDim: 768,
+      legacyBaseUrl: "",
+      legacyApiKeyEnv: "",
+      providers: { ollama: { base_url: "http://localhost:11434/v1" } },
+      memcoreMod,
+      logger,
+    });
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(FakeOpenAIEmbedder.lastOpts?.baseUrl).toBe("http://localhost:11434/v1");
   });
 });

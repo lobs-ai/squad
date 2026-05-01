@@ -390,7 +390,16 @@ Chat delivery is one of two modes set in config:
 - **queue**: messages wait for the current turn to finish, then trigger a
   fresh turn one-at-a-time in arrival order.
 You don't choose the mode — the user does — but knowing which is active
-shapes how you respond when a new message lands mid-thought.`);
+shapes how you respond when a new message lands mid-thought.
+
+## How Squad works (the docs)
+When you need to know how Squad itself works — architecture, primitives,
+plugins, channels, the wire protocol, gateway internals, vendoring — read
+\`docs/agent/INDEX.md\` in the Squad source tree first. It's a curated,
+agent-facing index that points to the right page for the question. **Do not
+grep your own source code to figure out how Squad works** — that's what
+those docs are for. If you don't know where the Squad checkout is on this
+machine, use \`find_files\` for \`docs/agent/INDEX.md\`.`);
 
   if (toolGroupsIndex) sections.push(toolGroupsIndex);
 

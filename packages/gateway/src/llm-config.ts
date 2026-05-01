@@ -1,4 +1,4 @@
-import type { ClientConfig, KeyConfig, Provider } from "@squad/llm";
+import { LOCAL_PROVIDERS, type ClientConfig, type KeyConfig, type Provider } from "@squad/llm";
 
 export interface KeyEntryConfig {
   key?: string;
@@ -44,8 +44,6 @@ export interface ResolveProviderConfigResult {
    */
   keyPools: ResolvedKeyPools;
 }
-
-const LOCAL_PROVIDERS = new Set(["ollama", "lmstudio", "llamacpp", "vllm"]);
 
 const FALLBACK_ENV_VARS: Record<string, string> = {
   anthropic: "ANTHROPIC_API_KEY",
@@ -103,7 +101,10 @@ export function resolveProviderConfig(
   for (const [provider, cfg] of Object.entries(providers)) {
     if (cfg.base_url) baseUrls[provider as Provider] = cfg.base_url;
 
-    if (LOCAL_PROVIDERS.has(provider)) {
+    // No-key-needed cases: known local providers, or any provider with a
+    // custom base_url (self-hosted / proxy endpoints typically don't need
+    // a key, and warning when it's working fine is noise).
+    if (LOCAL_PROVIDERS.has(provider as Provider) || cfg.base_url) {
       resolved.push(provider);
       continue;
     }
