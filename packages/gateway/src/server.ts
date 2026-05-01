@@ -436,6 +436,10 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
     squadPort: deps.config.server.port,
     squadHost: deps.config.server.host === "0.0.0.0" ? "127.0.0.1" : deps.config.server.host,
     build: deps.config.server.build || deps.version,
+    branding: {
+      agentName: deps.config.branding.agent_name || "agent",
+      userName: deps.config.branding.user_name || "you",
+    },
     peers,
     ...(adminPairing ? { pairing: adminPairing } : {}),
     ...(deps.configBackend ? { configBackend: deps.configBackend } : {}),

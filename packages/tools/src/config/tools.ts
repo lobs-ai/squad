@@ -10,7 +10,9 @@ const PATH_GUIDANCE = [
   "Paths are dot-separated. Numeric segments address array indices.",
   "Examples: `llm.primary.model`, `llm.fallbacks.0.model`,",
   "`subagents.max_concurrent_global`, `chat.delivery.mode`, `auth.tokens.0.scopes`,",
-  "`policy.approvals.require_for_tags`, `policy.approvals.require_for_tools`.",
+  "`policy.approvals.require_for_tags`, `policy.approvals.require_for_tools`,",
+  "`branding.agent_name`, `branding.user_name`",
+  "(display labels — what users call you and themselves; rebrand only when explicitly asked).",
   "Use list_config_paths to discover what's currently set.",
 ].join(" ");
 

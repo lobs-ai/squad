@@ -39,6 +39,24 @@ export interface SquadIdentity {
   totalSessions: number;
 }
 
+/**
+ * User-facing display labels surfaced by the gateway. The chat speaker
+ * tag and owner badges read these via `useBranding()` so a single config
+ * flip rebrands "agent" and "you" everywhere. Falls back to the generic
+ * words when the gateway hasn't reported branding yet (initial render or
+ * older gateway builds). "subagent" stays a fixed literal — subagents are
+ * spawned ad-hoc per task, so they don't share a single brandable name.
+ */
+export interface Branding {
+  agentName: string;
+  userName: string;
+}
+
+const DEFAULT_BRANDING: Branding = {
+  agentName: "agent",
+  userName: "you",
+};
+
 export interface ModelOption {
   id: string;
   displayName: string;
@@ -141,6 +159,7 @@ export interface ActivityItem {
 export interface GatewayState {
   client: BrowserProtocolClient;
   squad: SquadIdentity | null;
+  branding: Branding;
   peers: PeerRecord[];
   config: AdminConfig | null;
   fullConfig: FullConfigState | null;
@@ -291,6 +310,15 @@ export function useGateway(): GatewayState {
   return ctx;
 }
 
+/**
+ * Convenience accessor for display labels. Equivalent to
+ * `useGateway().branding`, but lets feature components import a focused hook
+ * without taking a dependency on the entire gateway context.
+ */
+export function useBranding(): Branding {
+  return useGateway().branding;
+}
+
 interface ProviderProps {
   client: BrowserProtocolClient;
   children: ReactNode;
@@ -365,6 +393,7 @@ function activityFromEvent(topic: string, data: unknown): ActivityItem | null {
 
 export function GatewayProvider({ client, children }: ProviderProps): JSX.Element {
   const [squad, setSquad] = useState<SquadIdentity | null>(null);
+  const [branding, setBranding] = useState<Branding>(DEFAULT_BRANDING);
   const [peers, setPeers] = useState<PeerRecord[]>([]);
   const [config, setConfig] = useState<AdminConfig | null>(null);
   const [fullConfig, setFullConfig] = useState<FullConfigState | null>(null);
@@ -509,6 +538,23 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     if (result) setFullConfig(result);
   }, [client]);
 
+  // Re-read display labels from `admin.identity` and update context state.
+  // Called after the user edits a `branding.*` config path so the chat
+  // speaker tag, owner badges, and "needs you" cards reflect the new name
+  // immediately instead of waiting for a page reload.
+  const refreshBranding = useCallback(async () => {
+    const identity = await tryRequest(
+      () => client.request("admin.identity", {}),
+      null as null | Awaited<ReturnType<typeof client.request<"admin.identity">>>,
+    );
+    if (identity?.branding) {
+      setBranding({
+        agentName: identity.branding.agentName || DEFAULT_BRANDING.agentName,
+        userName: identity.branding.userName || DEFAULT_BRANDING.userName,
+      });
+    }
+  }, [client]);
+
   // Persist a single path. The gateway re-validates against `configSchema`
   // and writes atomically; we then echo the returned config into local state
   // so the form reflects what's actually on disk (handy if zod normalized
@@ -519,8 +565,13 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
       setFullConfig((cur) =>
         cur ? { ...cur, config: next } : { config: next, editable: true, path: null },
       );
+      // Branding edits drive UI labels — refetch identity so the new name
+      // shows up everywhere the moment the save completes.
+      if (path.startsWith("branding.")) {
+        await refreshBranding();
+      }
     },
-    [client],
+    [client, refreshBranding],
   );
 
   const unsetConfigPath = useCallback(
@@ -601,6 +652,14 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
         activeSessions: health?.sessions?.active ?? 0,
         totalSessions: health?.sessions?.total ?? 0,
       });
+      // Older gateways without a `branding` block fall back to the generic
+      // labels so the UI keeps reading "agent"/"you".
+      if (identity?.branding) {
+        setBranding({
+          agentName: identity.branding.agentName || DEFAULT_BRANDING.agentName,
+          userName: identity.branding.userName || DEFAULT_BRANDING.userName,
+        });
+      }
       setConfig(cfgResult);
       setModels(modelResult.models);
       await Promise.all([
@@ -1121,6 +1180,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
   const value: GatewayState = {
     client,
     squad,
+    branding,
     peers,
     config,
     fullConfig,

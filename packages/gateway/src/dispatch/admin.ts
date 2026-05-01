@@ -35,6 +35,13 @@ export interface AdminDeps {
   squadHost: string;
   /** Short build identifier — git sha or version. */
   build: string;
+  /**
+   * Display labels surfaced via `admin.identity.branding`. Sourced from the
+   * gateway config; the dashboard and other clients read these to rebrand
+   * the assistant and user speaker labels. Falls back to generic defaults
+   * when empty.
+   */
+  branding: { agentName: string; userName: string };
   /** Source of peer info (reads ~/.squad/squads.json or env). */
   peers: PeerSource;
   /** Browser pairing store. Optional so older harnesses still wire admin.* */
@@ -143,14 +150,35 @@ export function registerAdminMethods(dispatcher: Dispatcher, deps: AdminDeps): v
     return { tools };
   });
 
-  dispatcher.register("admin.identity", async () => ({
-    name: deps.squadName,
-    port: deps.squadPort,
-    host: deps.squadHost,
-    build: deps.build,
-    version: deps.version,
-    startedAt: new Date(deps.startedAt).toISOString(),
-  }));
+  dispatcher.register("admin.identity", async () => {
+    // Read branding live from disk so an `admin.config.set` (or a hand-edit
+    // of config.json) reflects on the next call instead of being frozen to
+    // the values captured at boot. Falls back to the boot snapshot when no
+    // backend is wired (e.g. test harnesses without a config file).
+    let branding = deps.branding;
+    if (deps.configBackend) {
+      try {
+        const live = (await deps.configBackend.get()) as {
+          branding?: { agent_name?: string; user_name?: string };
+        };
+        branding = {
+          agentName: live.branding?.agent_name || deps.branding.agentName,
+          userName: live.branding?.user_name || deps.branding.userName,
+        };
+      } catch {
+        // Disk read failed — keep the boot snapshot rather than 500ing.
+      }
+    }
+    return {
+      name: deps.squadName,
+      port: deps.squadPort,
+      host: deps.squadHost,
+      build: deps.build,
+      version: deps.version,
+      startedAt: new Date(deps.startedAt).toISOString(),
+      branding,
+    };
+  });
 
   dispatcher.register("admin.peers", async () => ({ peers: deps.peers.list() }));
 

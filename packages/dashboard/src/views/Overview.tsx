@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import type { ApprovalRecord, PluginRecord, QuestionRecord, SessionRecord, Task } from "@squad/protocol";
 import { Card, PageHead } from "../ui/primitives.js";
 import { Icon, type IconName } from "../ui/Icon.js";
-import { useGateway, type ActivityItem, type SubagentTreeNode } from "../state/GatewayContext.js";
+import { useBranding, useGateway, type ActivityItem, type SubagentTreeNode } from "../state/GatewayContext.js";
 import type { ViewId } from "./views.js";
 import { fmtAgo, modelFamily } from "../state/fmt.js";
 
@@ -224,9 +224,10 @@ interface NeedsYouProps {
 }
 
 function NeedsYou({ questions, approvals, onOpenSession, onAnswer, onDecide }: NeedsYouProps): JSX.Element {
+  const branding = useBranding();
   const total = questions.length + approvals.length;
   return (
-    <Card title="needs you" accent badge={<span className="tag accent">{total}</span>}>
+    <Card title={`needs ${branding.userName}`} accent badge={<span className="tag accent">{total}</span>}>
       {total === 0 && (
         <div className="hint" style={{ padding: "8px 0" }}>
           inbox zero — no pending questions or approvals.

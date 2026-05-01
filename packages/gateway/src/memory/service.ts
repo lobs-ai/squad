@@ -56,19 +56,12 @@ export interface MemoryServiceOptions {
   containerTag?: string;
   /** Eager-block char budget. Defaults to EAGER_BLOCK_BUDGET. */
   eagerBudget?: number;
-  /**
-   * When set, every successful write/update/archive mirrors the entry as a
-   * `<dataDir>/memory/<id>.md` file with frontmatter metadata. Best-effort —
-   * mirror failures don't block the DB write. Tests typically omit this.
-   */
-  markdownMirror?: import("./markdown-mirror.js").MarkdownMemoryMirror;
 }
 
 export class MemoryService {
   private readonly containerTag: string;
   private readonly eagerBudget: number;
   private readonly eagerCache = new Map<string, PromptMemoryEntry[]>();
-  private readonly markdownMirror: import("./markdown-mirror.js").MarkdownMemoryMirror | undefined;
 
   constructor(
     private readonly memcore: MemCore,
@@ -77,7 +70,6 @@ export class MemoryService {
   ) {
     this.containerTag = opts.containerTag ?? "squad";
     this.eagerBudget = opts.eagerBudget ?? EAGER_BLOCK_BUDGET;
-    this.markdownMirror = opts.markdownMirror;
   }
 
   // ── Write path ────────────────────────────────────────────────────────
@@ -129,9 +121,7 @@ export class MemoryService {
     if (!id) throw new Error("memcore.add returned no memory id");
     const row = await this.memcore.get({ containerTag: this.containerTag, id });
     if (!row) throw new Error(`memcore.add wrote id=${id} but get() returned null`);
-    const entry = this.rowToEntry(row);
-    this.markdownMirror?.upsert(entry);
-    return entry;
+    return this.rowToEntry(row);
   }
 
   async update(input: MemoryUpdateInput): Promise<MemoryEntry> {
@@ -168,9 +158,7 @@ export class MemoryService {
         provenanceAgentId: input.agentId ?? existing.provenanceAgentId,
       }),
     });
-    const entry = this.rowToEntry(updated);
-    this.markdownMirror?.upsert(entry);
-    return entry;
+    return this.rowToEntry(updated);
   }
 
   async archive(
@@ -178,38 +166,7 @@ export class MemoryService {
     _opts: { reason?: string; agentId?: string | null } = {},
   ): Promise<MemoryEntry> {
     const row = await this.memcore.archive({ containerTag: this.containerTag, id });
-    this.markdownMirror?.remove(id);
     return this.rowToEntry(row);
-  }
-
-  /**
-   * Mirror a batch of memcore-written memory rows to disk. Used by the
-   * session ingestion pipeline after `memcore.add({extract:true})` — that
-   * path bypasses `propose()` (no typed metadata, no dedup) but the
-   * extracted memories still need to land as `.md` files so users can
-   * read/grep them. No-op when the mirror isn't configured. Best-effort:
-   * a missing row or a mirror write error is logged, never thrown — the
-   * memcore DB row is the source of truth.
-   */
-  async mirrorMemoriesByIds(ids: readonly string[]): Promise<void> {
-    if (!this.markdownMirror || ids.length === 0) return;
-    for (const id of ids) {
-      try {
-        const entry = await this.get(id);
-        if (!entry) {
-          this.logger.warn({ id }, "mirrorMemoriesByIds: row not found");
-          continue;
-        }
-        this.markdownMirror.upsert(entry);
-      } catch (err) {
-        this.logger.warn({ err, id }, "mirrorMemoriesByIds: per-id mirror failed");
-      }
-    }
-  }
-
-  /** Absolute path of the markdown mirror dir, or null when not configured. */
-  getMirrorDir(): string | null {
-    return this.markdownMirror?.getDir() ?? null;
   }
 
   // ── Read path ─────────────────────────────────────────────────────────

@@ -34,6 +34,7 @@ function makeGen(opts: {
   client: LLMClient;
   enabled?: boolean;
   configuredModel?: string | null;
+  fallbackModel?: string | null;
 }): TitleGenerator {
   return new TitleGenerator({
     sessions: opts.sessions,
@@ -41,6 +42,7 @@ function makeGen(opts: {
     defaultModel: "default-model",
     enabled: () => opts.enabled ?? true,
     configuredModel: () => opts.configuredModel ?? null,
+    fallbackModel: () => opts.fallbackModel ?? null,
     resolveConfig: () => ({ clientConfig: {}, resolved: [], missingKeys: [], keyPools: {} }),
     clientOverride: opts.client,
   });

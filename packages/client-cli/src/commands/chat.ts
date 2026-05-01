@@ -2,6 +2,7 @@ import { ProtocolClient } from "../protocol-client.js";
 import * as render from "../render.js";
 import { resolveEnv } from "../env.js";
 import { getLastSessionId, setLastSessionId, clearLastSessionId } from "../session-store.js";
+import { loadGatewayBranding } from "../ui/branding-runtime.js";
 
 /**
  * Resolve the session id to use: explicit > stored > fresh. If the stored id
@@ -43,6 +44,7 @@ export async function runChat(
   const env = resolveEnv();
   const client = new ProtocolClient({ url: env.url, token: env.token });
   await client.connect();
+  await loadGatewayBranding(client);
 
   const sessionId = await resolveSession(client, opts);
   setLastSessionId(sessionId);

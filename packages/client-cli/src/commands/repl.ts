@@ -8,6 +8,7 @@ import { getLastSessionId, setLastSessionId, clearLastSessionId } from "../sessi
 import { printWelcomeBanner, currentVersion } from "../ui/banner.js";
 import { getRandomTip } from "../ui/tips.js";
 import { brandString, roleColor } from "../ui/skin.js";
+import { loadGatewayBranding } from "../ui/branding-runtime.js";
 import { C, color, fg } from "../ui/colors.js";
 import { renderStatusbar, isStatusbarEnabled } from "../ui/statusbar.js";
 import { runSlash, matchCommands } from "../ui/slash.js";
@@ -45,6 +46,10 @@ export async function runRepl(opts: { resume?: boolean } = {}): Promise<void> {
   const env = resolveEnv();
   const client = new ProtocolClient({ url: env.url, token: env.token });
   await client.connect();
+  // Pull `agent_name` / `user_name` / `subagent_name` from the gateway so
+  // the welcome banner, prompt symbol, transcript labels, and tips all use
+  // the install's configured branding instead of the skin's defaults.
+  await loadGatewayBranding(client);
 
   // ── session resolution ────────────────────────────────────────────────────
   let sessionId: string;

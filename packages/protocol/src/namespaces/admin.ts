@@ -98,6 +98,21 @@ export const adminIdentityResult = z.object({
   build: z.string(),
   version: z.string(),
   startedAt: z.string(),
+  /**
+   * User-configurable display labels, surfaced verbatim by every UI surface
+   * so installs can rebrand the assistant ("agent" → "Jarvis") and the user
+   * speaker label ("you" → "Rafe"). Each defaults to the corresponding
+   * generic word; clients should treat these as labels only, not as
+   * identifiers — the underlying role/owner enums stay fixed. There's no
+   * subagent label here on purpose: subagents are spawned ad-hoc per task,
+   * so a single name would mislead.
+   */
+  branding: z
+    .object({
+      agentName: z.string().default("agent"),
+      userName: z.string().default("you"),
+    })
+    .default({ agentName: "agent", userName: "you" }),
 });
 
 export const peerStatusSchema = z.enum(["healthy", "starting", "stopped", "unhealthy", "unknown"]);

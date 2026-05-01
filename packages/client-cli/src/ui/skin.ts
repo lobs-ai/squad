@@ -39,6 +39,7 @@ const BUILTIN: Record<string, Skin> = {
     },
     branding: {
       agent_name: "Squad",
+      user_name: "you",
       welcome: "Welcome to Squad. Type a message or /help for commands.",
       goodbye: "see you later.",
       prompt_symbol: "▸",
@@ -67,6 +68,7 @@ const BUILTIN: Record<string, Skin> = {
     },
     branding: {
       agent_name: "Squad",
+      user_name: "you",
       welcome: "squad ready.",
       goodbye: "bye.",
       prompt_symbol: ">",
@@ -95,6 +97,7 @@ const BUILTIN: Record<string, Skin> = {
     },
     branding: {
       agent_name: "Squad",
+      user_name: "you",
       welcome: "Squad — ready.",
       goodbye: "later.",
       prompt_symbol: "›",
@@ -123,6 +126,7 @@ const BUILTIN: Record<string, Skin> = {
     },
     branding: {
       agent_name: "Squad",
+      user_name: "you",
       welcome: "Squad rises from the depths.",
       goodbye: "fair winds.",
       prompt_symbol: "≈",
@@ -151,6 +155,7 @@ const BUILTIN: Record<string, Skin> = {
     },
     branding: {
       agent_name: "Squad",
+      user_name: "you",
       welcome: "Squad. Attack.",
       goodbye: "retreat.",
       prompt_symbol: "⚔",
@@ -227,6 +232,21 @@ export function roleColor(role: string, fallback = "#E8E8E8"): string {
   return getActiveSkin().colors[role] ?? fallback;
 }
 
+/**
+ * Runtime branding overrides — populated from the gateway's
+ * `admin.identity.branding` after connect, so the CLI shows the same labels
+ * as the dashboard without forcing the user to mirror them in their skin.
+ * Overrides win over the active skin's `branding` map; falling back to the
+ * skin keeps the CLI usable when the gateway is unreachable or older.
+ */
+const brandingOverrides: Record<string, string> = {};
+
+export function setBrandingOverrides(overrides: Record<string, string>): void {
+  for (const [k, v] of Object.entries(overrides)) {
+    if (typeof v === "string" && v.length > 0) brandingOverrides[k] = v;
+  }
+}
+
 export function brandString(role: string, fallback = ""): string {
-  return getActiveSkin().branding[role] ?? fallback;
+  return brandingOverrides[role] ?? getActiveSkin().branding[role] ?? fallback;
 }

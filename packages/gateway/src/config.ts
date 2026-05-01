@@ -94,6 +94,14 @@ const chatConfigSchema = z
      */
     title_model: z.string().default(""),
     /**
+     * Backup model used when `title_model` (or, if unset, the session's own
+     * model) fails — e.g. a typo'd or retired chat model that the provider
+     * 400s on. Empty string falls back to `llm.primary.model`. Set this to a
+     * known-good cheap model so a bad chat model doesn't leave every session
+     * untitled.
+     */
+    title_fallback_model: z.string().default(""),
+    /**
      * Master switch for the auto-title behaviour. Off-by-default would force
      * every new install to opt in to a feature most people want, so we keep
      * it on; users uncomfortable with the LLM call can flip this to false.
@@ -267,6 +275,21 @@ export const configSchema = z.object({
     })
     .default({}),
   chat: chatConfigSchema,
+  /**
+   * Display labels surfaced through `admin.identity.branding`. Lets an
+   * install rebrand the assistant and the user speaker label without forking
+   * the dashboard or CLI. Empty strings inherit the generic defaults
+   * ("agent" / "you"). Internal role/owner enums are unchanged — these
+   * strictly affect UI labels. We don't expose a subagent label because
+   * subagents aren't a fixed identity: the agent spawns them ad-hoc per
+   * task, so a single rebrand wouldn't be meaningful.
+   */
+  branding: z
+    .object({
+      agent_name: z.string().default("agent"),
+      user_name: z.string().default("you"),
+    })
+    .default({}),
   // A plugin entry is either a bare specifier / path string or an object with
   // a `path` and optional `config`. The gateway knows nothing about what any
   // individual plugin does; channels, extra tools, skills, providers, and

@@ -459,12 +459,10 @@ export class SubagentPool {
       });
     }
 
-    const memoryDir = this.deps.memory?.getMirrorDir() ?? null;
     const systemPrompt = buildSquadSystemPrompt({
       workspaceDir: this.deps.workspaceDir,
       coreFiles,
       memoryEager,
-      ...(memoryDir ? { memoryDir } : {}),
       ...(toolGroupsIndex ? { toolGroupsIndex } : {}),
       ...(contextFilesSection ? { contextFilesSection } : {}),
     });

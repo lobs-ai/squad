@@ -16,6 +16,7 @@ interface Props {
 
 const SECTIONS = [
   { id: "squad", label: "squad" },
+  { id: "branding", label: "branding" },
   { id: "providers", label: "providers + keys" },
   { id: "models", label: "models" },
   { id: "subagents", label: "subagents" },
@@ -128,6 +129,10 @@ export function Settings({ theme, setTheme, density, setDensity, accent, setAcce
                 </div>
               )}
             </Card>
+          )}
+
+          {section === "branding" && (
+            <BrandingEditor fullConfig={fullConfig} setConfigPath={setConfigPath} />
           )}
 
           {section === "providers" && (
@@ -1428,6 +1433,56 @@ function ApprovalsEditor({
 // chat delivery
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// branding
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Edits `branding.{agent_name, user_name}` — the display labels every UI
+ * surface (dashboard, CLI, channels) reads via `admin.identity.branding`.
+ * Saves apply live to the dashboard on the next `admin.identity` refresh;
+ * the agent can write the same paths through `admin.config.set`, so either
+ * side can rebrand. Subagents aren't surfaced here because they're spawned
+ * ad-hoc per task — there's no single name to give them.
+ */
+function BrandingEditor({
+  fullConfig,
+  setConfigPath,
+}: {
+  fullConfig: FullConfigState | null;
+  setConfigPath: (p: string, v: unknown) => Promise<void>;
+}): JSX.Element {
+  const editable = !!fullConfig?.editable;
+  const agentName = (getPath(fullConfig?.config, ["branding", "agent_name"]) as string | undefined) ?? "";
+  const userName = (getPath(fullConfig?.config, ["branding", "user_name"]) as string | undefined) ?? "";
+
+  return (
+    <Card title="branding">
+      <div className="hint" style={{ marginBottom: 12 }}>
+        display labels surfaced everywhere — chat speaker tags, owner badges,
+        CLI prompt, status bar. internal role enums (<span className="kbd">user</span>,{" "}
+        <span className="kbd">agent</span>) are unchanged. blank inherits the generic default.
+      </div>
+      <Field
+        label="agent_name"
+        hint='shown wherever the assistant speaks — chat label, "agent turn", typing indicator. e.g. "Squad", "Jarvis".'
+        initial={agentName}
+        placeholder="agent"
+        disabled={!editable}
+        onSave={(v) => setConfigPath("branding.agent_name", v)}
+      />
+      <Field
+        label="user_name"
+        hint='your speaker label in chat and "needs you" cards. e.g. your first name.'
+        initial={userName}
+        placeholder="you"
+        disabled={!editable}
+        onSave={(v) => setConfigPath("branding.user_name", v)}
+      />
+    </Card>
+  );
+}
+
 function ChatEditor({
   fullConfig,
   setConfigPath,
@@ -1448,6 +1503,8 @@ function ChatEditor({
 
   const titleModelRaw = getPath(fullConfig?.config, ["chat", "title_model"]);
   const titleModel = typeof titleModelRaw === "string" ? titleModelRaw : "";
+  const titleFallbackRaw = getPath(fullConfig?.config, ["chat", "title_fallback_model"]);
+  const titleFallback = typeof titleFallbackRaw === "string" ? titleFallbackRaw : "";
   const autoTitleRaw = getPath(fullConfig?.config, ["chat", "auto_title"]);
   // The schema default is true — treat undefined the same way so the
   // checkbox reflects effective behaviour, not just persisted state.
@@ -1517,6 +1574,17 @@ function ChatEditor({
           ]}
           disabled={!editable || !autoTitle}
           onChange={(v) => setConfigPath("chat.title_model", v)}
+        />
+        <SelectField
+          label="title_fallback_model"
+          hint="used when the chosen title model fails (e.g. typo'd or retired). main uses the gateway primary."
+          value={titleFallback}
+          options={[
+            { value: "", label: "main (gateway primary)" },
+            ...models.map((m) => ({ value: m.id, label: m.displayName ?? m.id })),
+          ]}
+          disabled={!editable || !autoTitle}
+          onChange={(v) => setConfigPath("chat.title_fallback_model", v)}
         />
       </div>
     </Card>

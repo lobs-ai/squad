@@ -1,7 +1,7 @@
 import type { PeerRecord } from "@squad/protocol";
 import { Card, PageHead } from "../ui/primitives.js";
 import { Icon } from "../ui/Icon.js";
-import { useGateway } from "../state/GatewayContext.js";
+import { useBranding, useGateway } from "../state/GatewayContext.js";
 import { fmtAgo } from "../state/fmt.js";
 
 interface Props {
@@ -10,6 +10,7 @@ interface Props {
 
 export function Manager({ onPickPeer }: Props): JSX.Element {
   const { squad, peers, sessions, pendingQuestions, pendingApprovals, activity } = useGateway();
+  const branding = useBranding();
 
   const knownPeers: PeerRecord[] =
     peers.length > 0
@@ -197,7 +198,7 @@ export function Manager({ onPickPeer }: Props): JSX.Element {
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
           <Card
-            title="cross-squad needs you"
+            title={`cross-squad needs ${branding.userName}`}
             accent
             badge={<span className="tag accent">{total.questions + total.approvals}</span>}
           >

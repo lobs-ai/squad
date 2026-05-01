@@ -178,13 +178,6 @@ export class SessionIngestionService {
       });
       this.deps.sessions.recordIngestSuccess(sessionId, lastMessage.id);
       this.deps.memoryService.invalidateSession(sessionId);
-      // Mirror extracted memories to disk. The extraction path writes
-      // straight through `memcore.add({extract:true})` — bypassing
-      // MemoryService.propose() — so without this call those memories would
-      // never become `.md` files, and users would see an empty mirror dir
-      // even after long active sessions.
-      const writtenIds = result.memories.map((m) => m.id);
-      await this.deps.memoryService.mirrorMemoriesByIds(writtenIds);
       this.deps.logger.info(
         {
           sessionId,
@@ -193,7 +186,6 @@ export class SessionIngestionService {
           memoriesWritten: result.memoriesWritten,
           chunksWritten: result.chunksWritten,
           duplicatesSkipped: result.duplicatesSkipped,
-          mirrored: writtenIds.length,
           trigger,
         },
         "session ingestion completed",

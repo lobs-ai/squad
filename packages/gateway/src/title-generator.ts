@@ -35,6 +35,12 @@ export interface TitleGeneratorDeps {
   /** Optional override applied to every session that hasn't picked its own. */
   configuredModel: () => string | null;
   /**
+   * Backup model used when the resolved model fails. Empty / null means use
+   * `defaultModel` (gateway's primary). Read live so flipping the setting
+   * takes effect without a restart.
+   */
+  fallbackModel: () => string | null;
+  /**
    * Resolved provider config (api keys, base URLs). Same shape `runs.ts`
    * uses; we hand it to `createClient` so the chosen model picks up the
    * user-configured credentials.
@@ -97,45 +103,65 @@ export class TitleGenerator {
     const seed = userMessageText.trim();
     if (!seed) return;
 
-    const model = this.resolveModel(sessionId);
-    let client: LLMClient;
-    try {
-      client = this.deps.clientOverride ?? createClient(model, this.deps.resolveConfig().clientConfig);
-    } catch (err) {
-      this.deps.logger.warn(
-        { err, sessionId, model },
-        "title-generator: could not build LLM client — skipping",
-      );
-      return;
-    }
+    // Try the resolved model first, then the gateway default if that fails.
+    // The session's chat model is sometimes unavailable for ad-hoc calls
+    // (typo'd id, local-only, retired), and silently leaving every session
+    // untitled in that case is worse than burning one extra default-model
+    // call to recover.
+    const primary = this.resolveModel(sessionId);
+    const fallback = this.deps.fallbackModel() || this.deps.defaultModel;
+    const candidates =
+      primary && fallback && primary !== fallback ? [primary, fallback] : [primary || fallback];
 
-    let title: string;
-    try {
-      const response = await client.createMessage({
-        model,
-        system: TITLE_SYSTEM_PROMPT,
-        // Cap the seed so a giant first paste doesn't blow up the prompt.
-        // 800 chars is enough for the model to grasp the topic without paying
-        // for a full file dump on every new session.
-        messages: [
-          {
-            role: "user",
-            content: seed.length > 800 ? seed.slice(0, 800) + "…" : seed,
-          },
-        ],
-        tools: [],
-        maxTokens: 40,
-      });
-      const text = response.content
-        .filter((b): b is { type: "text"; text: string } => b.type === "text")
-        .map((b) => b.text)
-        .join(" ")
-        .trim();
-      title = sanitizeTitle(text);
-    } catch (err) {
+    let title = "";
+    let modelUsed = "";
+    for (const model of candidates) {
+      if (!model) continue;
+      let client: LLMClient;
+      try {
+        client = this.deps.clientOverride ?? createClient(model, this.deps.resolveConfig().clientConfig);
+      } catch (err) {
+        this.deps.logger.warn(
+          { err, sessionId, model },
+          "title-generator: could not build LLM client — trying next model",
+        );
+        continue;
+      }
+      try {
+        const response = await client.createMessage({
+          model,
+          system: TITLE_SYSTEM_PROMPT,
+          // Cap the seed so a giant first paste doesn't blow up the prompt.
+          // 800 chars is enough for the model to grasp the topic without paying
+          // for a full file dump on every new session.
+          messages: [
+            {
+              role: "user",
+              content: seed.length > 800 ? seed.slice(0, 800) + "…" : seed,
+            },
+          ],
+          tools: [],
+          maxTokens: 40,
+        });
+        const text = response.content
+          .filter((b): b is { type: "text"; text: string } => b.type === "text")
+          .map((b) => b.text)
+          .join(" ")
+          .trim();
+        title = sanitizeTitle(text);
+        modelUsed = model;
+        break;
+      } catch (err) {
+        this.deps.logger.warn(
+          { err, sessionId, model },
+          "title-generator: LLM call failed — trying next model",
+        );
+      }
+    }
+    if (!modelUsed) {
       this.deps.logger.warn(
-        { err, sessionId, model },
-        "title-generator: LLM call failed — leaving session untitled",
+        { sessionId, candidates },
+        "title-generator: all candidates failed — leaving session untitled",
       );
       return;
     }
@@ -149,7 +175,7 @@ export class TitleGenerator {
     if (!fresh || !this.needsTitle(fresh.title)) return;
     this.deps.sessions.setTitle(sessionId, title);
     this.deps.logger.info(
-      { sessionId, model, title },
+      { sessionId, model: modelUsed, title },
       "title-generator: titled session",
     );
   }

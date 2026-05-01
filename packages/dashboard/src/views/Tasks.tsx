@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { Task, SessionRecord } from "@squad/protocol";
 import { Card, PageHead } from "../ui/primitives.js";
 import { Icon } from "../ui/Icon.js";
-import { useGateway } from "../state/GatewayContext.js";
+import { useBranding, useGateway } from "../state/GatewayContext.js";
 import { usePersistedState } from "../state/usePersistedState.js";
 
 interface Props {
@@ -25,6 +25,7 @@ const COLUMNS: ColumnSpec[] = [
 export function Tasks({ onOpenSession }: Props): JSX.Element {
   const { tasks, sessions, treeSessions, activeSession, refreshSessions, createTask, updateTaskStatus } =
     useGateway();
+  const branding = useBranding();
   const SCOPES = ["session", "tree", "all"] as const;
   const OWNERS = ["all", "agent", "subagent", "user"] as const;
   const [scopeRaw, setScopeRaw] = usePersistedState("squad-tasks-scope", "tree");
@@ -143,9 +144,9 @@ export function Tasks({ onOpenSession }: Props): JSX.Element {
               <ScopeSwitch
                 values={[
                   { v: "all", label: "all" },
-                  { v: "agent", label: "agent" },
+                  { v: "agent", label: branding.agentName },
                   { v: "subagent", label: "subagent" },
-                  { v: "user", label: "user" },
+                  { v: "user", label: branding.userName },
                 ]}
                 cur={ownerFilter}
                 onPick={(v) => setOwnerFilter(v as typeof ownerFilter)}
@@ -297,6 +298,7 @@ function TaskCard({
   onOpenSession: (id: string) => void;
   onChangeStatus: (status: Task["status"]) => void;
 }): JSX.Element {
+  const branding = useBranding();
   const meta = task.metadata ?? {};
   const progress = typeof meta.progress === "number" ? meta.progress : null;
   const pri = (typeof meta.priority === "string" ? meta.priority : "med") as "high" | "med" | "low";
@@ -323,8 +325,8 @@ function TaskCard({
         </span>
         <span className="spacer" />
         {task.owner === "subagent" && <span className="tag info">subagent</span>}
-        {task.owner === "user" && <span className="tag warn">user</span>}
-        {task.owner === "agent" && <span className="tag">agent</span>}
+        {task.owner === "user" && <span className="tag warn">{branding.userName}</span>}
+        {task.owner === "agent" && <span className="tag">{branding.agentName}</span>}
         {task.owner && !["subagent", "user", "agent"].includes(task.owner) && (
           <span className="tag">{task.owner}</span>
         )}

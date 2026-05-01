@@ -9,7 +9,7 @@ import type {
 } from "@squad/protocol";
 import { Card, PageHead } from "../ui/primitives.js";
 import { Icon } from "../ui/Icon.js";
-import { useGateway, type UpdateRoutinePatch } from "../state/GatewayContext.js";
+import { useBranding, useGateway, type UpdateRoutinePatch } from "../state/GatewayContext.js";
 import { fmtAgo } from "../state/fmt.js";
 
 type DeliveryDraft = RoutineRecord["delivery"];
@@ -43,6 +43,7 @@ export function Routines(): JSX.Element {
     runRoutine,
     fetchRoutineRuns,
   } = useGateway();
+  const branding = useBranding();
   const [creating, setCreating] = useState(false);
   const defaultModel = config?.primary.model ?? "";
   const sessionOptions = useMemo(
@@ -54,7 +55,7 @@ export function Routines(): JSX.Element {
     <div>
       <PageHead
         title="cron jobs"
-        crumbs="scheduled prompts, scripts, and agent turns"
+        crumbs={`scheduled prompts, scripts, and ${branding.agentName} turns`}
         actions={
           <div className="row gap-2">
             <button className="btn sm primary" onClick={() => setCreating(true)}>
@@ -419,6 +420,7 @@ function CronForm({
   onCancel,
   onSubmit,
 }: FormProps): JSX.Element {
+  const branding = useBranding();
   const [name, setName] = useState(initial?.name ?? "");
 
   // Schedule fields — the form keeps state for each kind so toggling
@@ -711,7 +713,7 @@ function CronForm({
             options={[
               { value: "prompt", label: "prompt (LLM)" },
               { value: "script", label: "script (no LLM)" },
-              { value: "agentTurn", label: "agent turn" },
+              { value: "agentTurn", label: `${branding.agentName} turn` },
             ]}
             value={payloadKind}
             onChange={setPayloadKind}

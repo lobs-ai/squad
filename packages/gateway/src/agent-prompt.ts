@@ -315,14 +315,6 @@ export interface BuildSquadPromptInput {
   /** Per-turn FTS retrieval results for project + reference entries. */
   memoryRetrieval?: PromptMemoryHit[];
   /**
-   * Absolute filesystem path of the markdown memory mirror. Surfaced to
-   * the agent so the "Persistent memory" section advertises a path that
-   * actually contains the `.md` files. When omitted, the section uses a
-   * neutral wording ("a typed, retrievable memory store") so we don't
-   * promise a directory that doesn't exist.
-   */
-  memoryDir?: string;
-  /**
    * Pre-rendered `<tool_groups>` index for the lazy tool-group section.
    * Built by the runner from `ToolGroupRegistry.lazy()` via
    * `formatGroupIndexForPrompt`. When omitted, the section is skipped.
@@ -354,7 +346,6 @@ export function buildSquadSystemPrompt(input: BuildSquadPromptInput): string {
     coreFiles,
     memoryEager,
     memoryRetrieval,
-    memoryDir,
     toolGroupsIndex,
     contextFilesSection,
   } = input;
@@ -439,16 +430,13 @@ wrong; don't let stale entries rot.`);
 
   // ── Persistent memory ─────────────────────────────────────────────────────
   // Mention the system unconditionally so the agent knows the eager block is
-  // primed even when the memory tool group hasn't been unlocked yet. The
-  // mirror dir is the actual on-disk path the gateway is configured to write
-  // to; surfacing it lets the agent grep / read those files directly.
-  const memoryLocationLine = memoryDir
-    ? `You have a typed, retrievable memory store. Markdown mirror lives at \`${memoryDir}/\` (one \`.md\` per memory).`
-    : `You have a typed, retrievable memory store.`;
+  // primed even when the memory tool group hasn't been unlocked yet. Memory
+  // is backed by MemCore (Postgres + extraction pipeline); the agent only
+  // ever touches it through the `memory` tool group — never directly on disk.
   sections.push(`## Persistent memory
-${memoryLocationLine} The eager block below is frozen at session start to keep
-the prompt cache warm; project + reference entries are retrieved per-turn when
-they match the request.
+You have a typed, retrievable memory store backed by MemCore. The eager block
+below is frozen at session start to keep the prompt cache warm; project +
+reference entries are retrieved per-turn when they match the request.
 
 To **mutate** memory (propose / update / archive / search) call
 \`describe_tool_group\` for \`memory\` first — the tools come online next turn.`);

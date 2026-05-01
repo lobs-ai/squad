@@ -9,6 +9,7 @@ import type {
 import { Icon } from "../ui/Icon.js";
 import { Markdown } from "../ui/Markdown.js";
 import {
+  useBranding,
   useGateway,
   type LiveToolEvent,
   type SubagentTreeNode,
@@ -66,6 +67,7 @@ export function Chat(): JSX.Element {
     chatError,
     clearChatError,
   } = useGateway();
+  const branding = useBranding();
   const [drawer, setDrawer] = useState<Drawer>(null);
   const [composer, setComposer] = useState("");
   const [sending, setSending] = useState(false);
@@ -750,12 +752,13 @@ function ChatRow({
   onDecide: (approvalId: string, decision: "approve" | "deny") => void;
   onAlwaysAllow: (approvalId: string) => void;
 }): JSX.Element | null {
+  const branding = useBranding();
   if (row.kind === "user") {
     return (
       <div style={{ marginBottom: 16 }}>
         <div className="row gap-2" style={{ marginBottom: 4 }}>
           <Icon name="user" size={12} />
-          <span className="strong">you</span>
+          <span className="strong">{branding.userName}</span>
           <span className="hint">{fmtAgo(row.at)}</span>
         </div>
         <Markdown text={row.text ?? ""} />
@@ -767,7 +770,7 @@ function ChatRow({
       <div style={{ marginBottom: 16 }}>
         <div className="row gap-2" style={{ marginBottom: 4 }}>
           <Icon name="bot" size={12} style={{ color: "var(--accent)" }} />
-          <span className="strong">agent</span>
+          <span className="strong">{branding.agentName}</span>
           <span className="hint">{fmtAgo(row.at)}</span>
           {row.streaming && <span className="tag accent">streaming</span>}
         </div>
@@ -1108,14 +1111,15 @@ function QuestionCard({
 }
 
 function TypingIndicator(): JSX.Element {
+  const branding = useBranding();
   return (
     <div style={{ marginBottom: 16 }}>
       <div className="row gap-2" style={{ marginBottom: 4 }}>
         <Icon name="bot" size={12} style={{ color: "var(--accent)" }} />
-        <span className="strong">agent</span>
+        <span className="strong">{branding.agentName}</span>
         <span className="hint">thinking…</span>
       </div>
-      <div className="typing-dots" aria-label="agent is typing">
+      <div className="typing-dots" aria-label={`${branding.agentName} is typing`}>
         <span />
         <span />
         <span />

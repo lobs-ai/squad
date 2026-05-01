@@ -80,7 +80,6 @@ import { memoryBackendFor } from "./memory/backend.js";
 import { MemoryLLMRouter } from "./memory/llm-router.js";
 import { resolveMemoryEmbedder } from "./memory/embedder-resolver.js";
 import { MemoryService } from "./memory/service.js";
-import { MarkdownMemoryMirror } from "./memory/markdown-mirror.js";
 import { SessionIngestionService } from "./memory/session-ingest.js";
 import { Doctor } from "./doctor/engine.js";
 import { createBuiltinChecks } from "./doctor/checks.js";
@@ -170,7 +169,6 @@ export {
   CORE_DIR,
   CORE_FILES,
 } from "./agent-prompt.js";
-export { MarkdownMemoryMirror } from "./memory/markdown-mirror.js";
 export {
   Doctor,
   createBuiltinChecks,
@@ -519,11 +517,8 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     });
   }
   const containerTag = memcoreCfg.container_tag || config.server.squad_name;
-  const markdownMirror = new MarkdownMemoryMirror(config.server.data_dir, logger);
-  markdownMirror.ensureDir();
   const memoryService = new MemoryService(memcoreInstance, logger, {
     containerTag,
-    markdownMirror,
   });
   registerMemoryTools(toolRegistry, memoryBackendFor(memoryService));
   subagentPool.setMemory(memoryService);
@@ -1006,6 +1001,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     defaultModel: config.llm.primary.model,
     enabled: () => liveConfig.current.chat.auto_title,
     configuredModel: () => liveConfig.current.chat.title_model || null,
+    fallbackModel: () => liveConfig.current.chat.title_fallback_model || null,
     resolveConfig: () =>
       resolveProviderConfig(
         liveConfig.current.llm.providers as Record<
