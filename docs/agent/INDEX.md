@@ -21,7 +21,8 @@ you works. Read the page that matches the question.
 ## Source-of-truth anchors
 
 These are the files this directory summarises. When the docs disagree with the
-code, the code wins — open the file and trust it.
+code, the code wins — open the file and trust it. Paths are relative to the
+Squad repo root.
 
 - `SPEC.md` — the long-form design doc (architecture, primitives, roadmap).
 - `AGENTS.md` — rules for coding agents working in this repo.
@@ -34,16 +35,12 @@ code, the code wins — open the file and trust it.
   and "agent loop starts".
 - `packages/gateway/src/db/migrations.ts` — the SQLite schema in append-only form.
 
-## How to use this from inside an agent run
+## Reading a page
 
-You already have the `read` tool (default group: `filesystem`). To pull a doc:
-
-```
-read({ file_path: "/Users/rafe/other/lobs/squad/docs/agent/protocol.md" })
-```
-
-The repo root is your `cwd` if you started from a normal dev run; if you're
-unsure, use `ls .` or the `find_files` tool to confirm.
+Use the `read` tool against the path of the page you want
+(e.g. `docs/agent/protocol.md`). If you don't know where the Squad checkout
+lives on this machine, `find_files` for `docs/agent/INDEX.md` first — once
+you have one path the rest are siblings.
 
 If a question isn't covered here and you have to grep source to answer it,
 write what you learned to a new file in this directory — the next agent (you,

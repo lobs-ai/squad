@@ -13,6 +13,9 @@ WORKDIR /app
 
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml tsconfig.base.json tsconfig.json ./
 COPY packages ./packages
+# Agent-facing documentation: read by the running agent when it needs to know
+# how Squad itself works. Pointed at by the system prompt in agent-prompt.ts.
+COPY docs ./docs
 
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile
