@@ -909,7 +909,12 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   // recurring/one-shot work without going through the dispatch layer.
   registerCronTools(
     toolRegistry,
-    cronBackendFor({ store: routineStore, runner: cronRunner, paths: cronPaths }),
+    cronBackendFor({
+      store: routineStore,
+      runner: cronRunner,
+      paths: cronPaths,
+      delivery: deliveryRegistry,
+    }),
   );
 
   // Persist approved browser pairings to <data_dir>/pairings.json so a

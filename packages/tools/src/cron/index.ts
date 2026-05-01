@@ -5,6 +5,7 @@ export type {
   CronBackend,
   CronJobSummary,
   CronRunSummary,
+  DeliveryKindInfo,
   ScheduleInput as CronScheduleInput,
   PayloadInput as CronPayloadInput,
   SessionTargetInput as CronSessionTargetInput,
@@ -19,6 +20,7 @@ export {
   GetCronJobTool,
   RunCronJobTool,
   GetCronRunsTool,
+  ListDeliveryKindsTool,
   registerCronTools,
 } from "./tools.js";
 export { CRON_GUIDANCE } from "./prompt.js";
@@ -27,7 +29,7 @@ export { CRON_GUIDANCE } from "./prompt.js";
 export const cronGroup: ToolGroup = {
   name: "cron",
   description:
-    "Schedule recurring or one-off work (cron / interval / once) — prompts, scripts, or full agent turns",
+    "Schedule recurring or one-off work (cron / interval / once) — prompts, scripts, or script→prompt chains",
   toolNames: [
     "create_cron_job",
     "update_cron_job",
@@ -36,6 +38,7 @@ export const cronGroup: ToolGroup = {
     "get_cron_job",
     "run_cron_job",
     "get_cron_runs",
+    "list_delivery_kinds",
   ],
   guidance: CRON_GUIDANCE,
 };

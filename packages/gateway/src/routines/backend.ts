@@ -7,16 +7,50 @@ import type {
   CronPayloadInput,
   CronScheduleInput,
   CronSessionTargetInput,
+  DeliveryKindInfo,
 } from "@squad/tools";
 import type { RoutineDelivery, RoutineRecord } from "@squad/protocol";
 import type { RoutineRunner, RoutineStore } from "./store.js";
 import { readRunLog, type CronPaths } from "./persistence.js";
+import type { DeliveryRegistry } from "./delivery.js";
 
 export interface CronBackendDeps {
   store: RoutineStore;
   runner: RoutineRunner;
   paths: CronPaths;
+  /**
+   * Delivery registry — used by the agent-facing `list_delivery_kinds`
+   * tool so the LLM can discover which channel handlers are loaded
+   * (silent, dashboard, discord, plugin-registered slack/webhook/…).
+   * Optional; when omitted, listDeliveryKinds returns just the gateway
+   * built-ins.
+   */
+  delivery?: DeliveryRegistry;
 }
+
+const BUILT_IN_DELIVERY: DeliveryKindInfo[] = [
+  {
+    kind: "silent",
+    builtIn: true,
+    description: "Run is logged; nothing is sent anywhere.",
+  },
+  {
+    kind: "dashboard",
+    builtIn: true,
+    description:
+      "The resulting session opens in the dashboard chat UI. Implicit; no extras needed.",
+  },
+  {
+    kind: "discord",
+    builtIn: false,
+    description:
+      "Posts the run output into a Discord channel. Requires the channel-discord plugin.",
+    extrasSchema: {
+      channelId: { type: "string", description: "Discord channel snowflake (required)" },
+      guildId: { type: "string", description: "Optional guild id" },
+    },
+  },
+];
 
 /**
  * Adapt the in-process RoutineStore + RoutineRunner into the CronBackend
@@ -24,7 +58,7 @@ export interface CronBackendDeps {
  * package must not import from the gateway directly.
  */
 export function cronBackendFor(deps: CronBackendDeps): CronBackend {
-  const { store, runner, paths } = deps;
+  const { store, runner, paths, delivery } = deps;
   return {
     async list() {
       return store.list().map(toSummary);
@@ -32,6 +66,26 @@ export function cronBackendFor(deps: CronBackendDeps): CronBackend {
     async get(id) {
       const r = store.get(id);
       return r ? toSummary(r) : null;
+    },
+    async listDeliveryKinds() {
+      // The DeliveryRegistry holds the source of truth — built-ins
+      // (silent, dashboard) plus anything plugins registered. Merge with
+      // BUILT_IN_DELIVERY so the rich descriptions/extras schemas come
+      // along even when the registry only knows the bare names.
+      const registered = delivery ? delivery.kinds() : ["silent", "dashboard"];
+      const seen = new Set<string>();
+      const out: DeliveryKindInfo[] = [];
+      for (const meta of BUILT_IN_DELIVERY) {
+        if (registered.includes(meta.kind)) {
+          out.push(meta);
+          seen.add(meta.kind);
+        }
+      }
+      for (const kind of registered) {
+        if (seen.has(kind)) continue;
+        out.push({ kind, builtIn: kind === "silent" || kind === "dashboard" });
+      }
+      return out;
     },
     async create(input) {
       const rec = store.create({

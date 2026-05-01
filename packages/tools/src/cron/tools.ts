@@ -408,6 +408,37 @@ export class GetCronRunsTool extends BaseTool<RunsInput> {
   }
 }
 
+// ── list_delivery_kinds ──────────────────────────────────────────────────────
+
+interface ListKindsInput extends Record<string, unknown> {}
+
+export class ListDeliveryKindsTool extends BaseTool<ListKindsInput> {
+  readonly name = "list_delivery_kinds";
+  readonly description = [
+    "List the delivery handler kinds the gateway can route a cron job's output to.",
+    "Returns the built-ins (silent, dashboard, discord) plus anything plugins have",
+    "registered (slack, webhook, …). Call this before creating a cron job whose",
+    "delivery is anything other than silent/dashboard, so the kind you pass actually",
+    "matches a registered handler. If the user asks for, say, slack and 'slack' is",
+    "not in the list, the slack plugin is not loaded — tell them rather than fail",
+    "silently at fire time.",
+  ].join("\n");
+  readonly inputSchema = {
+    type: "object" as const,
+    properties: {},
+  };
+  readonly tags = ["readonly"] as const;
+
+  constructor(private readonly backend: CronBackend) {
+    super();
+  }
+
+  async run(_input: ListKindsInput, _ctx: ToolContext): Promise<ToolExecutorResult> {
+    const kinds = await this.backend.listDeliveryKinds();
+    return formatResult({ kinds });
+  }
+}
+
 // ── registration helper ─────────────────────────────────────────────────────
 
 type AnyTool = BaseTool<Record<string, unknown>>;
@@ -423,4 +454,5 @@ export function registerCronTools(
   registry.register(new GetCronJobTool(backend) as unknown as AnyTool);
   registry.register(new RunCronJobTool(backend) as unknown as AnyTool);
   registry.register(new GetCronRunsTool(backend) as unknown as AnyTool);
+  registry.register(new ListDeliveryKindsTool(backend) as unknown as AnyTool);
 }

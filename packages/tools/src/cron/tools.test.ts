@@ -22,7 +22,9 @@ function fakeJob(over: Partial<CronJobSummary> = {}): CronJobSummary {
   };
 }
 
-function fakeBackend(): CronBackend & { calls: Record<string, unknown[][]> } {
+function fakeBackend(
+  opts: { deliveryKinds?: Array<{ kind: string; builtIn: boolean; description?: string }> } = {},
+): CronBackend & { calls: Record<string, unknown[][]> } {
   const calls: Record<string, unknown[][]> = {
     list: [],
     get: [],
@@ -31,6 +33,7 @@ function fakeBackend(): CronBackend & { calls: Record<string, unknown[][]> } {
     delete: [],
     runNow: [],
     runs: [],
+    listDeliveryKinds: [],
   };
   const jobs = new Map<string, CronJobSummary>();
   const runs: Record<string, CronRunSummary[]> = {};
@@ -43,6 +46,15 @@ function fakeBackend(): CronBackend & { calls: Record<string, unknown[][]> } {
     async get(id) {
       calls.get!.push([id]);
       return jobs.get(id) ?? null;
+    },
+    async listDeliveryKinds() {
+      calls.listDeliveryKinds!.push([]);
+      return (
+        opts.deliveryKinds ?? [
+          { kind: "silent", builtIn: true },
+          { kind: "dashboard", builtIn: true },
+        ]
+      );
     },
     async create(input) {
       calls.create!.push([input]);
@@ -83,7 +95,7 @@ function fakeBackend(): CronBackend & { calls: Record<string, unknown[][]> } {
 }
 
 describe("cron tools", () => {
-  it("registerCronTools registers all 7 tools", () => {
+  it("registerCronTools registers all 8 tools", () => {
     const reg = new ToolRegistry();
     registerCronTools(reg, fakeBackend());
     const names = reg.names();
@@ -96,8 +108,25 @@ describe("cron tools", () => {
         "get_cron_job",
         "run_cron_job",
         "get_cron_runs",
+        "list_delivery_kinds",
       ]),
     );
+  });
+
+  it("list_delivery_kinds returns the registered handler kinds", async () => {
+    const reg = new ToolRegistry();
+    const backend = fakeBackend({
+      deliveryKinds: [
+        { kind: "silent", builtIn: true },
+        { kind: "dashboard", builtIn: true },
+        { kind: "discord", builtIn: false, description: "discord" },
+        { kind: "slack", builtIn: false },
+      ],
+    });
+    registerCronTools(reg, backend);
+    const out = await reg.execute("list_delivery_kinds", {}, "/tmp");
+    const kinds = (JSON.parse(out.result) as { kinds: Array<{ kind: string }> }).kinds;
+    expect(kinds.map((k) => k.kind)).toEqual(["silent", "dashboard", "discord", "slack"]);
   });
 
   it("create → list → get → update → run → delete round-trip via execute()", async () => {

@@ -81,9 +81,26 @@ export interface CronRunSummary {
   tokens?: { in: number; out: number };
 }
 
+export interface DeliveryKindInfo {
+  kind: string;
+  /** True for kinds the gateway always provides (silent, dashboard). */
+  builtIn: boolean;
+  /** Optional human-readable description ("posts to a Discord channel"). */
+  description?: string;
+  /**
+   * Optional JSON-Schema-shaped sketch of additional fields the handler
+   * expects on the routine's `delivery` object (beyond `kind`). Plugins
+   * that don't supply this still work — the agent just has to guess
+   * fields from documentation.
+   */
+  extrasSchema?: Record<string, unknown>;
+}
+
 export interface CronBackend {
   list(): Promise<CronJobSummary[]>;
   get(id: string): Promise<CronJobSummary | null>;
+  /** Registered delivery handler kinds (built-in + plugin-registered). */
+  listDeliveryKinds(): Promise<DeliveryKindInfo[]>;
   create(input: {
     name: string;
     schedule: ScheduleInput;
