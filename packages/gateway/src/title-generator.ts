@@ -158,14 +158,16 @@ export class TitleGenerator {
         );
       }
     }
-    if (!modelUsed) {
-      this.deps.logger.warn(
-        { sessionId, candidates },
-        "title-generator: all candidates failed — leaving session untitled",
-      );
-      return;
+    // Final fallback: if every LLM candidate failed or returned nothing
+    // usable, derive a title from the seed itself. A truncated first
+    // message is a worse title than what the LLM would produce, but it's
+    // strictly better than leaving every session as "(untitled)" forever
+    // — which is what users see when their primary model can't service
+    // the title call (e.g. retired/typo'd id, provider outage).
+    if (!title) {
+      title = sanitizeTitle(seed);
+      modelUsed = "fallback:seed";
     }
-
     if (!title) return;
 
     // Re-check the title between the call kicking off and the response

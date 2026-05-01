@@ -143,4 +143,34 @@ describe("TitleGenerator", () => {
     expect(sessions.get(s.id).title).toBeNull();
     expect(client.seenModels).toHaveLength(0);
   });
+
+  it("falls back to a seed-derived title when every LLM candidate fails", async () => {
+    const s = sessions.create({ model: "session-model" });
+    const client: LLMClient = {
+      async createMessage() {
+        throw new Error("provider down");
+      },
+    };
+    await makeGen({ sessions, client }).generateIfNeeded(
+      s.id,
+      "help me refactor the auth middleware.",
+    );
+    // Trailing punctuation stripped, raw seed used as the title.
+    expect(sessions.get(s.id).title).toBe("help me refactor the auth middleware");
+  });
+
+  it("falls back to a seed-derived title when the LLM returns no usable text", async () => {
+    const s = sessions.create({ model: "session-model" });
+    const client: LLMClient = {
+      async createMessage() {
+        return {
+          content: [],
+          stopReason: "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 },
+        };
+      },
+    };
+    await makeGen({ sessions, client }).generateIfNeeded(s.id, "investigate the queue backlog");
+    expect(sessions.get(s.id).title).toBe("investigate the queue backlog");
+  });
 });
