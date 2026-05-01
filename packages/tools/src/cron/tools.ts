@@ -44,42 +44,68 @@ const scheduleSchema = {
   ],
 } as const;
 
+const promptBodySchema = {
+  type: "object",
+  properties: {
+    messages: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          role: { type: "string", enum: ["user", "system"] },
+          text: { type: "string" },
+        },
+        required: ["role", "text"],
+      },
+      minItems: 1,
+      description:
+        "Ordered list of user/system messages. user messages are concatenated into the user turn; system messages are folded into the system prompt for this run.",
+    },
+    skills: {
+      type: "array",
+      items: { type: "string" },
+      description: "Skill ids whose instructions should be loaded for this run.",
+    },
+  },
+  required: ["messages"],
+} as const;
+
 const payloadSchema = {
   type: "object",
   oneOf: [
     {
       properties: {
         kind: { const: "prompt" },
-        text: { type: "string", description: "User-turn text the agent will respond to" },
-        skills: { type: "array", items: { type: "string" } },
-      },
-      required: ["kind", "text"],
-    },
-    {
-      properties: {
-        kind: { const: "agentTurn" },
-        messages: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              role: { type: "string", enum: ["user", "system"] },
-              text: { type: "string" },
-            },
-            required: ["role", "text"],
-          },
-        },
+        ...promptBodySchema.properties,
       },
       required: ["kind", "messages"],
     },
     {
       properties: {
         kind: { const: "script" },
-        command: { type: "string" },
+        command: { type: "string", description: "Executable to spawn (resolved via PATH or absolute path)." },
         args: { type: "array", items: { type: "string" } },
-        cwd: { type: "string" },
+        cwd: {
+          type: "string",
+          description:
+            "Working directory for the script. Defaults to the gateway workspace dir.",
+        },
       },
       required: ["kind", "command"],
+    },
+    {
+      properties: {
+        kind: { const: "scriptThenPrompt" },
+        command: { type: "string", description: "Executable to spawn first." },
+        args: { type: "array", items: { type: "string" } },
+        cwd: { type: "string" },
+        prompt: {
+          ...promptBodySchema,
+          description:
+            "Agent turn run after the script. {{output}} placeholders in any message text are replaced with the script's stdout. If no message contains {{output}}, the stdout is appended as a final user message.",
+        },
+      },
+      required: ["kind", "command", "prompt"],
     },
   ],
 } as const;
@@ -109,9 +135,25 @@ const executionSchema = {
 const deliverySchema = {
   type: "object",
   properties: {
-    kind: { type: "string", enum: ["silent", "dashboard", "discord"] },
-    channelId: { type: "string" },
-    guildId: { type: "string" },
+    kind: {
+      type: "string",
+      description:
+        "Where to send the run output. Built-in: 'silent' (no delivery), 'dashboard' (open in chat UI), 'discord' (post to a channel — requires channelId). Any other string targets a plugin-registered handler (e.g. 'slack'); pass that handler's required fields under `extras`.",
+    },
+    channelId: {
+      type: "string",
+      description: "Required when kind === 'discord'. Discord channel id (snowflake).",
+    },
+    guildId: {
+      type: "string",
+      description: "Optional discord guild id.",
+    },
+    extras: {
+      type: "object",
+      additionalProperties: true,
+      description:
+        "Free-form fields forwarded to plugin-registered delivery handlers. e.g. { channel: '#alerts' } for a 'slack' handler.",
+    },
   },
   required: ["kind"],
 } as const;

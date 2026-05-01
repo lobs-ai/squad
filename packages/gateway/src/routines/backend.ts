@@ -112,21 +112,35 @@ function toRunSummary(r: import("@squad/protocol").RoutineRunLog): CronRunSummar
 function toDelivery(d: CronDeliveryInput): RoutineDelivery {
   if (d.kind === "silent") return { kind: "silent" };
   if (d.kind === "dashboard") return { kind: "dashboard" };
-  if (!d.channelId) {
-    throw new Error("discord delivery requires `channelId`");
+  if (d.kind === "discord") {
+    if (!d.channelId) {
+      throw new Error("discord delivery requires `channelId`");
+    }
+    return {
+      kind: "discord",
+      channelId: d.channelId,
+      ...(d.guildId ? { guildId: d.guildId } : {}),
+    };
   }
-  return {
-    kind: "discord",
-    channelId: d.channelId,
-    ...(d.guildId ? { guildId: d.guildId } : {}),
-  };
+  // Plugin-registered kind (e.g. "slack"). Forward extras verbatim.
+  return { kind: d.kind, ...(d.extras ?? {}) };
 }
 
 function fromDelivery(d: RoutineDelivery): CronDeliveryInput {
   if (d.kind === "silent" || d.kind === "dashboard") return { kind: d.kind };
+  if (d.kind === "discord") {
+    const dd = d as { kind: "discord"; channelId: string; guildId?: string };
+    return {
+      kind: "discord",
+      channelId: dd.channelId,
+      ...(dd.guildId ? { guildId: dd.guildId } : {}),
+    };
+  }
+  // Plugin-registered kind: lift everything except `kind` into `extras`.
+  const { kind, ...rest } = d as { kind: string; [k: string]: unknown };
+  const extras = rest as Record<string, unknown>;
   return {
-    kind: "discord",
-    channelId: d.channelId,
-    ...(d.guildId ? { guildId: d.guildId } : {}),
+    kind,
+    ...(Object.keys(extras).length > 0 ? { extras } : {}),
   };
 }

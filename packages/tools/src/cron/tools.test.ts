@@ -9,7 +9,7 @@ function fakeJob(over: Partial<CronJobSummary> = {}): CronJobSummary {
     name: "test",
     enabled: true,
     schedule: { kind: "cron", expr: "* * * * *" },
-    payload: { kind: "prompt", text: "hi" },
+    payload: { kind: "prompt", messages: [{ role: "user", text: "hi" }] },
     session: { kind: "new" },
     execution: {},
     delivery: { kind: "silent" },
@@ -110,7 +110,10 @@ describe("cron tools", () => {
       {
         name: "morning",
         schedule: { kind: "cron", expr: "0 9 * * *" },
-        payload: { kind: "prompt", text: "summarize my inbox" },
+        payload: {
+          kind: "prompt",
+          messages: [{ role: "user", text: "summarize my inbox" }],
+        },
         execution: { model: "claude-haiku-4-5" },
         delivery: { kind: "silent" },
       },
@@ -174,5 +177,53 @@ describe("cron tools", () => {
     const job = JSON.parse(result.result).job as CronJobSummary;
     expect(job.payload.kind).toBe("script");
     expect(job.session.kind).toBe("isolated");
+  });
+
+  it("create_cron_job accepts an arbitrary plugin-registered delivery kind", async () => {
+    const reg = new ToolRegistry();
+    const backend = fakeBackend();
+    registerCronTools(reg, backend);
+    await reg.execute(
+      "create_cron_job",
+      {
+        name: "alerts",
+        schedule: { kind: "cron", expr: "0 * * * *" },
+        payload: { kind: "prompt", messages: [{ role: "user", text: "scan logs" }] },
+        delivery: { kind: "slack", extras: { channel: "#alerts", emoji: ":robot_face:" } },
+      },
+      "/tmp",
+    );
+    expect(backend.calls.create![0]?.[0]).toMatchObject({
+      delivery: { kind: "slack", extras: { channel: "#alerts" } },
+    });
+  });
+
+  it("create_cron_job accepts a scriptThenPrompt payload", async () => {
+    const reg = new ToolRegistry();
+    const backend = fakeBackend();
+    registerCronTools(reg, backend);
+    const result = await reg.execute(
+      "create_cron_job",
+      {
+        name: "deploy-watcher",
+        schedule: { kind: "interval", everyMs: 5 * 60_000 },
+        payload: {
+          kind: "scriptThenPrompt",
+          command: "sh",
+          args: ["-c", "scripts/check-deploy.sh"],
+          prompt: {
+            messages: [
+              { role: "user", text: "Deploy status:\n{{output}}\n\nWhat should I do?" },
+            ],
+          },
+        },
+      },
+      "/tmp",
+    );
+    const job = JSON.parse(result.result).job as CronJobSummary;
+    expect(job.payload.kind).toBe("scriptThenPrompt");
+    expect(backend.calls.create![0]?.[0]).toMatchObject({
+      payload: { kind: "scriptThenPrompt", command: "sh" },
+    });
   });
 });

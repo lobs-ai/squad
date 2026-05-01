@@ -15,7 +15,7 @@ export interface DeliveryContext {
   delivery: RoutineDelivery;
   runId: string;
   sessionId: string | null;
-  payloadKind: "prompt" | "agentTurn" | "script";
+  payloadKind: "prompt" | "script" | "scriptThenPrompt";
   output?: string;
   tokens?: { in: number; out: number };
   /** True when the executor saw `[SILENT]` and is suppressing delivery. */

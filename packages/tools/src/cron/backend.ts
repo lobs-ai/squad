@@ -10,10 +10,21 @@ export type ScheduleInput =
   | { kind: "interval"; everyMs: number; anchor?: string }
   | { kind: "once"; at: string };
 
+export interface PromptBody {
+  messages: Array<{ role: "user" | "system"; text: string }>;
+  skills?: string[];
+}
+
 export type PayloadInput =
-  | { kind: "prompt"; text: string; skills?: string[] }
-  | { kind: "agentTurn"; messages: Array<{ role: "user" | "system"; text: string }> }
-  | { kind: "script"; command: string; args?: string[]; cwd?: string };
+  | ({ kind: "prompt" } & PromptBody)
+  | { kind: "script"; command: string; args?: string[]; cwd?: string }
+  | {
+      kind: "scriptThenPrompt";
+      command: string;
+      args?: string[];
+      cwd?: string;
+      prompt: PromptBody;
+    };
 
 export type SessionTargetInput =
   | { kind: "new" }
@@ -27,10 +38,20 @@ export interface ExecutionInput {
   timeoutSec?: number;
 }
 
+/**
+ * Where a cron job's output should be sent. Built-in kinds are `silent`,
+ * `dashboard`, and `discord`; any other string targets a plugin-registered
+ * handler (e.g. `"slack"`). Plugin handlers are responsible for validating
+ * their own extra fields (passed through verbatim via `extras`).
+ */
 export interface DeliveryInput {
-  kind: "silent" | "dashboard" | "discord";
+  kind: string;
+  /** Required when kind === "discord". */
   channelId?: string;
+  /** Optional discord guild id. */
   guildId?: string;
+  /** Arbitrary extra fields forwarded to plugin-registered handlers. */
+  extras?: Record<string, unknown>;
 }
 
 export interface CronJobSummary {
@@ -54,7 +75,7 @@ export interface CronRunSummary {
   status: "ok" | "error" | "skipped";
   durationMs: number;
   sessionId?: string;
-  payloadKind: "prompt" | "agentTurn" | "script";
+  payloadKind: "prompt" | "script" | "scriptThenPrompt";
   output?: string;
   error?: string;
   tokens?: { in: number; out: number };

@@ -99,7 +99,7 @@ describe("isDue", () => {
       name: "x",
       enabled: true,
       schedule: { kind: "interval", everyMs: 60_000 },
-      payload: { kind: "prompt", text: "p" },
+      payload: { kind: "prompt", messages: [{ role: "user", text: "p" }] },
       session: { kind: "new" },
       execution: {},
       delivery: { kind: "silent" },

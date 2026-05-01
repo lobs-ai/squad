@@ -55,7 +55,7 @@ export function Routines(): JSX.Element {
     <div>
       <PageHead
         title="cron jobs"
-        crumbs={`scheduled prompts, scripts, and ${branding.agentName} turns`}
+        crumbs={`scheduled ${branding.agentName} prompts, scripts, and script→prompt chains`}
         actions={
           <div className="row gap-2">
             <button className="btn sm primary" onClick={() => setCreating(true)}>
@@ -105,7 +105,7 @@ export function Routines(): JSX.Element {
 
         <div className="hint">
           schedule kinds: <span className="kbd">cron</span> · <span className="kbd">interval</span> · <span className="kbd">once</span>{" "}
-          · payload kinds: <span className="kbd">prompt</span> · <span className="kbd">script</span> · <span className="kbd">agentTurn</span>
+          · payload kinds: <span className="kbd">prompt</span> · <span className="kbd">script</span> · <span className="kbd">scriptThenPrompt</span>
         </div>
       </div>
     </div>
@@ -440,33 +440,55 @@ function CronForm({
   // Payload fields — same idea, one slot per kind.
   const initialPayloadKind: PayloadKind = initial?.payload.kind ?? "prompt";
   const [payloadKind, setPayloadKind] = useState<PayloadKind>(initialPayloadKind);
-  const [promptText, setPromptText] = useState(
-    initial?.payload.kind === "prompt" ? initial.payload.text : initial?.prompt ?? "",
-  );
-  const [skillsCsv, setSkillsCsv] = useState(
+
+  const initialPromptUser =
+    initial?.payload.kind === "prompt"
+      ? initial.payload.messages.find((m) => m.role === "user")?.text ?? ""
+      : initial?.prompt ?? "";
+  const initialPromptSystem =
+    initial?.payload.kind === "prompt"
+      ? initial.payload.messages.find((m) => m.role === "system")?.text ?? ""
+      : "";
+  const initialPromptSkills =
     initial?.payload.kind === "prompt" && initial.payload.skills
       ? initial.payload.skills.join(", ")
+      : "";
+
+  const [promptText, setPromptText] = useState(initialPromptUser);
+  const [promptSystem, setPromptSystem] = useState(initialPromptSystem);
+  const [skillsCsv, setSkillsCsv] = useState(initialPromptSkills);
+
+  const [scriptCommand, setScriptCommand] = useState(
+    initial?.payload.kind === "script" || initial?.payload.kind === "scriptThenPrompt"
+      ? initial.payload.command
       : "",
   );
-  const [scriptCommand, setScriptCommand] = useState(
-    initial?.payload.kind === "script" ? initial.payload.command : "",
-  );
   const [scriptArgsCsv, setScriptArgsCsv] = useState(
-    initial?.payload.kind === "script" && initial.payload.args
+    (initial?.payload.kind === "script" || initial?.payload.kind === "scriptThenPrompt") &&
+      initial.payload.args
       ? initial.payload.args.join(" ")
       : "",
   );
   const [scriptCwd, setScriptCwd] = useState(
-    initial?.payload.kind === "script" ? initial.payload.cwd ?? "" : "",
-  );
-  const [agentTurnText, setAgentTurnText] = useState(
-    initial?.payload.kind === "agentTurn"
-      ? initial.payload.messages.find((m) => m.role === "user")?.text ?? ""
+    initial?.payload.kind === "script" || initial?.payload.kind === "scriptThenPrompt"
+      ? initial.payload.cwd ?? ""
       : "",
   );
-  const [agentTurnSystem, setAgentTurnSystem] = useState(
-    initial?.payload.kind === "agentTurn"
-      ? initial.payload.messages.find((m) => m.role === "system")?.text ?? ""
+
+  // scriptThenPrompt's inner prompt body.
+  const [stpUserText, setStpUserText] = useState(
+    initial?.payload.kind === "scriptThenPrompt"
+      ? initial.payload.prompt.messages.find((m) => m.role === "user")?.text ?? ""
+      : "",
+  );
+  const [stpSystem, setStpSystem] = useState(
+    initial?.payload.kind === "scriptThenPrompt"
+      ? initial.payload.prompt.messages.find((m) => m.role === "system")?.text ?? ""
+      : "",
+  );
+  const [stpSkillsCsv, setStpSkillsCsv] = useState(
+    initial?.payload.kind === "scriptThenPrompt" && initial.payload.prompt.skills
+      ? initial.payload.prompt.skills.join(", ")
       : "",
   );
 
@@ -491,6 +513,48 @@ function CronForm({
   const [delivery, setDelivery] = useState<DeliveryDraft>(
     initial?.delivery ?? { kind: "dashboard" },
   );
+  const isBuiltInDeliveryKind = (k: string): boolean =>
+    k === "silent" || k === "dashboard" || k === "discord";
+  const initialCustomDelivery =
+    initial?.delivery && !isBuiltInDeliveryKind(initial.delivery.kind)
+      ? initial.delivery
+      : null;
+  const [customKind, setCustomKind] = useState<string>(initialCustomDelivery?.kind ?? "");
+  const [customExtrasJson, setCustomExtrasJson] = useState<string>(() => {
+    if (!initialCustomDelivery) return "";
+    const { kind: _k, ...rest } = initialCustomDelivery as Record<string, unknown> & {
+      kind: string;
+    };
+    return Object.keys(rest).length > 0 ? JSON.stringify(rest, null, 2) : "";
+  });
+  const [customExtrasError, setCustomExtrasError] = useState<string | null>(null);
+
+  // Synthesize the delivery draft from custom-kind state when the user picks
+  // "custom" in the dropdown — built-in kinds drive `delivery` directly.
+  const isCustomDelivery = !isBuiltInDeliveryKind(delivery.kind);
+  const applyCustomDelivery = (kind: string, extrasJson: string): void => {
+    if (!kind.trim()) {
+      setCustomExtrasError(null);
+      setDelivery({ kind: "" });
+      return;
+    }
+    if (!extrasJson.trim()) {
+      setCustomExtrasError(null);
+      setDelivery({ kind: kind.trim() });
+      return;
+    }
+    try {
+      const parsed = JSON.parse(extrasJson) as Record<string, unknown>;
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        setCustomExtrasError("extras must be a JSON object");
+        return;
+      }
+      setCustomExtrasError(null);
+      setDelivery({ kind: kind.trim(), ...parsed });
+    } catch (err) {
+      setCustomExtrasError((err as Error).message);
+    }
+  };
   const [enabled, setEnabled] = useState(initial?.enabled ?? true);
 
   const [busy, setBusy] = useState(false);
@@ -513,14 +577,23 @@ function CronForm({
   }, [scheduleKind, cronExpr, intervalMs, onceAt]);
 
   const payload: Payload | null = useMemo(() => {
+    const buildPromptBody = (
+      userText: string,
+      systemText: string,
+      skillsRaw: string,
+    ): { messages: Array<{ role: "user" | "system"; text: string }>; skills?: string[] } | null => {
+      const messages: Array<{ role: "user" | "system"; text: string }> = [];
+      if (systemText.trim()) messages.push({ role: "system", text: systemText.trim() });
+      if (userText.trim()) messages.push({ role: "user", text: userText.trim() });
+      if (messages.length === 0) return null;
+      const skills = skillsRaw.split(",").map((s) => s.trim()).filter(Boolean);
+      return { messages, ...(skills.length > 0 ? { skills } : {}) };
+    };
+
     if (payloadKind === "prompt") {
-      const text = promptText.trim();
-      if (!text) return null;
-      const skills = skillsCsv
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-      return { kind: "prompt", text, ...(skills.length > 0 ? { skills } : {}) };
+      const body = buildPromptBody(promptText, promptSystem, skillsCsv);
+      if (!body) return null;
+      return { kind: "prompt", ...body };
     }
     if (payloadKind === "script") {
       const command = scriptCommand.trim();
@@ -536,22 +609,31 @@ function CronForm({
         ...(cwd ? { cwd } : {}),
       };
     }
-    const messages: Array<{ role: "user" | "system"; text: string }> = [];
-    if (agentTurnSystem.trim())
-      messages.push({ role: "system", text: agentTurnSystem.trim() });
-    if (agentTurnText.trim())
-      messages.push({ role: "user", text: agentTurnText.trim() });
-    if (messages.length === 0) return null;
-    return { kind: "agentTurn", messages };
+    // scriptThenPrompt
+    const command = scriptCommand.trim();
+    if (!command) return null;
+    const body = buildPromptBody(stpUserText, stpSystem, stpSkillsCsv);
+    if (!body) return null;
+    const args = scriptArgsCsv.trim() ? scriptArgsCsv.trim().split(/\s+/) : undefined;
+    const cwd = scriptCwd.trim() || undefined;
+    return {
+      kind: "scriptThenPrompt",
+      command,
+      ...(args ? { args } : {}),
+      ...(cwd ? { cwd } : {}),
+      prompt: body,
+    };
   }, [
     payloadKind,
     promptText,
+    promptSystem,
     skillsCsv,
     scriptCommand,
     scriptArgsCsv,
     scriptCwd,
-    agentTurnText,
-    agentTurnSystem,
+    stpUserText,
+    stpSystem,
+    stpSkillsCsv,
   ]);
 
   const session: SessionTarget = useMemo(() => {
@@ -577,7 +659,9 @@ function CronForm({
     name.trim() !== "" &&
     schedule !== null &&
     payload !== null &&
-    (sessionKind !== "session" || sessionId.trim() !== "");
+    (sessionKind !== "session" || sessionId.trim() !== "") &&
+    delivery.kind.trim() !== "" &&
+    customExtrasError === null;
 
   const submit = async (): Promise<void> => {
     if (!valid || !schedule || !payload) return;
@@ -711,22 +795,35 @@ function CronForm({
           <div className="section-label">what to run</div>
           <KindTabs
             options={[
-              { value: "prompt", label: "prompt (LLM)" },
+              { value: "prompt", label: `${branding.agentName} prompt` },
               { value: "script", label: "script (no LLM)" },
-              { value: "agentTurn", label: `${branding.agentName} turn` },
+              { value: "scriptThenPrompt", label: "script → prompt" },
             ]}
             value={payloadKind}
             onChange={setPayloadKind}
           />
           {payloadKind === "prompt" && (
             <div className="col gap-2" style={{ marginTop: 6 }}>
-              <textarea
-                className="input"
-                value={promptText}
-                onChange={(e) => setPromptText(e.target.value)}
-                placeholder="summarize yesterday's tasks…"
-                style={{ minHeight: 80 }}
-              />
+              <div>
+                <div className="section-label">user message</div>
+                <textarea
+                  className="input"
+                  value={promptText}
+                  onChange={(e) => setPromptText(e.target.value)}
+                  placeholder="summarize yesterday's tasks…"
+                  style={{ minHeight: 80 }}
+                />
+              </div>
+              <div>
+                <div className="section-label">system message (optional)</div>
+                <textarea
+                  className="input"
+                  value={promptSystem}
+                  onChange={(e) => setPromptSystem(e.target.value)}
+                  placeholder="you are a brevity-first analyst…"
+                  style={{ minHeight: 60 }}
+                />
+              </div>
               <div>
                 <div className="section-label">skills (comma-separated)</div>
                 <input
@@ -766,35 +863,80 @@ function CronForm({
                   className="input mono"
                   value={scriptCwd}
                   onChange={(e) => setScriptCwd(e.target.value)}
-                  placeholder="/path/to/wd"
+                  placeholder="/path/to/wd (defaults to gateway workspace)"
                 />
               </div>
               <div className="hint">
-                no LLM, no session — just a child process. tip: print "[SILENT]" on the first line to skip delivery.
+                spawned via child_process; stdout+stderr captured (64KB cap). no LLM, no session.
+                tip: print "[SILENT]" on the first line to skip delivery.
               </div>
             </div>
           )}
-          {payloadKind === "agentTurn" && (
+          {payloadKind === "scriptThenPrompt" && (
             <div className="col gap-2" style={{ marginTop: 6 }}>
+              <div className="row gap-2">
+                <div style={{ flex: 1 }}>
+                  <div className="section-label">command</div>
+                  <input
+                    className="input mono"
+                    value={scriptCommand}
+                    onChange={(e) => setScriptCommand(e.target.value)}
+                    placeholder="sh"
+                  />
+                </div>
+                <div style={{ flex: 2 }}>
+                  <div className="section-label">args</div>
+                  <input
+                    className="input mono"
+                    value={scriptArgsCsv}
+                    onChange={(e) => setScriptArgsCsv(e.target.value)}
+                    placeholder="-c scripts/check-deploy.sh"
+                  />
+                </div>
+              </div>
               <div>
-                <div className="section-label">system message (optional)</div>
-                <textarea
-                  className="input"
-                  value={agentTurnSystem}
-                  onChange={(e) => setAgentTurnSystem(e.target.value)}
-                  placeholder="you are a brevity-first analyst…"
-                  style={{ minHeight: 60 }}
+                <div className="section-label">cwd (optional)</div>
+                <input
+                  className="input mono"
+                  value={scriptCwd}
+                  onChange={(e) => setScriptCwd(e.target.value)}
+                  placeholder="(defaults to gateway workspace)"
                 />
               </div>
               <div>
                 <div className="section-label">user message</div>
                 <textarea
                   className="input"
-                  value={agentTurnText}
-                  onChange={(e) => setAgentTurnText(e.target.value)}
-                  placeholder="what's the latest?"
+                  value={stpUserText}
+                  onChange={(e) => setStpUserText(e.target.value)}
+                  placeholder={"deploy status:\n{{output}}\n\nwhat should I do?"}
+                  style={{ minHeight: 80 }}
+                />
+              </div>
+              <div>
+                <div className="section-label">system message (optional)</div>
+                <textarea
+                  className="input"
+                  value={stpSystem}
+                  onChange={(e) => setStpSystem(e.target.value)}
+                  placeholder="you triage CI failures…"
                   style={{ minHeight: 60 }}
                 />
+              </div>
+              <div>
+                <div className="section-label">skills (comma-separated)</div>
+                <input
+                  className="input"
+                  value={stpSkillsCsv}
+                  onChange={(e) => setStpSkillsCsv(e.target.value)}
+                  placeholder=""
+                />
+              </div>
+              <div className="hint">
+                exit 0 + non-empty stdout → runs the {branding.agentName} turn (use{" "}
+                <span className="kbd">{"{{output}}"}</span> to splice stdout in; otherwise it's
+                appended as a final user message). exit 0 + empty stdout → skipped. non-zero exit →
+                error, no LLM call.
               </div>
             </div>
           )}
@@ -835,7 +977,7 @@ function CronForm({
           </div>
         </div>
 
-        {/* Execution overrides */}
+        {/* Execution overrides — only meaningful when an LLM turn runs. */}
         {payloadKind !== "script" && (
           <div className="row gap-3">
             <div style={{ flex: 1 }}>
@@ -883,11 +1025,13 @@ function CronForm({
             <div className="section-label">delivery</div>
             <select
               className="input"
-              value={delivery.kind}
+              value={isCustomDelivery ? "__custom__" : delivery.kind}
               onChange={(e) => {
-                const k = e.target.value as DeliveryDraft["kind"];
+                const k = e.target.value;
                 if (k === "discord") {
                   setDelivery({ kind: "discord", channelId: "" });
+                } else if (k === "__custom__") {
+                  applyCustomDelivery(customKind, customExtrasJson);
                 } else {
                   setDelivery({ kind: k });
                 }
@@ -896,6 +1040,7 @@ function CronForm({
               <option value="dashboard">dashboard (open in chat)</option>
               <option value="silent">silent (background only)</option>
               <option value="discord">discord (post to a channel)</option>
+              <option value="__custom__">custom (plugin-registered handler)</option>
             </select>
           </div>
         </div>
@@ -905,8 +1050,16 @@ function CronForm({
               <div className="section-label">discord channel id</div>
               <input
                 className="input mono"
-                value={delivery.channelId}
-                onChange={(e) => setDelivery({ ...delivery, channelId: e.target.value })}
+                value={(delivery as { channelId?: string }).channelId ?? ""}
+                onChange={(e) =>
+                  setDelivery({
+                    kind: "discord",
+                    channelId: e.target.value,
+                    ...((delivery as { guildId?: string }).guildId
+                      ? { guildId: (delivery as { guildId?: string }).guildId }
+                      : {}),
+                  })
+                }
                 placeholder="123456789012345678"
               />
             </div>
@@ -914,12 +1067,56 @@ function CronForm({
               <div className="section-label">guild id (optional)</div>
               <input
                 className="input mono"
-                value={delivery.guildId ?? ""}
+                value={(delivery as { guildId?: string }).guildId ?? ""}
                 onChange={(e) =>
-                  setDelivery({ ...delivery, ...(e.target.value ? { guildId: e.target.value } : {}) })
+                  setDelivery({
+                    kind: "discord",
+                    channelId: (delivery as { channelId: string }).channelId,
+                    ...(e.target.value ? { guildId: e.target.value } : {}),
+                  })
                 }
                 placeholder="(optional)"
               />
+            </div>
+          </div>
+        )}
+        {isCustomDelivery && (
+          <div className="col gap-2">
+            <div className="row gap-3">
+              <div style={{ flex: 1 }}>
+                <div className="section-label">handler kind</div>
+                <input
+                  className="input mono"
+                  value={customKind}
+                  onChange={(e) => {
+                    setCustomKind(e.target.value);
+                    applyCustomDelivery(e.target.value, customExtrasJson);
+                  }}
+                  placeholder="slack"
+                />
+              </div>
+            </div>
+            <div>
+              <div className="section-label">extras (JSON object)</div>
+              <textarea
+                className="input mono"
+                value={customExtrasJson}
+                onChange={(e) => {
+                  setCustomExtrasJson(e.target.value);
+                  applyCustomDelivery(customKind, e.target.value);
+                }}
+                placeholder={'{ "channel": "#alerts" }'}
+                style={{ minHeight: 80 }}
+              />
+              {customExtrasError && (
+                <div className="hint" style={{ color: "var(--danger)" }}>
+                  {customExtrasError}
+                </div>
+              )}
+              <div className="hint">
+                forwarded verbatim to the plugin's delivery handler. the kind must match a
+                registered handler at fire time, or the delivery will fail.
+              </div>
             </div>
           </div>
         )}
@@ -984,13 +1181,20 @@ function describeSchedule(s: Schedule): { short: string; full: string } {
 
 function describePayload(p: Payload): { short: string; full: string } {
   if (p.kind === "prompt") {
-    return { short: "prompt", full: p.text.slice(0, 200) };
+    const userText = p.messages.find((m) => m.role === "user")?.text ?? "";
+    return { short: "prompt", full: userText.slice(0, 200) };
   }
   if (p.kind === "script") {
     const cmd = [p.command, ...(p.args ?? [])].join(" ");
     return { short: "script", full: cmd.slice(0, 200) };
   }
-  return { short: "agentTurn", full: `${p.messages.length} messages` };
+  // scriptThenPrompt
+  const cmd = [p.command, ...(p.args ?? [])].join(" ");
+  const userText = p.prompt.messages.find((m) => m.role === "user")?.text ?? "";
+  return {
+    short: "script→prompt",
+    full: `${cmd.slice(0, 80)} → ${userText.slice(0, 120)}`,
+  };
 }
 
 function describeSessionTarget(t: SessionTarget): { short: string; full: string } {

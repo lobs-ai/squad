@@ -54,11 +54,26 @@ type Schedule =
   | { kind: "once"; at: string }; // ISO timestamp
 
 type Payload =
-  | { kind: "prompt"; text: string; skills?: string[] }
-  | { kind: "agentTurn"; messages: Array<{ role: "user" | "system"; text: string }> }
-  | { kind: "script"; command: string; args?: string[]; cwd?: string };
+  | {
+      kind: "prompt";
+      messages: Array<{ role: "user" | "system"; text: string }>;
+      skills?: string[];
+    }
+  | { kind: "script"; command: string; args?: string[]; cwd?: string }
+  | {
+      kind: "scriptThenPrompt";
+      command: string;
+      args?: string[];
+      cwd?: string;
+      prompt: {
+        messages: Array<{ role: "user" | "system"; text: string }>;
+        skills?: string[];
+      };
+    };
 //  ^ "script" runs in a child process — no LLM, no agent. Output is
 //    captured into the run log and (optionally) delivered.
+//  ^ "scriptThenPrompt" spawns the script first, then conditionally
+//    runs an agent turn fed by the script's stdout.
 
 type SessionTarget =
   | { kind: "new" }                       // fresh session per fire (default)
@@ -93,7 +108,7 @@ type CronRunLog = {
   ts: string;             // when run started
   status: "ok" | "error" | "skipped";
   durationMs: number;
-  sessionId?: string;     // populated for prompt/agentTurn/session payloads
+  sessionId?: string;     // populated when a session is created/reused (any LLM payload)
   payloadKind: Payload["kind"];
   output?: string;        // truncated; full output stays in session messages
   error?: string;
@@ -129,26 +144,85 @@ All three follow the same lifecycle:
 
 ## Payload semantics
 
-- **prompt** — the most common case. The text is run as a user turn
-  through the standard agent loop (`runChatTurn`). Optional `skills`
-  are joined into the system prompt.
-- **agentTurn** — explicit messages. Useful when the job needs to set
-  a system message or chain user/system turns.
-- **script** — bypass the agent entirely. The command runs as a child
-  process; stdout/stderr are captured into the run log. This covers
-  hermes-style "data collection" without the wake-gate JSON dance —
-  if you want to turn the script's output into a prompt, use the
-  delivery hook (or chain by calling `routines.run_now` from inside
-  the script).
+Three payload kinds — `prompt`, `script`, `scriptThenPrompt`. One full
+agent loop ("turn") in the prompt-style payloads is *not* a single LLM
+call: it is one invocation of `runChatTurn`, which can iterate, call
+tools, and produce many internal steps until it stops. Bound it with
+`execution.timeoutSec` (default 300s).
 
-### Wake gates
+### `prompt`
 
-Borrowed from hermes:
+Run an agent turn. `messages` is an ordered list of role-tagged text:
+user messages are concatenated (`\n\n`-joined) into the user turn;
+system messages are folded into a per-run system-prompt override.
+`skills` (optional) names skill ids whose instructions get appended to
+that override (`Skills enabled for this routine: …`).
 
-- If the first line of payload output is `[SILENT]`, delivery is
-  skipped (run still logged).
-- If the script payload exits 0 with output `{"wakeAgent": false}`,
-  the script is treated as a no-op (skipped status).
+Use `session: { kind: "session", sessionId }` if you want the agent to
+*continue* an existing chat across fires (e.g. "every morning, ask my
+main session what's on the calendar").
+
+### `script`
+
+Bypass the agent entirely. The command runs as a child process spawned
+via Node's `child_process.spawn(command, args, { cwd })`:
+
+- **Where it runs.** `cwd` defaults to the gateway workspace dir
+  (`ExecutorDeps.workspaceDir` — typically the directory the gateway
+  was started in). Provide an absolute path in `cwd` to override.
+- **Resolution.** `command` is resolved via the gateway process's
+  `PATH`, or pass an absolute path. There is no shell — pass a shell
+  invocation explicitly (`command: "sh", args: ["-c", "…"]`) if you
+  need pipes, redirects, or globs.
+- **Environment.** The child inherits the gateway's `process.env`. No
+  per-job env injection (yet); use a wrapper script if you need
+  per-job secrets.
+- **Output capture.** stdout *and* stderr are merged in arrival order
+  into one buffer, capped at 64 KiB. Anything past the cap is dropped.
+- **Timeout.** The child is killed (SIGKILL) at `min(execution.timeoutSec,
+  300s)` — script runs are hard-capped at 5 minutes regardless of the
+  per-job override.
+- **Exit status.** Exit 0 → run status `"ok"`. Non-zero → run status
+  `"error"` with `error: "exit code N"`. The script's output is still
+  captured and logged either way.
+- **Wake gates.** Two ergonomic shortcuts for "ran fine but nothing to
+  deliver":
+  - First line of stdout is `[SILENT]` → delivery is suppressed; the
+    run is still logged with whatever status the exit code produced.
+  - Exit 0 plus stdout containing `{"wakeAgent": false}` (any line) →
+    status flips to `"skipped"`, delivery suppressed.
+
+Scripts have no session and no LLM — `sessionId` is null in the run
+log, `tokens` is unset.
+
+### `scriptThenPrompt`
+
+Run a script, then conditionally hand its stdout to an agent turn.
+Same script invocation rules as `script` (cwd, env, capture cap,
+SIGKILL at 5 minutes). The conditional uses **exit code only** — no
+text wake-gates. Rules:
+
+| Script result                  | Run status   | Agent runs? | Notes                                            |
+| ------------------------------ | ------------ | ----------- | ------------------------------------------------ |
+| exit 0, **non-empty** stdout   | `ok`         | yes         | stdout is spliced into the prompt (see below)    |
+| exit 0, **empty** stdout       | `skipped`    | no          | the "nothing to do" path; delivery suppressed    |
+| non-zero exit                  | `error`      | no          | `error: "exit code N"`; delivery suppressed      |
+
+When the agent runs, the script's stdout is woven into the inner
+`prompt.messages`:
+
+- Any occurrence of the literal placeholder `{{output}}` (whitespace
+  inside the braces is tolerated) in any message's text is replaced
+  with the script's full captured stdout.
+- If *no* message contained `{{output}}`, the stdout is appended as a
+  final `{ role: "user", text: <stdout> }` message — so the agent
+  always sees the trigger content even if you forget the placeholder.
+
+System messages and `skills` on the inner `prompt` work the same way
+they do for the standalone `prompt` payload. The exit-code rule
+replaces the `[SILENT]` / `{"wakeAgent": false}` gates — if your
+script wants to short-circuit the agent, just exit 0 with no stdout
+(or a non-zero code if it's an error condition).
 
 ## Session targeting
 
@@ -171,11 +245,59 @@ becomes a back-compat mirror of `execution.model`.
 
 ## Delivery
 
-The existing `RoutineDelivery` (silent | dashboard | discord) is kept
-as-is. The dashboard subscribes to `routines.fired/<sessionId>` for
-live updates. The plan for adding webhook delivery later is a new
-`{ kind: "webhook", url: string, headers?: Record<string,string> }`
-variant — the delivery layer already routes by `kind`.
+Each cron job's `delivery` field tells the gateway where to send the
+run's output. The schema is **open** — built-in kinds (`silent`,
+`dashboard`, `discord`) are typed precisely; arbitrary `{ kind: string,
+... }` payloads are accepted so plugin-registered handlers (slack,
+webhook, email, …) can be targeted without changing the protocol.
+
+### Built-in kinds
+
+- `silent` — run is logged, nothing is sent anywhere.
+- `dashboard` — the resulting session opens in the dashboard chat UI.
+  Implicit; the dashboard subscribes to `routines.fired/<sessionId>`.
+- `discord` — `{ kind: "discord", channelId: string, guildId?: string }`.
+  Posts the run output into a Discord channel via the channel-discord
+  plugin's registered handler.
+
+### Plugin-registered kinds
+
+Any plugin can extend delivery by calling
+`api.delivery.register(kind, handler)` during plugin registration.
+At fire time, the executor builds a `DeliveryContext` and the
+`DeliveryRegistry` routes it by `kind`:
+
+```ts
+api.delivery.register("slack", async (ctx) => {
+  // ctx.delivery is the routine's delivery object — extras are passed through
+  const { channel, emoji } = ctx.delivery as {
+    channel?: string;
+    emoji?: string;
+  };
+  await postToSlack(channel, ctx.output, { emoji });
+  return { ok: true };
+});
+```
+
+The routine targets it with:
+
+```jsonc
+{ "delivery": { "kind": "slack", "channel": "#alerts", "emoji": ":robot_face:" } }
+```
+
+A handler that returns `{ ok: false, error }` records the failure on
+the run-log entry's `delivery` field but does not change `lastStatus`.
+If no handler is registered for the kind at fire time, delivery fails
+with `"no delivery handler registered for kind \"X\""`. The wake-gate
+(`[SILENT]` / `{"wakeAgent": false}`) is honored before any handler is
+invoked.
+
+### Targeting different channels per job
+
+Each cron job has its own `delivery` config — to fan out to two
+different channels, create two jobs with the same payload but
+different `delivery.channelId` (or different `kind`). The tools tool
+schema accepts this directly via `create_cron_job`.
 
 ## Failure handling
 
@@ -227,6 +349,5 @@ land as `{ schedule: cron, payload: prompt, session: new }`.
 
 - Distributed scheduling across multiple gateway processes
 - Webhook delivery (sketched, not built)
-- Pre-run script injection as context for a prompt payload — use the
-  `script` payload kind and chain via `routines.run_now` if needed
 - Cron expression timezones beyond system local
+- Per-job env-var injection for scripts (use a wrapper)

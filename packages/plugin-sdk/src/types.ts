@@ -35,9 +35,22 @@ export interface RoutineDescriptor {
     | { kind: "interval"; everyMs: number; anchor?: string }
     | { kind: "once"; at: string };
   payload?:
-    | { kind: "prompt"; text: string; skills?: string[] }
-    | { kind: "agentTurn"; messages: Array<{ role: "user" | "system"; text: string }> }
-    | { kind: "script"; command: string; args?: string[]; cwd?: string };
+    | {
+        kind: "prompt";
+        messages: Array<{ role: "user" | "system"; text: string }>;
+        skills?: string[];
+      }
+    | { kind: "script"; command: string; args?: string[]; cwd?: string }
+    | {
+        kind: "scriptThenPrompt";
+        command: string;
+        args?: string[];
+        cwd?: string;
+        prompt: {
+          messages: Array<{ role: "user" | "system"; text: string }>;
+          skills?: string[];
+        };
+      };
   session?:
     | { kind: "new" }
     | { kind: "isolated" }
@@ -48,7 +61,20 @@ export interface RoutineDescriptor {
     toolsAllow?: string[];
     timeoutSec?: number;
   };
-  delivery?: "silent" | "dashboard" | { kind: "discord"; channelId: string; guildId?: string };
+  /**
+   * Where to send the routine's output. Built-in kinds (`silent`,
+   * `dashboard`, `discord`) are typed precisely; arbitrary `{ kind, ... }`
+   * objects are accepted so plugin-registered handlers (slack, webhook,
+   * email, …) can be targeted without changing the protocol. The string
+   * shorthand `"silent"` / `"dashboard"` is also accepted.
+   */
+  delivery?:
+    | "silent"
+    | "dashboard"
+    | { kind: "silent" }
+    | { kind: "dashboard" }
+    | { kind: "discord"; channelId: string; guildId?: string }
+    | { kind: string; [extra: string]: unknown };
 }
 
 /**
@@ -180,7 +206,7 @@ export interface DeliveryHandlerInput {
   delivery: { kind: string } & Record<string, unknown>;
   runId: string;
   sessionId: string | null;
-  payloadKind: "prompt" | "agentTurn" | "script";
+  payloadKind: "prompt" | "script" | "scriptThenPrompt";
   output?: string;
   tokens?: { in: number; out: number };
   silentGate: boolean;

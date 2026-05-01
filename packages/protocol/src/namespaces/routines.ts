@@ -1,13 +1,36 @@
 import { z } from "zod";
 
 // -- Delivery --------------------------------------------------------------
+//
+// Built-in kinds (`silent`, `dashboard`, `discord`) are typed precisely so
+// callers get autocomplete and field validation. The schema is *also* open
+// to plugin-registered kinds (`slack`, `webhook`, etc.) — the runtime's
+// DeliveryRegistry routes by `kind`, and plugins validate their own
+// extra fields inside their handler. The catch-all variant accepts any
+// `{ kind: string }` payload with arbitrary additional properties.
 
-export const routineDeliverySchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("silent") }),
-  z.object({ kind: z.literal("dashboard") }),
-  z.object({ kind: z.literal("discord"), channelId: z.string(), guildId: z.string().optional() }),
+export const silentDeliverySchema = z.object({ kind: z.literal("silent") });
+export const dashboardDeliverySchema = z.object({ kind: z.literal("dashboard") });
+export const discordDeliverySchema = z.object({
+  kind: z.literal("discord"),
+  channelId: z.string(),
+  guildId: z.string().optional(),
+});
+const customDeliverySchema = z
+  .object({ kind: z.string().min(1) })
+  .passthrough();
+
+export const routineDeliverySchema = z.union([
+  silentDeliverySchema,
+  dashboardDeliverySchema,
+  discordDeliverySchema,
+  customDeliverySchema,
 ]);
-export type RoutineDelivery = z.infer<typeof routineDeliverySchema>;
+export type RoutineDelivery =
+  | z.infer<typeof silentDeliverySchema>
+  | z.infer<typeof dashboardDeliverySchema>
+  | z.infer<typeof discordDeliverySchema>
+  | { kind: string; [extra: string]: unknown };
 
 // -- Schedule --------------------------------------------------------------
 
@@ -30,11 +53,11 @@ export const onceScheduleSchema = z.object({
 /**
  * Webhook-driven routine: fires when an HTTP POST lands at
  * `/webhook/<routine-id>`. The request body is forwarded into the routine
- * payload (substituted into `{{body}}` / `{{header.X}}` / `{{query.X}}`
- * placeholders for prompt-style payloads, or attached as the first
- * `agentTurn` message for agentTurn payloads). `auth` controls how
- * the gateway verifies the caller; `none` is allowed but heavily
- * discouraged outside of dev.
+ * payload via `{{body}}` / `{{header.X}}` / `{{query.X}}` placeholders in
+ * any `prompt` message text. If no placeholder substitutes, the raw body
+ * is appended as a final user message so the agent always sees the
+ * trigger content. `auth` controls how the gateway verifies the caller;
+ * `none` is allowed but heavily discouraged outside of dev.
  */
 export const webhookScheduleSchema = z.object({
   kind: z.literal("webhook"),
@@ -67,21 +90,18 @@ export type Schedule = z.infer<typeof scheduleSchema>;
 
 // -- Payload ---------------------------------------------------------------
 
-export const promptPayloadSchema = z.object({
-  kind: z.literal("prompt"),
-  text: z.string().min(1),
+const promptMessageSchema = z.object({
+  role: z.enum(["user", "system"]),
+  text: z.string(),
+});
+
+const promptBodySchema = z.object({
+  messages: z.array(promptMessageSchema).min(1),
   skills: z.array(z.string()).optional(),
 });
-export const agentTurnPayloadSchema = z.object({
-  kind: z.literal("agentTurn"),
-  messages: z
-    .array(
-      z.object({
-        role: z.enum(["user", "system"]),
-        text: z.string(),
-      }),
-    )
-    .min(1),
+
+export const promptPayloadSchema = promptBodySchema.extend({
+  kind: z.literal("prompt"),
 });
 export const scriptPayloadSchema = z.object({
   kind: z.literal("script"),
@@ -89,14 +109,22 @@ export const scriptPayloadSchema = z.object({
   args: z.array(z.string()).optional(),
   cwd: z.string().optional(),
 });
+export const scriptThenPromptPayloadSchema = z.object({
+  kind: z.literal("scriptThenPrompt"),
+  command: z.string().min(1),
+  args: z.array(z.string()).optional(),
+  cwd: z.string().optional(),
+  prompt: promptBodySchema,
+});
 export const payloadSchema = z.discriminatedUnion("kind", [
   promptPayloadSchema,
-  agentTurnPayloadSchema,
   scriptPayloadSchema,
+  scriptThenPromptPayloadSchema,
 ]);
+export type PromptMessage = z.infer<typeof promptMessageSchema>;
 export type PromptPayload = z.infer<typeof promptPayloadSchema>;
-export type AgentTurnPayload = z.infer<typeof agentTurnPayloadSchema>;
 export type ScriptPayload = z.infer<typeof scriptPayloadSchema>;
+export type ScriptThenPromptPayload = z.infer<typeof scriptThenPromptPayloadSchema>;
 export type Payload = z.infer<typeof payloadSchema>;
 
 // -- Session targeting -----------------------------------------------------
@@ -224,7 +252,7 @@ export const routineRunLogSchema = z.object({
   status: z.enum(["ok", "error", "skipped"]),
   durationMs: z.number().int().nonnegative(),
   sessionId: z.string().optional(),
-  payloadKind: z.enum(["prompt", "agentTurn", "script"]),
+  payloadKind: z.enum(["prompt", "script", "scriptThenPrompt"]),
   output: z.string().optional(),
   error: z.string().optional(),
   delivery: z

@@ -42,7 +42,11 @@ describe("RoutineStore (in-memory)", () => {
       name: "every-30",
       enabled: true,
       schedule: { kind: "interval", everyMs: 30 * 60_000 },
-      payload: { kind: "prompt", text: "tick", skills: ["weather"] },
+      payload: {
+        kind: "prompt",
+        messages: [{ role: "user", text: "tick" }],
+        skills: ["weather"],
+      },
       session: { kind: "isolated" },
       execution: { model: "claude-haiku-4-5", fallbacks: ["claude-sonnet-4-5"] },
       delivery: { kind: "silent" },
@@ -52,6 +56,26 @@ describe("RoutineStore (in-memory)", () => {
     expect(r.execution.model).toBe("claude-haiku-4-5");
     expect(r.model).toBe("claude-haiku-4-5"); // legacy mirror
     expect(r.cron).toBe(""); // not a cron schedule
+  });
+
+  it("custom delivery kind round-trips with its extra fields", () => {
+    const store = new RoutineStore();
+    const r = store.create({
+      name: "alerts",
+      enabled: true,
+      schedule: { kind: "cron", expr: "0 * * * *" },
+      payload: {
+        kind: "prompt",
+        messages: [{ role: "user", text: "scan logs" }],
+      },
+      session: { kind: "new" },
+      delivery: { kind: "slack", channel: "#alerts", emoji: ":robot_face:" } as {
+        kind: string;
+      } & Record<string, unknown>,
+    });
+    expect(r.delivery.kind).toBe("slack");
+    expect((r.delivery as { channel?: string }).channel).toBe("#alerts");
+    expect((r.delivery as { emoji?: string }).emoji).toBe(":robot_face:");
   });
 
   it("script payload + new session target", () => {

@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { ToolRegistry } from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
-import type { RoutineRecord } from "@squad/protocol";
+import type {
+  PromptPayload,
+  RoutineRecord,
+  ScriptPayload,
+  ScriptThenPromptPayload,
+} from "@squad/protocol";
 import type { Logger } from "../logger.js";
 import type { SessionStore } from "../db/sessions.js";
 import type { MessageStore } from "../db/messages.js";
@@ -44,16 +49,19 @@ const SCRIPT_OUTPUT_CAP = 64 * 1024;
 
 /**
  * Execute one routine. Routes by payload.kind:
- *   - prompt    → run via agent loop (runChatTurn)
- *   - agentTurn → like prompt but with explicit messages
- *   - script    → spawn child process, capture stdout/stderr
+ *   - prompt           → run via agent loop (runChatTurn)
+ *   - script           → spawn child process, capture stdout/stderr
+ *   - scriptThenPrompt → spawn script, then (on exit 0 + non-empty stdout)
+ *                        feed stdout into the agent loop
  *
  * Routes by session.kind:
  *   - new       → fresh session created here
  *   - isolated  → fresh session with a synthetic parent flag (subagent-style)
  *   - session   → append to existing session
  *
- * Wake gates ([SILENT] / {wakeAgent:false}) are honored before delivery.
+ * Wake gates ([SILENT] / {wakeAgent:false}) are honored before delivery for
+ * `script`. `scriptThenPrompt` uses the script's exit code as its conditional
+ * — see runScriptThenPrompt for the rules.
  */
 export class CronExecutor {
   constructor(private readonly deps: ExecutorDeps) {}
@@ -65,19 +73,31 @@ export class CronExecutor {
     let output: string | undefined;
     let payloadKind: RoutineRecord["payload"]["kind"];
     let tokens: { in: number; out: number } | undefined;
+    let stpSkipped = false;
 
     try {
       if (rec.payload.kind === "script") {
         payloadKind = "script";
-        const r = await this.runScript(rec);
+        const r = await this.runScript(rec.payload, rec);
         result = { sessionId: null, status: r.status, ...(r.error ? { error: r.error } : {}) };
         output = r.output;
-      } else if (rec.payload.kind === "prompt" || rec.payload.kind === "agentTurn") {
-        payloadKind = rec.payload.kind;
-        const r = await this.runAgent(rec);
+      } else if (rec.payload.kind === "prompt") {
+        payloadKind = "prompt";
+        const r = await this.runAgent(rec, rec.payload);
         result = { sessionId: r.sessionId, status: r.status, ...(r.error ? { error: r.error } : {}) };
         output = r.output;
         tokens = r.tokens;
+      } else if (rec.payload.kind === "scriptThenPrompt") {
+        payloadKind = "scriptThenPrompt";
+        const r = await this.runScriptThenPrompt(rec);
+        result = {
+          sessionId: r.sessionId,
+          status: r.status,
+          ...(r.error ? { error: r.error } : {}),
+        };
+        output = r.output;
+        tokens = r.tokens;
+        stpSkipped = r.skipped;
       } else {
         // Should be unreachable thanks to zod, but TS narrowing demands it.
         throw new Error(`unknown payload kind: ${(rec.payload as { kind: string }).kind}`);
@@ -116,6 +136,19 @@ export class CronExecutor {
     // but keeps the run logged with its real status.
     const silent = trimmedAll.startsWith("[SILENT]");
 
+    // scriptThenPrompt's "nothing to do" path: skipped status, no delivery.
+    if (stpSkipped) {
+      appendRunLog(this.deps.paths.runs, rec.id, {
+        ts,
+        status: "skipped",
+        durationMs,
+        payloadKind,
+        ...(output !== undefined ? { output: output.slice(0, SCRIPT_OUTPUT_CAP) } : {}),
+        delivery: { kind: rec.delivery.kind, ok: true, error: "scriptThenPrompt-noop" },
+      });
+      return { sessionId: null, status: "ok", error: "scriptThenPrompt-noop" };
+    }
+
     let deliveryReport: { kind: string; ok: boolean; error?: string } | undefined;
     if (this.deps.delivery && result.status === "ok") {
       deliveryReport = {
@@ -153,7 +186,11 @@ export class CronExecutor {
 
   // ---- payload routing ------------------------------------------------
 
-  private async runAgent(rec: RoutineRecord): Promise<{
+  private async runAgent(
+    rec: RoutineRecord,
+    body: PromptPayload | ScriptThenPromptPayload["prompt"],
+    extraUserText?: string,
+  ): Promise<{
     sessionId: string;
     status: "ok" | "error";
     error?: string;
@@ -161,8 +198,8 @@ export class CronExecutor {
     tokens?: { in: number; out: number };
   }> {
     const sessionId = await this.resolveSessionId(rec);
-    const userText = this.payloadToUserText(rec);
-    const systemPromptOverride = this.payloadToSystemPrompt(rec);
+    const userText = composeUserText(body.messages, extraUserText);
+    const systemPromptOverride = composeSystemPrompt(body.messages, body.skills);
     const runId = `cron_${rec.id}_${randomUUID().slice(0, 8)}`;
     const toolReg = this.scopeToolRegistry(rec);
 
@@ -204,13 +241,16 @@ export class CronExecutor {
     }
   }
 
-  private async runScript(rec: RoutineRecord): Promise<{
+  private async runScript(
+    payload: ScriptPayload | ScriptThenPromptPayload,
+    rec: RoutineRecord,
+  ): Promise<{
     status: "ok" | "error";
     error?: string;
     output: string;
+    exitCode: number | null;
   }> {
-    if (rec.payload.kind !== "script") throw new Error("not a script payload");
-    const { command, args = [], cwd } = rec.payload;
+    const { command, args = [], cwd } = payload;
     const timeoutMs = (rec.execution.timeoutSec ?? 300) * 1000;
     const effectiveTimeout = Math.min(timeoutMs, SCRIPT_TIMEOUT_MS);
 
@@ -241,17 +281,80 @@ export class CronExecutor {
 
       child.on("error", (err) => {
         clearTimeout(killer);
-        resolve({ status: "error", error: err.message, output: out });
+        resolve({ status: "error", error: err.message, output: out, exitCode: null });
       });
       child.on("close", (code) => {
         clearTimeout(killer);
         if (code === 0) {
-          resolve({ status: "ok", output: out });
+          resolve({ status: "ok", output: out, exitCode: code });
         } else {
-          resolve({ status: "error", error: `exit code ${code}`, output: out });
+          resolve({
+            status: "error",
+            error: `exit code ${code}`,
+            output: out,
+            exitCode: code,
+          });
         }
       });
     });
+  }
+
+  /**
+   * scriptThenPrompt: spawn the script, then conditionally hand its stdout
+   * to the agent loop based on the script's exit code.
+   *
+   * Rules:
+   *   - exit 0, non-empty stdout  → run the agent. {{output}} placeholders
+   *                                 in any prompt message are substituted;
+   *                                 if no message has the placeholder, the
+   *                                 stdout is appended as a final user message.
+   *   - exit 0, empty stdout      → skipped (the "nothing to do" path).
+   *   - non-zero exit             → status=error, no agent run.
+   */
+  private async runScriptThenPrompt(rec: RoutineRecord): Promise<{
+    sessionId: string | null;
+    status: "ok" | "error";
+    error?: string;
+    output?: string;
+    tokens?: { in: number; out: number };
+    skipped: boolean;
+  }> {
+    if (rec.payload.kind !== "scriptThenPrompt") {
+      throw new Error("not a scriptThenPrompt payload");
+    }
+    const payload = rec.payload;
+    const scriptResult = await this.runScript(payload, rec);
+    if (scriptResult.status === "error") {
+      return {
+        sessionId: null,
+        status: "error",
+        ...(scriptResult.error ? { error: scriptResult.error } : {}),
+        output: scriptResult.output,
+        skipped: false,
+      };
+    }
+    const stdout = scriptResult.output;
+    if (stdout.trim().length === 0) {
+      return { sessionId: null, status: "ok", output: stdout, skipped: true };
+    }
+
+    const substituted = substituteOutputPlaceholder(payload.prompt.messages, stdout);
+    const matched = substituted.changed;
+    const promptBody: PromptPayload = {
+      kind: "prompt",
+      messages: substituted.messages,
+      ...(payload.prompt.skills ? { skills: payload.prompt.skills } : {}),
+    };
+
+    const r = await this.runAgent(rec, promptBody, matched ? undefined : stdout);
+    return {
+      sessionId: r.sessionId,
+      status: r.status,
+      ...(r.error ? { error: r.error } : {}),
+      output: r.output,
+      ...(r.tokens ? { tokens: r.tokens } : {}),
+      skipped: false,
+    };
   }
 
   // ---- session resolution --------------------------------------------
@@ -277,38 +380,66 @@ export class CronExecutor {
 
   // ---- payload helpers -----------------------------------------------
 
-  private payloadToUserText(rec: RoutineRecord): string {
-    if (rec.payload.kind === "prompt") return rec.payload.text;
-    if (rec.payload.kind === "agentTurn") {
-      // Concatenate non-system messages — system messages are folded into
-      // the system prompt override.
-      return rec.payload.messages
-        .filter((m) => m.role === "user")
-        .map((m) => m.text)
-        .join("\n\n");
-    }
-    return "";
-  }
-
-  private payloadToSystemPrompt(rec: RoutineRecord): string | undefined {
-    if (rec.payload.kind === "agentTurn") {
-      const sys = rec.payload.messages
-        .filter((m) => m.role === "system")
-        .map((m) => m.text)
-        .join("\n\n");
-      return sys.length > 0 ? sys : undefined;
-    }
-    if (rec.payload.kind === "prompt" && rec.payload.skills && rec.payload.skills.length > 0) {
-      return `Skills enabled for this routine: ${rec.payload.skills.join(", ")}`;
-    }
-    return undefined;
-  }
-
   private scopeToolRegistry(_rec: RoutineRecord): ToolRegistry {
     // Filtering happens via runChatTurn's `toolsAllow` — the full registry
     // is still passed in so tool execution itself can find the executor.
     return this.deps.toolRegistry;
   }
+}
+
+/**
+ * Concatenate user-role messages into a single user-turn text. If the
+ * caller has extra text (e.g. the script's stdout in scriptThenPrompt with
+ * no `{{output}}` placeholder), it is appended after a separator.
+ */
+function composeUserText(
+  messages: Array<{ role: "user" | "system"; text: string }>,
+  extraUserText?: string,
+): string {
+  const userParts = messages.filter((m) => m.role === "user").map((m) => m.text);
+  if (extraUserText !== undefined) userParts.push(extraUserText);
+  return userParts.join("\n\n");
+}
+
+/**
+ * Build a system-prompt override from any system messages plus an optional
+ * Skills hint. Returns undefined when there's nothing to add.
+ */
+function composeSystemPrompt(
+  messages: Array<{ role: "user" | "system"; text: string }>,
+  skills: string[] | undefined,
+): string | undefined {
+  const parts: string[] = [];
+  for (const m of messages) {
+    if (m.role === "system" && m.text.length > 0) parts.push(m.text);
+  }
+  if (skills && skills.length > 0) {
+    parts.push(`Skills enabled for this routine: ${skills.join(", ")}`);
+  }
+  return parts.length > 0 ? parts.join("\n\n") : undefined;
+}
+
+/**
+ * Replace every `{{output}}` placeholder (whitespace-tolerant) with the
+ * script's stdout. Returns whether any message actually changed — the
+ * caller uses this to decide whether to append stdout as a fallback final
+ * user message.
+ */
+function substituteOutputPlaceholder(
+  messages: Array<{ role: "user" | "system"; text: string }>,
+  stdout: string,
+): {
+  messages: Array<{ role: "user" | "system"; text: string }>;
+  changed: boolean;
+} {
+  let changed = false;
+  const next = messages.map((m) => {
+    const replaced = m.text.replace(/\{\{\s*output\s*\}\}/g, stdout);
+    if (replaced === m.text) return m;
+    changed = true;
+    return { ...m, text: replaced };
+  });
+  return { messages: next, changed };
 }
 
 /**

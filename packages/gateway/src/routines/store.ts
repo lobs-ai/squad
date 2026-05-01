@@ -101,7 +101,7 @@ export class RoutineStore {
     if (!this.paths) return;
     const jobs = readJsonOrEmpty<JobsFile>(this.paths.jobs, { version: 1, jobs: [] });
     const state = readJsonOrEmpty<StateFile>(this.paths.state, { version: 1, state: {} });
-    for (const j of jobs.jobs) this.entries.set(j.id, j);
+    for (const j of jobs.jobs) this.entries.set(j.id, migratePersistedJob(j));
     for (const [id, s] of Object.entries(state.state)) this.states.set(id, { ...EMPTY_STATE, ...s });
   }
 
@@ -211,10 +211,8 @@ export class RoutineStore {
     if (input.cron !== undefined) {
       next.schedule = { kind: "cron", expr: input.cron };
     }
-    if (input.prompt !== undefined && next.payload.kind === "prompt") {
-      next.payload = { ...next.payload, text: input.prompt };
-    } else if (input.prompt !== undefined) {
-      next.payload = { kind: "prompt", text: input.prompt };
+    if (input.prompt !== undefined) {
+      next.payload = legacyPromptToPayload(input.prompt);
     }
     if (input.model !== undefined) {
       next.execution = { ...next.execution, model: input.model };
@@ -272,8 +270,9 @@ export class RoutineStore {
   /**
    * Fire a webhook-scheduled routine — same path as `runNow` but the caller
    * supplies an arbitrary payload context that gets substituted into the
-   * routine's prompt / agentTurn body. The runtime is responsible for
-   * verifying the routine's `schedule.kind === "webhook"` before calling.
+   * routine's prompt body (or scriptThenPrompt's inner prompt). The runtime
+   * is responsible for verifying the routine's `schedule.kind === "webhook"`
+   * before calling.
    */
   async fireWebhook(
     id: string,
@@ -294,7 +293,7 @@ export class RoutineStore {
   private toRecord(job: PersistedJob): RoutineRecord {
     const state = this.states.get(job.id) ?? { ...EMPTY_STATE };
     const cron = job.schedule.kind === "cron" ? job.schedule.expr : "";
-    const prompt = job.payload.kind === "prompt" ? job.payload.text : "";
+    const prompt = legacyPromptMirror(job.payload);
     const model = job.execution.model ?? null;
     const rec: RoutineRecord = {
       id: job.id,
@@ -324,7 +323,7 @@ export class RoutineStore {
         name: d.name,
         enabled: true,
         schedule: d.schedule ?? { kind: "cron", expr: d.cron },
-        payload: d.payload ?? { kind: "prompt", text: d.prompt },
+        payload: d.payload ?? legacyPromptToPayload(d.prompt),
         session: d.session ?? { kind: "new" },
         execution: d.execution ?? (d.model ? { model: d.model } : {}),
         delivery: normalizeDelivery(d.delivery),
@@ -412,11 +411,61 @@ function normalizeCreateInput(input: CreateInput): NormalizedCreate {
     name: input.name,
     enabled: input.enabled ?? true,
     schedule: { kind: "cron", expr: input.cron },
-    payload: { kind: "prompt", text: input.prompt },
+    payload: legacyPromptToPayload(input.prompt),
     session: { kind: "new" },
     execution: input.model ? { model: input.model } : {},
     delivery: input.delivery,
   };
+}
+
+/**
+ * Map a flat-shape `prompt: string` (from legacy create input or descriptors)
+ * into the structured prompt payload — a single user message.
+ */
+function legacyPromptToPayload(prompt: string): Payload {
+  return { kind: "prompt", messages: [{ role: "user", text: prompt }] };
+}
+
+/**
+ * Populate the legacy `RoutineRecord.prompt` mirror. Old clients read this
+ * field as a flat string. We can only honor that when the payload is a
+ * single user message with no skills or system messages — otherwise we
+ * leave it empty and let the client fall back to `payload.messages`.
+ */
+function legacyPromptMirror(payload: Payload): string {
+  if (payload.kind !== "prompt") return "";
+  if (payload.skills && payload.skills.length > 0) return "";
+  if (payload.messages.length !== 1) return "";
+  const only = payload.messages[0]!;
+  if (only.role !== "user") return "";
+  return only.text;
+}
+
+/**
+ * Transparently rewrite jobs.json entries persisted before the payload
+ * collapse: the old `{ kind: "prompt", text }` and `{ kind: "agentTurn",
+ * messages }` shapes both become the new `{ kind: "prompt", messages }`.
+ * Existing files keep working without manual migration.
+ */
+function migratePersistedJob(job: PersistedJob): PersistedJob {
+  const p = job.payload as unknown as { kind: string; [k: string]: unknown };
+  if (p.kind === "prompt" && typeof p.text === "string" && !Array.isArray(p.messages)) {
+    const skills = Array.isArray(p.skills) ? (p.skills as string[]) : undefined;
+    const next: Payload = {
+      kind: "prompt",
+      messages: [{ role: "user", text: p.text as string }],
+      ...(skills ? { skills } : {}),
+    };
+    return { ...job, payload: next };
+  }
+  if (p.kind === "agentTurn" && Array.isArray(p.messages)) {
+    const next: Payload = {
+      kind: "prompt",
+      messages: p.messages as Array<{ role: "user" | "system"; text: string }>,
+    };
+    return { ...job, payload: next };
+  }
+  return job;
 }
 
 function normalizeDelivery(d: RoutineDescriptor["delivery"] | undefined): RoutineDelivery {
@@ -446,8 +495,14 @@ export interface WebhookFireContext {
 
 /**
  * Substitute `{{body}}`, `{{header.X}}`, `{{query.X}}` placeholders in the
- * routine's prompt or agentTurn messages. Anything not matched stays
- * literal — keeps the surface predictable for non-templated payloads.
+ * routine's prompt messages. Anything not matched stays literal. If no
+ * substitution actually changed any text, the raw body is appended as a
+ * final user message so the agent always sees the trigger content.
+ *
+ * `script` payloads are passed through unchanged — script kinds receive
+ * webhook context via env vars in the executor, not via text substitution.
+ * `scriptThenPrompt` substitutes into its inner `prompt.messages` only;
+ * the script's command/args remain literal.
  */
 export function applyWebhookContext(
   rec: RoutineRecord,
@@ -463,32 +518,25 @@ export function applyWebhookContext(
         return ctx.query[name] ?? "";
       });
 
+  const substituteMessages = (
+    messages: Array<{ role: "user" | "system"; text: string }>,
+  ): Array<{ role: "user" | "system"; text: string }> => {
+    const next = messages.map((m) => ({ ...m, text: substitute(m.text) }));
+    const anyChanged = next.some((m, i) => m.text !== messages[i]!.text);
+    if (!anyChanged && ctx.rawBody.trim().length > 0) {
+      next.push({ role: "user", text: ctx.rawBody });
+    }
+    return next;
+  };
+
   let payload: Payload = rec.payload;
   if (rec.payload.kind === "prompt") {
-    const replaced = substitute(rec.payload.text);
-    // If no placeholder existed, append the raw body so the agent at least
-    // sees the trigger content.
-    const final = replaced === rec.payload.text
-      ? appendRawBody(rec.payload.text, ctx.rawBody)
-      : replaced;
-    payload = { ...rec.payload, text: final };
-  } else if (rec.payload.kind === "agentTurn") {
-    const original = rec.payload.messages;
-    const messages = original.map((m) => ({ ...m, text: substitute(m.text) }));
-    // Append a synthetic user message with the body if no substitution
-    // changed anything (matching the prompt-payload behavior).
-    const anyChanged = messages.some((m, i) => m.text !== original[i]!.text);
-    if (!anyChanged && ctx.rawBody.trim().length > 0) {
-      messages.push({ role: "user", text: ctx.rawBody });
-    }
-    payload = { kind: "agentTurn", messages };
+    payload = { ...rec.payload, messages: substituteMessages(rec.payload.messages) };
+  } else if (rec.payload.kind === "scriptThenPrompt") {
+    payload = {
+      ...rec.payload,
+      prompt: { ...rec.payload.prompt, messages: substituteMessages(rec.payload.prompt.messages) },
+    };
   }
-  // script payloads: webhook context is exposed through env vars by the
-  // executor; the script kind doesn't get textual substitution.
   return { ...rec, payload };
-}
-
-function appendRawBody(prompt: string, raw: string): string {
-  if (raw.trim().length === 0) return prompt;
-  return `${prompt}\n\n--- webhook payload ---\n${raw}`;
 }

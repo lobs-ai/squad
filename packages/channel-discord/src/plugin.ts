@@ -71,7 +71,7 @@ export default definePlugin({
 /** Compose the body of a routine fire for posting into a Discord channel. */
 function formatRoutineDelivery(ctx: {
   routineName: string;
-  payloadKind: "prompt" | "agentTurn" | "script";
+  payloadKind: "prompt" | "script" | "scriptThenPrompt";
   output?: string;
 }): string {
   const head = `**${ctx.routineName}** (${ctx.payloadKind})`;

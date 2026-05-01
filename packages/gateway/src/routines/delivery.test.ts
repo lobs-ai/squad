@@ -79,6 +79,34 @@ describe("DeliveryRegistry", () => {
     expect(result.error).toMatch(/webhook/);
   });
 
+  it("dispatches plugin-registered kinds (slack) with their extras forwarded", async () => {
+    const r = new DeliveryRegistry(new Broadcast(), fakeLogger());
+    const handler = vi.fn().mockResolvedValue({ ok: true });
+    r.register("slack", handler);
+    const result = await r.dispatch({
+      routineId: "rt_1",
+      routineName: "alerts",
+      delivery: {
+        kind: "slack",
+        channel: "#alerts",
+        emoji: ":robot_face:",
+      } as { kind: string } & Record<string, unknown>,
+      runId: "run-1",
+      sessionId: "s_1",
+      payloadKind: "prompt",
+      output: "found 3 errors",
+      silentGate: false,
+    });
+    expect(result.ok).toBe(true);
+    expect(handler).toHaveBeenCalledOnce();
+    const ctx = handler.mock.calls[0]![0] as {
+      delivery: { kind: string; channel?: string; emoji?: string };
+    };
+    expect(ctx.delivery.kind).toBe("slack");
+    expect(ctx.delivery.channel).toBe("#alerts");
+    expect(ctx.delivery.emoji).toBe(":robot_face:");
+  });
+
   it("captures handler exceptions into the error envelope", async () => {
     const r = new DeliveryRegistry(new Broadcast(), fakeLogger());
     r.register("discord", async () => {

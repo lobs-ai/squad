@@ -113,7 +113,7 @@ The crash window is one in-flight LLM turn — `runs.ts` flushes at every
 
 - `scheduler.ts` — 60-second tick, finds due routines.
 - `executor.ts` — runs the routine in a fresh / isolated / reused session,
-  honouring `payload` (`prompt`, `agentTurn`, `script`) and `execution`
+  honouring `payload` (`prompt`, `script`, `scriptThenPrompt`) and `execution`
   (model, tool allow-list, timeout).
 - `delivery.ts` + `DeliveryRegistry` — fans the result out to silent /
   dashboard / channel-registered handlers.
