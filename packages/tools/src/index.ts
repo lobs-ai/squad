@@ -9,6 +9,7 @@ export * from "./config/index.js";
 export * from "./memory/index.js";
 export * from "./cron/index.js";
 export * from "./restart/index.js";
+export * from "./doctor/index.js";
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 export { capOutput, DEFAULT_OUTPUT_CAP, DEFAULT_MAX_LINES } from "./output-cap.js";
@@ -137,6 +138,7 @@ import { configGroup } from "./config/index.js";
 import { questionsGroup } from "./questions/index.js";
 import { subagentsGroup } from "./subagents/index.js";
 import { restartGroup } from "./restart/index.js";
+import { doctorGroup } from "./doctor/index.js";
 
 /** All built-in tool class instances. */
 export const BUILTIN_TOOLS: readonly BaseTool[] = [
@@ -221,6 +223,7 @@ export const BUILTIN_GROUPS: readonly ToolGroup[] = [
   memoryGroup,
   configGroup,
   restartGroup,
+  doctorGroup,
   htmlToPdfGroup,
   pptxGroup,
 ] as const;

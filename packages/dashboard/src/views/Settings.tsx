@@ -1494,8 +1494,9 @@ function ChatEditor({
       <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid var(--border-soft)" }}>
         <div className="section-label" style={{ marginBottom: 6 }}>auto-title</div>
         <div className="hint" style={{ marginBottom: 8 }}>
-          when on, new sessions are named from their first user message. agents
-          and users can still override the model per-session.
+          when on, new sessions are named from their first user message.
+          changes apply live — no restart needed. agents and users can still
+          override the model per-session.
         </div>
         <div className="row gap-2" style={{ alignItems: "center", marginBottom: 10 }}>
           <input

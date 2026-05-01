@@ -58,6 +58,11 @@ export class RoutineScheduler {
     this.timer = null;
   }
 
+  /** True when the scheduler tick timer is active. */
+  isRunning(): boolean {
+    return this.timer !== null;
+  }
+
   /** Test seam: run one tick deterministically. */
   tickOnce(): void {
     this.tick();

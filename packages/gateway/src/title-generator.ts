@@ -27,6 +27,11 @@ export interface TitleGeneratorDeps {
    * Usually `config.llm.primary.model`.
    */
   defaultModel: string;
+  /**
+   * Live read of the `chat.auto_title` toggle. Checked on every call so
+   * flipping the setting takes effect without a gateway restart.
+   */
+  enabled: () => boolean;
   /** Optional override applied to every session that hasn't picked its own. */
   configuredModel: () => string | null;
   /**
@@ -35,7 +40,11 @@ export interface TitleGeneratorDeps {
    * user-configured credentials.
    */
   resolveConfig: () => ResolveProviderConfigResult;
-  /** Testing seam — bypasses createClient and provider resolution. */
+  /**
+   * Testing seam — bypasses createClient and provider resolution. Production
+   * callers should leave this undefined so the resolved title model is
+   * actually honored (a chain client would clobber the model parameter).
+   */
   clientOverride?: LLMClient;
 }
 
@@ -81,6 +90,7 @@ export class TitleGenerator {
    * call fails. Caller should not await — runs in the background.
    */
   async generateIfNeeded(sessionId: string, userMessageText: string): Promise<void> {
+    if (!this.deps.enabled()) return;
     const session = this.deps.sessions.tryGet(sessionId);
     if (!session) return;
     if (!this.needsTitle(session.title)) return;
@@ -138,6 +148,10 @@ export class TitleGenerator {
     const fresh = this.deps.sessions.tryGet(sessionId);
     if (!fresh || !this.needsTitle(fresh.title)) return;
     this.deps.sessions.setTitle(sessionId, title);
+    this.deps.logger.info(
+      { sessionId, model, title },
+      "title-generator: titled session",
+    );
   }
 }
 

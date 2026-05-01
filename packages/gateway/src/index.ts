@@ -13,6 +13,7 @@ import {
   registerMemoryTools,
   registerCronTools,
   registerRestartTool,
+  registerSquadDoctorTool,
 } from "@squad/tools";
 import { JsonConfigBackend } from "./config-backend.js";
 import { RestartManager } from "./restart/manager.js";
@@ -76,10 +77,14 @@ import { RotatingLLMClient, shouldRotateKeys } from "./rotating-client.js";
 import { createGatewayServer, type GatewayHandle } from "./server.js";
 import { seedCoreFiles } from "./agent-prompt.js";
 import { memoryBackendFor } from "./memory/backend.js";
-import { SquadLLMClientForMemCore } from "./memory/llm-adapter.js";
+import { MemoryLLMRouter } from "./memory/llm-router.js";
+import { resolveMemoryEmbedder } from "./memory/embedder-resolver.js";
 import { MemoryService } from "./memory/service.js";
 import { MarkdownMemoryMirror } from "./memory/markdown-mirror.js";
 import { SessionIngestionService } from "./memory/session-ingest.js";
+import { Doctor } from "./doctor/engine.js";
+import { createBuiltinChecks } from "./doctor/checks.js";
+import { doctorBackendFor } from "./doctor/backend.js";
 import type { MemCore } from "memcore";
 
 export { logger } from "./logger.js";
@@ -166,6 +171,18 @@ export {
   CORE_FILES,
 } from "./agent-prompt.js";
 export { MarkdownMemoryMirror } from "./memory/markdown-mirror.js";
+export {
+  Doctor,
+  createBuiltinChecks,
+  doctorBackendFor,
+  type Check,
+  type Diagnosis,
+  type DoctorReport,
+  type FixOutcome,
+  type Severity,
+  type BuiltinDeps as DoctorBuiltinDeps,
+  type LlmResolutionSnapshot,
+} from "./doctor/index.js";
 export {
   MemoryService,
   memoryBackendFor,
@@ -442,7 +459,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   // memory is a load-bearing primitive for the agent, not optional.
   const memcoreCfg = config.server.memcore;
   let memcoreInstance: MemCore;
-  let memcoreLlmClient: SquadLLMClientForMemCore | undefined;
+  let memcoreLlmConfigured = false;
   if (opts.memcoreOverride) {
     memcoreInstance = opts.memcoreOverride;
   } else {
@@ -453,26 +470,22 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
         "memcore.database_url (or MEMCORE_DATABASE_URL) is required — squad uses MemCore for all memory ops",
       );
     }
-    const memcoreEmbedKey = process.env[memcoreCfg.embedding_api_key_env] ?? "";
     // Dynamic import: memcore validates env at import-time. Loading it lazily
     // means we surface a clean error here rather than at module-resolution time.
     const memcoreMod = await import("memcore");
-    const { MemCore: MemCoreCtor, OpenAIEmbedder, StubEmbedder } = memcoreMod;
-    const memcoreEmbedder = memcoreEmbedKey
-      ? new OpenAIEmbedder({
-          apiKey: memcoreEmbedKey,
-          model: memcoreCfg.embedding_model,
-          ...(memcoreCfg.embedding_base_url
-            ? { baseUrl: memcoreCfg.embedding_base_url }
-            : {}),
-        })
-      : (() => {
-          logger.warn(
-            { envVar: memcoreCfg.embedding_api_key_env },
-            "memcore embedder API key not set — using StubEmbedder (semantic recall will be degraded)",
-          );
-          return new StubEmbedder(memcoreCfg.embedding_dim, memcoreCfg.embedding_model);
-        })();
+    const { MemCore: MemCoreCtor } = memcoreMod;
+    const memcoreEmbedder = resolveMemoryEmbedder({
+      embeddingModel: memcoreCfg.embedding_model,
+      embeddingDim: memcoreCfg.embedding_dim,
+      legacyBaseUrl: memcoreCfg.embedding_base_url,
+      legacyApiKeyEnv: memcoreCfg.embedding_api_key_env,
+      providers: config.llm.providers as Record<
+        string,
+        { api_key?: string; api_key_env?: string; base_url?: string }
+      >,
+      memcoreMod,
+      logger,
+    });
     // Resolve per-stage model: explicit override → processing_model → primary.
     // Empty string at any layer falls through; `claude-haiku-4-5` is the
     // historical extraction default and stays as a last-resort fallback so
@@ -481,14 +494,17 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     const fallback = memcoreCfg.processing_model || primary || "claude-haiku-4-5";
     const stageModel = (override: string): string => override || fallback;
 
-    memcoreLlmClient = sharedClient
-      ? new SquadLLMClientForMemCore(sharedClient)
-      : undefined;
-    if (!memcoreLlmClient) {
-      logger.warn(
-        "no shared LLM client — memcore ingestion will skip extraction (chunks only)",
-      );
-    }
+    // Memory LLM router: routes per-call to the right provider. Default-
+    // provider calls reuse `sharedClient` (rotation/fallbacks); calls naming
+    // a model from any other provider build their own client from the same
+    // `llm.providers` config the chat client uses.
+    const memoryLlmClient = new MemoryLLMRouter({
+      defaultModel: primary,
+      ...(sharedClient ? { defaultClient: sharedClient } : {}),
+      clientConfig: llmResolution.clientConfig,
+    });
+    memcoreLlmConfigured = true;
+
     memcoreInstance = new MemCoreCtor({
       databaseUrl: memcoreDatabaseUrl,
       embedder: memcoreEmbedder,
@@ -499,7 +515,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
       conflictModel: stageModel(memcoreCfg.conflict_model),
       temporalParserModel: stageModel(memcoreCfg.temporal_parser_model),
       profileGeneratorModel: stageModel(memcoreCfg.profile_generator_model),
-      ...(memcoreLlmClient ? { llmClient: memcoreLlmClient } : {}),
+      llmClient: memoryLlmClient,
     });
   }
   const containerTag = memcoreCfg.container_tag || config.server.squad_name;
@@ -514,8 +530,9 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   logger.info({ containerTag }, "memcore memory service ready");
 
   // Idle-driven session ingestion. Disabled when `memcoreOverride` is set
-  // (tests inject a stub MemCore that doesn't implement extraction) and when
-  // there's no shared LLMClient (extraction would be a no-op anyway).
+  // (tests inject a stub MemCore that doesn't implement extraction).
+  // Otherwise it always runs — the memory router routes per-call to the
+  // right provider, so there's no longer a "no LLM, skip extraction" mode.
   const ingestCfg = memcoreCfg.ingest;
   const recoveredIngestSessions = sessions.resetInFlightIngest();
   if (recoveredIngestSessions > 0) {
@@ -525,7 +542,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     );
   }
   const sessionIngestion =
-    !opts.memcoreOverride && memcoreLlmClient
+    !opts.memcoreOverride && memcoreLlmConfigured
       ? new SessionIngestionService({
           memcore: memcoreInstance,
           sessions,
@@ -750,6 +767,9 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     onPluginChanged: (rec) => broadcast.publish("plugins.changed", { plugin: rec }),
   });
 
+  // Plugin / MCP load failures are surfaced to the doctor so the agent can
+  // diagnose them post-boot instead of relying on a log scrape.
+  const pluginLoadFailures: Array<{ source: string; error: string }> = [];
   for (const entry of config.plugins) {
     const pluginPath = typeof entry === "string" ? entry : entry.path;
     const pluginConfig =
@@ -758,6 +778,10 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
       await plugins.load(pluginPath, pluginConfig);
     } catch (err) {
       logger.error({ err, pluginPath }, "failed to load plugin");
+      pluginLoadFailures.push({
+        source: pluginPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -811,11 +835,16 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   // into the gateway's ToolRegistry. Failures are non-fatal — the gateway
   // boots even when one server is broken; subsequent reload() can fix it.
   const mcpRegistry = new McpRegistry({ toolRegistry, logger });
+  const mcpLoadFailures: Array<{ id: string; error: string }> = [];
   for (const cfg of config.mcp.servers) {
     try {
       await mcpRegistry.load(cfg);
     } catch (err) {
       logger.error({ err, serverId: cfg.id }, "failed to load mcp server");
+      mcpLoadFailures.push({
+        id: cfg.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -911,26 +940,73 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
       );
   }
 
+  // Squad Doctor — diagnostic engine. Every subsystem the doctor inspects
+  // is constructed by this point. We bind it via the tool registry so the
+  // agent can call `squad_doctor` to find/repair issues across the system.
+  const doctor = new Doctor({ logger });
+  doctor.registerAll(
+    createBuiltinChecks({
+      logger,
+      db,
+      sessions,
+      memcore: memcoreInstance,
+      embedderKeyPresent: Boolean(process.env[memcoreCfg.embedding_api_key_env]),
+      containerTag,
+      squadName: config.server.squad_name,
+      workspaceDir,
+      dataDir: config.server.data_dir,
+      llm: () => {
+        const snap = resolveProviderConfig(
+          liveConfig.current.llm.providers as Record<
+            string,
+            import("./llm-config.js").ProviderConfig
+          >,
+        );
+        return {
+          primaryModel: liveConfig.current.llm.primary?.model || null,
+          configuredProviders: Object.keys(liveConfig.current.llm.providers ?? {}),
+          resolvedProviders: snap.resolved,
+          missingKeys: snap.missingKeys,
+        };
+      },
+      plugins,
+      pluginFailures: () => [...pluginLoadFailures],
+      mcp: mcpRegistry,
+      mcpFailures: () => [...mcpLoadFailures],
+      channels,
+      subagents: {
+        pool: subagentPool,
+        limits: {
+          maxConcurrentGlobal: config.subagents.max_concurrent_global,
+          maxTreeDepth: config.subagents.max_tree_depth,
+        },
+      },
+      routines: {
+        scheduler: routines,
+        isRunning: () => routines.isRunning(),
+      },
+    }),
+  );
+  registerSquadDoctorTool(toolRegistry, doctorBackendFor(doctor));
+  logger.info({ checks: doctor.list().length }, "squad doctor ready");
+
   // Auto-titler: kicks in once after the first user message of a session.
-  // Off-by-default would mean every install has to opt in; we surface the
-  // toggle via `chat.auto_title` instead and pass `undefined` here when
-  // disabled so chat dispatch skips the call entirely.
-  const titleGenerator = config.chat.auto_title
-    ? new (await import("./title-generator.js")).TitleGenerator({
-        sessions,
-        logger,
-        defaultModel: config.llm.primary.model,
-        configuredModel: () => liveConfig.current.chat.title_model || null,
-        resolveConfig: () =>
-          resolveProviderConfig(
-            liveConfig.current.llm.providers as Record<
-              string,
-              import("./llm-config.js").ProviderConfig
-            >,
-          ),
-        ...(sharedClient ? { clientOverride: sharedClient } : {}),
-      })
-    : undefined;
+  // Always instantiated so the `chat.auto_title` toggle takes effect live —
+  // the generator itself bails out when `enabled()` returns false.
+  const titleGenerator = new (await import("./title-generator.js")).TitleGenerator({
+    sessions,
+    logger,
+    defaultModel: config.llm.primary.model,
+    enabled: () => liveConfig.current.chat.auto_title,
+    configuredModel: () => liveConfig.current.chat.title_model || null,
+    resolveConfig: () =>
+      resolveProviderConfig(
+        liveConfig.current.llm.providers as Record<
+          string,
+          import("./llm-config.js").ProviderConfig
+        >,
+      ),
+  });
 
   const handle = createGatewayServer({
     config,
@@ -950,7 +1026,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     toolGroups,
     workspaceDir,
     memory: memoryService,
-    ...(titleGenerator ? { titleGenerator } : {}),
+    titleGenerator,
     ...(sessionIngestion ? { sessionIngestion } : {}),
     ingestSubagents: ingestCfg.include_subagents,
     startedAt,

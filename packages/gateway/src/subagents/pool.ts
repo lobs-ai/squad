@@ -27,6 +27,7 @@ import {
   discoverContextFiles,
   renderContextFilesSection,
 } from "../context-discovery.js";
+import { persistRunMessages } from "../run-persistence.js";
 
 export interface PoolLimits {
   maxConcurrentGlobal: number;
@@ -467,6 +468,7 @@ export class SubagentPool {
     });
 
     const session = new Session([{ role: "user", content: task }]);
+    const messageCountBefore = session._ref().length;
 
     // Persist + broadcast the user turn so the dashboard's chat.history (and
     // anyone live-watching this session) sees the same transcript shape it
@@ -576,22 +578,14 @@ export class SubagentPool {
       throw err;
     }
 
-    // Persist whatever the runner accumulated as the assistant turn so the
-    // transcript pane has both halves of the exchange.
-    const finalMessages = session._ref();
-    const lastAssistant = [...finalMessages].reverse().find((m) => m.role === "assistant");
-    const assistantBlocks: ContentBlock[] = lastAssistant
-      ? toWireBlocks(lastAssistant.content)
-      : [{ type: "text", text: result.output }];
-    const assistantMessage = this.deps.messages.append({
+    persistRunMessages({
+      messages: this.deps.messages,
+      broadcast: this.deps.broadcast,
       sessionId,
-      role: "assistant",
-      content: assistantBlocks,
-    });
-    this.deps.broadcast.publish(`chat.assistant_message/${sessionId}`, {
-      sessionId,
-      message: assistantMessage,
+      session,
+      messageCountBefore,
       runId,
+      fallbackText: result.output,
     });
 
     return result;
@@ -673,11 +667,6 @@ export class SubagentPool {
       },
     };
   }
-}
-
-function toWireBlocks(content: string | Array<Record<string, unknown>>): ContentBlock[] {
-  if (typeof content === "string") return [{ type: "text", text: content }];
-  return content.map((b) => b as unknown as ContentBlock);
 }
 
 /**

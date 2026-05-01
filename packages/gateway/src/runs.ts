@@ -14,45 +14,7 @@ import {
   renderContextFilesSection,
 } from "./context-discovery.js";
 import type { MemoryService } from "./memory/service.js";
-
-/**
- * Convert wire ContentBlocks into the LLM's content shape for message
- * history. tool_result blocks need camelCase→snake_case remap (Anthropic
- * API uses tool_use_id/is_error); text and tool_use blocks pass through.
- */
-function toLLMContent(blocks: ContentBlock[]): string | Array<Record<string, unknown>> {
-  if (blocks.length === 1 && blocks[0]!.type === "text") return blocks[0]!.text;
-  return blocks.map((b) => {
-    if (b.type === "tool_result") {
-      return {
-        type: "tool_result",
-        tool_use_id: b.toolUseId,
-        content: b.content,
-        ...(b.isError ? { is_error: true } : {}),
-      };
-    }
-    return b as unknown as Record<string, unknown>;
-  });
-}
-
-/**
- * Convert LLM content (Anthropic shape) into wire ContentBlocks for
- * persistence. Inverse of toLLMContent — tool_result fields go snake→camel.
- */
-function llmToWireBlocks(content: string | Array<Record<string, unknown>>): ContentBlock[] {
-  if (typeof content === "string") return [{ type: "text", text: content }];
-  return content.map((b) => {
-    if (b.type === "tool_result") {
-      return {
-        type: "tool_result" as const,
-        toolUseId: b.tool_use_id as string,
-        content: b.content as string | Array<unknown>,
-        ...(b.is_error ? { isError: true } : {}),
-      };
-    }
-    return b as unknown as ContentBlock;
-  });
-}
+import { toLLMContent, persistRunMessages } from "./run-persistence.js";
 
 function textBlocks(content: ContentBlock[] | string): ContentBlock[] {
   if (typeof content === "string") return [{ type: "text", text: content }];
@@ -346,48 +308,14 @@ export async function runChatTurn(
     result.usage.outputTokens,
   );
 
-  // Persist every message the runner produced this turn so a refresh can
-  // replay tool_use/tool_result blocks alongside text. The runner emits
-  // tool results as role:"user" with tool_result blocks + a reminder text;
-  // we drop the reminder and store them as role:"tool" for the dashboard.
-  const finalMessages = session._ref();
-  const newMessages = finalMessages.slice(messageCountBefore);
-
-  let finalAssistant: MessageRecord | null = null;
-  for (const m of newMessages) {
-    if (m.role === "assistant") {
-      finalAssistant = deps.messages.append({
-        sessionId: options.sessionId,
-        role: "assistant",
-        content: llmToWireBlocks(m.content),
-      });
-    } else if (m.role === "user" && Array.isArray(m.content)) {
-      const toolResults = m.content.filter(
-        (b) => (b as { type?: string }).type === "tool_result",
-      );
-      if (toolResults.length === 0) continue;
-      deps.messages.append({
-        sessionId: options.sessionId,
-        role: "tool",
-        content: llmToWireBlocks(toolResults),
-      });
-    }
-  }
-
-  // Safety net: if the runner produced no assistant message (edge cases
-  // around fallbacks), persist result.output so callers still see a reply.
-  if (!finalAssistant) {
-    finalAssistant = deps.messages.append({
-      sessionId: options.sessionId,
-      role: "assistant",
-      content: [{ type: "text", text: result.output }],
-    });
-  }
-
-  deps.broadcast.publish(`chat.assistant_message/${options.sessionId}`, {
+  persistRunMessages({
+    messages: deps.messages,
+    broadcast: deps.broadcast,
     sessionId: options.sessionId,
-    message: finalAssistant,
+    session,
+    messageCountBefore,
     runId,
+    fallbackText: result.output,
   });
 
   return { userMessage, runId, result };
