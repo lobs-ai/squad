@@ -269,6 +269,26 @@ export class RoutineStore {
     return result;
   }
 
+  /**
+   * Fire a webhook-scheduled routine — same path as `runNow` but the caller
+   * supplies an arbitrary payload context that gets substituted into the
+   * routine's prompt / agentTurn body. The runtime is responsible for
+   * verifying the routine's `schedule.kind === "webhook"` before calling.
+   */
+  async fireWebhook(
+    id: string,
+    runner: RoutineRunner,
+    ctx: WebhookFireContext,
+  ): Promise<{ sessionId: string | null }> {
+    const job = this.entries.get(id);
+    if (!job) throw new Error(`unknown routine: ${id}`);
+    const rec = this.toRecord(job);
+    const enriched = applyWebhookContext(rec, ctx);
+    const result = await runner(enriched);
+    this.markFired(id, result.sessionId);
+    return result;
+  }
+
   // ---- helpers --------------------------------------------------------
 
   private toRecord(job: PersistedJob): RoutineRecord {
@@ -405,4 +425,70 @@ function normalizeDelivery(d: RoutineDescriptor["delivery"] | undefined): Routin
     return d === "silent" ? { kind: "silent" } : { kind: "dashboard" };
   }
   return d;
+}
+
+// -- Webhook payload substitution -----------------------------------------
+
+export interface WebhookFireContext {
+  /** Raw decoded body. May be a parsed JSON value or a string when it isn't JSON. */
+  body: unknown;
+  /** Lowercased header map (last value wins for duplicates). */
+  headers: Record<string, string>;
+  /** Query-string params from the webhook URL. */
+  query: Record<string, string>;
+  /**
+   * Raw text body — supplied so prompt-style payloads with no `{{body}}`
+   * placeholder can fall back to appending the raw text. JSON bodies get
+   * stringified for substitution.
+   */
+  rawBody: string;
+}
+
+/**
+ * Substitute `{{body}}`, `{{header.X}}`, `{{query.X}}` placeholders in the
+ * routine's prompt or agentTurn messages. Anything not matched stays
+ * literal — keeps the surface predictable for non-templated payloads.
+ */
+export function applyWebhookContext(
+  rec: RoutineRecord,
+  ctx: WebhookFireContext,
+): RoutineRecord {
+  const substitute = (s: string): string =>
+    s
+      .replace(/\{\{\s*body\s*\}\}/g, ctx.rawBody)
+      .replace(/\{\{\s*header\.([\w-]+)\s*\}\}/g, (_m, name: string) => {
+        return ctx.headers[name.toLowerCase()] ?? "";
+      })
+      .replace(/\{\{\s*query\.([\w-]+)\s*\}\}/g, (_m, name: string) => {
+        return ctx.query[name] ?? "";
+      });
+
+  let payload: Payload = rec.payload;
+  if (rec.payload.kind === "prompt") {
+    const replaced = substitute(rec.payload.text);
+    // If no placeholder existed, append the raw body so the agent at least
+    // sees the trigger content.
+    const final = replaced === rec.payload.text
+      ? appendRawBody(rec.payload.text, ctx.rawBody)
+      : replaced;
+    payload = { ...rec.payload, text: final };
+  } else if (rec.payload.kind === "agentTurn") {
+    const original = rec.payload.messages;
+    const messages = original.map((m) => ({ ...m, text: substitute(m.text) }));
+    // Append a synthetic user message with the body if no substitution
+    // changed anything (matching the prompt-payload behavior).
+    const anyChanged = messages.some((m, i) => m.text !== original[i]!.text);
+    if (!anyChanged && ctx.rawBody.trim().length > 0) {
+      messages.push({ role: "user", text: ctx.rawBody });
+    }
+    payload = { kind: "agentTurn", messages };
+  }
+  // script payloads: webhook context is exposed through env vars by the
+  // executor; the script kind doesn't get textual substitution.
+  return { ...rec, payload };
+}
+
+function appendRawBody(prompt: string, raw: string): string {
+  if (raw.trim().length === 0) return prompt;
+  return `${prompt}\n\n--- webhook payload ---\n${raw}`;
 }

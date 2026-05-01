@@ -51,10 +51,40 @@ export interface RoutineDescriptor {
   delivery?: "silent" | "dashboard" | { kind: "discord"; channelId: string; guildId?: string };
 }
 
+/**
+ * A skill is a **parameterized subagent definition** — system prompt, tool
+ * subset, model, token budget, plus a structured input schema. Plugins
+ * register skills via `api.skills.register({...})`; the host turns each
+ * skill into a registered subagent with name = `skill:<id>` so the agent
+ * can invoke it via `spawn_subagent({ subagent: "skill:research", input: {...} })`.
+ *
+ * The legacy "system prompt fragment" form (`name + systemPromptFragment`)
+ * is kept for back-compat — the host injects fragments into the system
+ * prompt the way it always did. Plugins should migrate to the structured
+ * form when they need their own model / tool subset / input schema.
+ */
 export interface SkillDescriptor {
   name: string;
   /** Prompt snippet injected into the system prompt when the skill is active. */
   systemPromptFragment?: string;
+  /** Human-readable description — surfaced in subagent listings. */
+  description?: string;
+  /** Model id the skill runs against. Inherits gateway default when omitted. */
+  model?: string;
+  /** Tool ids the skill is allowed to use. Empty = inherit parent tools. */
+  tools?: string[];
+  /** Toolset bundles unioned with `tools`. */
+  toolsets?: string[];
+  /** SOUL.md preface seeded the first time the underlying subagent runs. */
+  systemPrompt?: string;
+  /** JSON Schema for the structured `input` payload. */
+  inputSchema?: Record<string, unknown>;
+  /** Hard limits — same shape as `SubagentDefinition.limits`. */
+  limits?: {
+    maxTokens?: number;
+    maxToolCalls?: number;
+    timeoutMs?: number;
+  };
 }
 
 export interface ApprovalPolicy {
@@ -161,10 +191,40 @@ export type PluginDeliveryHandler = (
 
 type AnyTool = BaseTool<Record<string, unknown>>;
 
+/**
+ * Hook a plugin can register to handle a non-Squad-native subagent runtime
+ * (Claude Code, Codex, Gemini, …). The gateway hands the structured spawn
+ * input; the runtime spawns the external agent and streams text back.
+ */
+export interface SubagentRuntimeRegistration {
+  id: string;
+  run(input: {
+    prompt: string;
+    model: string;
+    allowedTools: string[];
+    cwd: string;
+    definition: SubagentDefinition;
+    signal: AbortSignal;
+    onTextChunk?: (delta: string) => void;
+  }): Promise<{
+    output: string;
+    succeeded: boolean;
+    inputTokens: number;
+    outputTokens: number;
+    detail?: Record<string, unknown>;
+  }>;
+}
+
 export interface GatewayAPI {
   tools: { register(tool: AnyTool): void };
   providers: { register(name: string, client: LLMClient): void };
   subagents: { register(def: SubagentDefinition): void };
+  /**
+   * External-runtime adapters. Plugins register an adapter under an id;
+   * subagent definitions opt in via `runtime: <id>`. Most plugins won't
+   * touch this — it's the path for ACP-bound runtimes only.
+   */
+  subagentRuntimes: { register(runtime: SubagentRuntimeRegistration): void };
   routines: { register(def: RoutineDescriptor): void };
   skills: { register(skill: SkillDescriptor): void };
   approvalPolicies: { register(policy: ApprovalPolicy): void };

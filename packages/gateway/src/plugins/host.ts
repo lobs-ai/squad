@@ -1,8 +1,11 @@
-import { resolve as resolvePath, isAbsolute } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve as resolvePath, isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
   GatewayAPI,
   PluginDescriptor,
+  PluginManifest,
+  PluginPermission,
   RoutineDescriptor,
   SkillDescriptor,
   ApprovalPolicy,
@@ -11,6 +14,8 @@ import type {
   ToolsetDescriptor,
   PluginDeliveryHandler,
 } from "@squad/plugin-sdk";
+import type { SubagentRuntimeRegistry } from "../subagents/runtime.js";
+import { parsePluginManifest, satisfiesRequires } from "@squad/plugin-sdk";
 import type { ToolRegistry, BaseTool } from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
 import type { PluginRecord, PluginUiContribution, SubagentDefinition } from "@squad/protocol";
@@ -31,6 +36,8 @@ export interface PluginHostDeps {
   skills: SkillDescriptor[];
   /** Approval policies registered in cascade order. */
   approvalPolicies: ApprovalPolicy[];
+  /** Optional registry for non-Squad-native subagent runtimes (ACP-bound). */
+  subagentRuntimes?: SubagentRuntimeRegistry;
   /** Channel lifecycles collected from plugins of kind "channel". */
   channels: ChannelHandle[];
   /** Slash commands contributed by plugins. Surfaced via commands.list. */
@@ -53,6 +60,8 @@ export interface PluginHostDeps {
 export interface LoadedPlugin {
   descriptor: PluginDescriptor;
   source: string;
+  /** Manifest discovered next to the entry, if present. */
+  manifest?: PluginManifest;
   config: Record<string, unknown>;
   enabled: boolean;
   installedAt: string;
@@ -62,6 +71,8 @@ export interface LoadedPlugin {
 
 export class PluginHost {
   private readonly loaded: Map<string, LoadedPlugin> = new Map();
+  /** Per-call cache-busting stamp used by reload(). Cleared after each load. */
+  private reloadStamp: number | null = null;
 
   constructor(private readonly deps: PluginHostDeps) {}
 
@@ -75,20 +86,53 @@ export class PluginHost {
       isAbsolute(entryPath) ||
       entryPath.startsWith("./") ||
       entryPath.startsWith("../");
-    const specifier = looksLikePath
-      ? pathToFileURL(isAbsolute(entryPath) ? entryPath : resolvePath(process.cwd(), entryPath)).href
+    const absolute = looksLikePath
+      ? isAbsolute(entryPath)
+        ? entryPath
+        : resolvePath(process.cwd(), entryPath)
+      : null;
+    const manifest = absolute ? loadManifestNear(absolute) : null;
+
+    // Validate `requires` before importing, so missing prerequisites surface
+    // a clear error rather than a cryptic runtime crash from inside the plugin.
+    if (manifest) {
+      for (const req of manifest.requires) {
+        const ok = Array.from(this.loaded.values()).some((p) =>
+          satisfiesRequires(req, {
+            id: p.descriptor.id,
+            version: p.descriptor.version,
+          }),
+        );
+        if (!ok) {
+          throw new Error(
+            `plugin "${manifest.id}" requires "${req}" which is not loaded`,
+          );
+        }
+      }
+    }
+
+    const baseSpecifier = looksLikePath
+      ? pathToFileURL(absolute!).href
       : entryPath;
+    // Reload-busting: when this is a reload (not a cold load), append a
+    // timestamp query so dynamic import gives us the fresh module rather
+    // than the cached one. The host injects `_reload` via load() during a
+    // reload so cold loads stay cache-friendly.
+    const specifier = this.reloadStamp
+      ? `${baseSpecifier}${baseSpecifier.includes("?") ? "&" : "?"}t=${this.reloadStamp}`
+      : baseSpecifier;
     const mod = (await import(specifier)) as { default?: PluginDescriptor };
     const descriptor = mod.default;
     if (!descriptor || typeof descriptor.register !== "function") {
       throw new Error(`plugin at ${entryPath} has no valid default export`);
     }
     const uiContributions: PluginUiContribution[] = [];
-    const api = this.apiFor(config, uiContributions);
+    const api = this.apiFor(config, uiContributions, manifest?.permissions);
     const cleanup = await descriptor.register(api);
     const entry: LoadedPlugin = {
       descriptor,
       source: entryPath,
+      ...(manifest ? { manifest } : {}),
       config,
       enabled: true,
       installedAt: new Date().toISOString(),
@@ -96,7 +140,14 @@ export class PluginHost {
       cleanup: typeof cleanup === "function" ? cleanup : undefined,
     };
     this.loaded.set(descriptor.id, entry);
-    this.deps.logger.info({ id: descriptor.id, kinds: descriptor.kinds }, "plugin loaded");
+    this.deps.logger.info(
+      {
+        id: descriptor.id,
+        kinds: descriptor.kinds,
+        manifest: manifest ? "present" : "absent",
+      },
+      "plugin loaded",
+    );
     this.deps.onPluginChanged?.(this.toRecord(entry));
     return entry;
   }
@@ -146,11 +197,16 @@ export class PluginHost {
     if (!entry) return null;
     const { source, config, enabled } = entry;
     await this.unload(id);
-    const fresh = await this.load(source, config);
-    fresh.enabled = enabled;
-    const rec = this.toRecord(fresh);
-    this.deps.onPluginChanged?.(rec);
-    return rec;
+    this.reloadStamp = Date.now();
+    try {
+      const fresh = await this.load(source, config);
+      fresh.enabled = enabled;
+      const rec = this.toRecord(fresh);
+      this.deps.onPluginChanged?.(rec);
+      return rec;
+    } finally {
+      this.reloadStamp = null;
+    }
   }
 
   list(): PluginDescriptor[] {
@@ -183,60 +239,88 @@ export class PluginHost {
   private apiFor(
     config: Record<string, unknown>,
     uiBuf: PluginUiContribution[],
+    permissions?: PluginPermission[],
   ): GatewayAPI {
+    const allow = (ns: PluginPermission): boolean => {
+      // No declared permissions → unrestricted access (back-compat).
+      if (!permissions) return true;
+      return permissions.includes(ns);
+    };
+    const denied = (ns: PluginPermission): never => {
+      throw new Error(
+        `plugin tried to register into "${ns}" without declaring it in manifest.permissions`,
+      );
+    };
     return {
       tools: {
         register: (tool: AnyTool) => {
+          if (!allow("tools")) denied("tools");
           this.deps.toolRegistry.register(tool);
         },
       },
       providers: {
         register: (name: string, client: LLMClient) => {
+          if (!allow("providers")) denied("providers");
           this.deps.providers.set(name, client);
         },
       },
       subagents: {
         register: (def: SubagentDefinition) => {
+          if (!allow("subagents")) denied("subagents");
           this.deps.subagentRegistry.register(def);
+        },
+      },
+      subagentRuntimes: {
+        register: (runtime) => {
+          if (!allow("subagents")) denied("subagents");
+          this.deps.subagentRuntimes?.register(runtime);
         },
       },
       routines: {
         register: (def: RoutineDescriptor) => {
+          if (!allow("routines")) denied("routines");
           this.deps.routines.push(def);
         },
       },
       skills: {
         register: (skill: SkillDescriptor) => {
+          if (!allow("skills")) denied("skills");
           this.deps.skills.push(skill);
         },
       },
       approvalPolicies: {
         register: (policy: ApprovalPolicy) => {
+          if (!allow("approvalPolicies")) denied("approvalPolicies");
           this.deps.approvalPolicies.push(policy);
         },
       },
       channels: {
         register: (channel: ChannelHandle) => {
+          if (!allow("channels")) denied("channels");
           this.deps.channels.push(channel);
         },
       },
       commands: {
         register: (cmd: SlashCommandDescriptor) => {
+          if (!allow("commands")) denied("commands");
           this.deps.commands.push(cmd);
         },
       },
       toolsets: {
         register: (def: ToolsetDescriptor) => {
+          if (!allow("toolsets")) denied("toolsets");
           this.deps.toolsets.push(def);
         },
       },
       delivery: {
         register: (kind: string, handler: PluginDeliveryHandler) => {
+          if (!allow("delivery")) denied("delivery");
           this.deps.registerDelivery(kind, handler);
         },
       },
       ui: {
         contribute: (contribution: PluginUiContribution) => {
+          if (!allow("ui")) denied("ui");
           uiBuf.push(contribution);
         },
       },
@@ -248,4 +332,26 @@ export class PluginHost {
       config,
     };
   }
+}
+
+/**
+ * Walk up from the entry file looking for `squad.plugin.json`. We only check
+ * the entry's own directory and one parent — any deeper and we'd be picking
+ * up unrelated manifests in monorepos. Returns null when nothing is found.
+ */
+function loadManifestNear(entryAbs: string): PluginManifest | null {
+  const candidates = [
+    join(dirname(entryAbs), "squad.plugin.json"),
+    join(dirname(dirname(entryAbs)), "squad.plugin.json"),
+  ];
+  for (const c of candidates) {
+    if (!existsSync(c)) continue;
+    try {
+      const raw = JSON.parse(readFileSync(c, "utf8"));
+      return parsePluginManifest(raw);
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }

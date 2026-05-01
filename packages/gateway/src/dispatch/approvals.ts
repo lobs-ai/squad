@@ -69,6 +69,19 @@ export function registerApprovalMethods(
     return { approval: decided ?? pending, rule };
   });
 
+  dispatcher.register("approvals.add_rule", async (params, ctx) => {
+    const rule = rules.add({
+      toolName: params.toolName,
+      target: params.target ?? null,
+      ...(params.label !== undefined ? { label: params.label } : {}),
+      ...(params.predicate ? { predicate: params.predicate } : {}),
+      ...(params.decision ? { decision: params.decision } : {}),
+      ...(params.scope ? { scope: params.scope } : {}),
+      ...(ctx.grant.label !== undefined ? { createdBy: ctx.grant.label } : {}),
+    });
+    return { rule };
+  });
+
   dispatcher.register("approvals.remove_rule", async (params) => ({
     ok: rules.remove(params.ruleId),
   }));

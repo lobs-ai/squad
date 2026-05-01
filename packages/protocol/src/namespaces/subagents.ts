@@ -11,6 +11,14 @@ export const subagentDefinitionSchema = z.object({
   name: z.string(),
   description: z.string(),
   model: z.string(),
+  /**
+   * Optional runtime identifier. When set, the subagent pool dispatches to
+   * a registered `SubagentRuntime` (typically an ACP-bound external agent
+   * like `acp-claude-code` or `acp-codex`) instead of running the in-process
+   * Squad agent loop. Built-in runtimes are registered by plugins; an
+   * unknown runtime fails the spawn loudly with a clear error.
+   */
+  runtime: z.string().optional(),
   tools: z.array(z.string()),
   /**
    * Toolset names this subagent inherits. Resolved by the gateway at spawn

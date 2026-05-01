@@ -289,7 +289,11 @@ export interface ProgressUpdate {
   agentType: string;
   toolName?: string;
   toolInput?: Record<string, unknown>;
+  /** LLM tool_use block id — present on tool_start and tool_result so callers
+   * can correlate the two without juggling separate maps. */
+  toolUseId?: string;
   result?: unknown;
+  isError?: boolean;
   phase?: AgentPhase;
 }
 

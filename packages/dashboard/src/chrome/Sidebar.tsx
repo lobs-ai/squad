@@ -12,12 +12,26 @@ interface Props {
 export function Sidebar({ setView, onNewChat }: Props): JSX.Element {
   const { sessions, plugins, tasks, routines, activeSessionId, setActiveSessionId } = useGateway();
 
-  const active = sessions.filter((s) => s.status === "running" || s.parentSessionId);
+  const runningChildrenByParent = new Map<string, SessionRecord[]>();
+  for (const s of sessions) {
+    if (s.parentSessionId && s.status === "running") {
+      const list = runningChildrenByParent.get(s.parentSessionId) ?? [];
+      list.push(s);
+      runningChildrenByParent.set(s.parentSessionId, list);
+    }
+  }
+
+  const activeRoots = sessions.filter(
+    (s) =>
+      !s.parentSessionId &&
+      (s.status === "running" || runningChildrenByParent.has(s.id)),
+  );
+
   const recent = sessions
     .filter((s) => s.status !== "running" && !s.parentSessionId)
     .slice(0, 6);
 
-  const openSessions = sessions.filter((s) => s.status === "running").length;
+  const runningCount = sessions.filter((s) => s.status === "running").length;
   const openTasks = tasks.filter((t) => t.status !== "completed" && t.status !== "deleted").length;
 
   const SItem = ({ s, indent }: { s: SessionRecord; indent: number }): JSX.Element => (
@@ -29,7 +43,7 @@ export function Sidebar({ setView, onNewChat }: Props): JSX.Element {
       }}
       style={{ paddingLeft: 10 + indent * 12 }}
     >
-      {s.parentSessionId && (
+      {indent > 0 && (
         <span className="dim mono" style={{ fontSize: 10 }}>
           └─
         </span>
@@ -56,15 +70,21 @@ export function Sidebar({ setView, onNewChat }: Props): JSX.Element {
         <div className="row gap-2" style={{ marginBottom: 4 }}>
           <span className="section-label">active</span>
           <span className="spacer" />
-          <span className="hint">{openSessions} streaming</span>
+          <span className="hint">{runningCount} streaming</span>
         </div>
       </div>
-      {active.length === 0 ? (
+      {activeRoots.length === 0 ? (
         <div style={{ padding: "4px 12px" }}>
           <span className="hint">no active sessions</span>
         </div>
       ) : (
-        active.map((s) => <SItem key={s.id} s={s} indent={s.parentSessionId ? 1 : 0} />)
+        activeRoots.flatMap((root) => {
+          const kids = runningChildrenByParent.get(root.id) ?? [];
+          return [
+            <SItem key={root.id} s={root} indent={0} />,
+            ...kids.map((k) => <SItem key={k.id} s={k} indent={1} />),
+          ];
+        })
       )}
 
       <div className="side-section" style={{ marginTop: 12 }}>

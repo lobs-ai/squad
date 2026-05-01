@@ -10,6 +10,10 @@ import type { ToolCallStore } from "./db/tool-calls.js";
 import type { Broadcast } from "./broadcast.js";
 import type { Logger } from "./logger.js";
 import { buildSquadSystemPrompt, loadCoreFiles } from "./agent-prompt.js";
+import {
+  discoverContextFiles,
+  renderContextFilesSection,
+} from "./context-discovery.js";
 import type { MemoryService } from "./memory/service.js";
 
 /**
@@ -94,6 +98,11 @@ export interface RunDeps {
   logger: Logger;
   /** Optional — when set, every turn injects the eager + retrieval blocks. */
   memory?: MemoryService;
+  /**
+   * Optional — registers runId→sessionId so the trace hook publishes
+   * trace.step events scoped to the correct session. Tests can omit.
+   */
+  traceRegistry?: import("./traces.js").TraceSessionRegistry;
 }
 
 /**
@@ -145,6 +154,7 @@ export async function runChatTurn(
   }
 
   deps.sessions.setStatus(options.sessionId, "running");
+  deps.traceRegistry?.register(runId, options.sessionId);
 
   const session = new Session(runnerMessages);
   options.onRunStart?.({ runId, sessionId: options.sessionId, session });
@@ -183,6 +193,23 @@ export async function runChatTurn(
       ? formatGroupIndexForPrompt(options.toolGroups.lazy())
       : undefined;
 
+  // Project context discovery: walk up from cwd looking for AGENTS.md / CLAUDE.md
+  // / SQUAD.md / .cursorrules. Caps at ~8K tokens, drops farthest first when over.
+  const contextFiles = discoverContextFiles(options.cwd);
+  const contextFilesSection = renderContextFilesSection(contextFiles);
+  if (contextFiles.length > 0) {
+    deps.broadcast.publish(`context.injected/${options.sessionId}`, {
+      sessionId: options.sessionId,
+      runId,
+      files: contextFiles.map((f) => ({
+        path: f.path,
+        name: f.name,
+        distance: f.distance,
+        tokens: f.tokens,
+      })),
+    });
+  }
+
   const systemPrompt =
     options.systemPrompt ??
     buildSquadSystemPrompt({
@@ -191,7 +218,12 @@ export async function runChatTurn(
       memoryEager,
       memoryRetrieval,
       ...(toolGroupsIndex ? { toolGroupsIndex } : {}),
+      ...(contextFilesSection ? { contextFilesSection } : {}),
     });
+
+  // toolUseId → tool_calls row id, so tool_result can find the row begin()
+  // returned and mark it completed. Cleared on each result; lifetime is one run.
+  const toolCallIdByUseId = new Map<string, string>();
 
   const spec: AgentSpec = {
     task:
@@ -228,6 +260,7 @@ export async function runChatTurn(
           name: update.toolName,
           input: update.toolInput ?? {},
         });
+        if (update.toolUseId) toolCallIdByUseId.set(update.toolUseId, record.id);
         deps.broadcast.publish(`chat.tool_call/${options.sessionId}`, {
           sessionId: options.sessionId,
           runId,
@@ -236,11 +269,20 @@ export async function runChatTurn(
           input: update.toolInput ?? {},
         });
       } else if (update.type === "tool_result" && update.toolName) {
+        const toolCallId = update.toolUseId
+          ? toolCallIdByUseId.get(update.toolUseId)
+          : undefined;
+        const isError = update.isError === true;
+        if (toolCallId) {
+          deps.toolCalls.complete(toolCallId, update.result ?? null, isError);
+          if (update.toolUseId) toolCallIdByUseId.delete(update.toolUseId);
+        }
         deps.broadcast.publish(`chat.tool_result/${options.sessionId}`, {
           sessionId: options.sessionId,
           runId,
-          toolCallId: update.toolName,
+          toolCallId: toolCallId ?? "",
           result: update.result,
+          ...(isError ? { isError: true } : {}),
         });
       }
     },
@@ -260,6 +302,7 @@ export async function runChatTurn(
     throw err;
   } finally {
     deps.sessions.setStatus(options.sessionId, "idle");
+    deps.traceRegistry?.unregister(runId);
     await options.onRunEnd?.({ runId, sessionId: options.sessionId });
   }
 

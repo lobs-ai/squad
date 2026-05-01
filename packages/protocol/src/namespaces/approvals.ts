@@ -39,6 +39,50 @@ export const approvalsDecideResult = z.object({ approval: approvalRecordSchema }
 // Persistent allow-list rules. `target: null` matches any target for the
 // named tool (e.g. "always allow Bash"); otherwise the recorded string
 // must equal the target derived from the tool input on a future call.
+//
+// `predicate` is the structured DSL: when present, evaluation switches from
+// "exact-match (toolName, target)" to "evaluate predicate against the tool
+// call". `decision` defaults to "approve". `scope` lets a rule bind to a
+// single session or a single subagent kind.
+export const approvalScopeSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("global") }),
+  z.object({ kind: z.literal("session"), sessionId: z.string() }),
+  z.object({ kind: z.literal("subagent"), subagent: z.string() }),
+]);
+export type ApprovalScope = z.infer<typeof approvalScopeSchema>;
+
+const approvalPredicateBase = z.union([
+  z.object({
+    op: z.enum(["eq", "ne"]),
+    field: z.string(),
+    value: z.union([z.string(), z.number(), z.boolean(), z.null()]),
+  }),
+  z.object({
+    op: z.enum(["startsWith", "endsWith", "contains", "regex"]),
+    field: z.string(),
+    value: z.string(),
+  }),
+  z.object({ op: z.enum(["in", "notIn"]), field: z.string(), values: z.array(z.string()) }),
+  z.object({ op: z.literal("exists"), field: z.string() }),
+  z.object({ op: z.literal("anyTag"), values: z.array(z.string()) }),
+  z.object({ op: z.literal("allTags"), values: z.array(z.string()) }),
+]);
+
+export type ApprovalPredicate =
+  | z.infer<typeof approvalPredicateBase>
+  | { op: "and"; predicates: ApprovalPredicate[] }
+  | { op: "or"; predicates: ApprovalPredicate[] }
+  | { op: "not"; predicate: ApprovalPredicate };
+
+export const approvalPredicateSchema: z.ZodType<ApprovalPredicate> = z.lazy(() =>
+  z.union([
+    approvalPredicateBase,
+    z.object({ op: z.literal("and"), predicates: z.array(approvalPredicateSchema) }),
+    z.object({ op: z.literal("or"), predicates: z.array(approvalPredicateSchema) }),
+    z.object({ op: z.literal("not"), predicate: approvalPredicateSchema }),
+  ]),
+);
+
 export const approvalRuleSchema = z.object({
   id: z.string(),
   toolName: z.string(),
@@ -46,6 +90,15 @@ export const approvalRuleSchema = z.object({
   label: z.string().nullable(),
   createdAt: z.string(),
   createdBy: z.string().nullable(),
+  /**
+   * When set, the rule evaluates `predicate` instead of doing an exact
+   * (toolName, target) match. `target` is ignored when predicate is set.
+   */
+  predicate: approvalPredicateSchema.optional(),
+  /** "approve" | "deny" — defaults to "approve" for back-compat. */
+  decision: z.enum(["approve", "deny"]).optional(),
+  /** Where the rule applies. Defaults to global. */
+  scope: approvalScopeSchema.optional(),
 });
 export type ApprovalRule = z.infer<typeof approvalRuleSchema>;
 
@@ -68,6 +121,19 @@ export const approvalsAllowPathResult = z.object({
   rule: approvalRuleSchema,
 });
 
+// approvals.add_rule — create a rule directly (predicate or literal) without
+// first having a pending approval to "always allow". Lets the dashboard /
+// CLI ship a rule editor.
+export const approvalsAddRuleParams = z.object({
+  toolName: z.string(),
+  target: z.string().nullable().optional(),
+  label: z.string().nullable().optional(),
+  predicate: approvalPredicateSchema.optional(),
+  decision: z.enum(["approve", "deny"]).optional(),
+  scope: approvalScopeSchema.optional(),
+});
+export const approvalsAddRuleResult = z.object({ rule: approvalRuleSchema });
+
 // approvals.remove_rule
 export const approvalsRemoveRuleParams = z.object({ ruleId: z.string() });
 export const approvalsRemoveRuleResult = z.object({ ok: z.boolean() });
@@ -82,6 +148,10 @@ export const approvalMethods = {
   "approvals.allow_path": {
     params: approvalsAllowPathParams,
     result: approvalsAllowPathResult,
+  },
+  "approvals.add_rule": {
+    params: approvalsAddRuleParams,
+    result: approvalsAddRuleResult,
   },
   "approvals.remove_rule": {
     params: approvalsRemoveRuleParams,

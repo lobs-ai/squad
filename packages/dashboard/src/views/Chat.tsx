@@ -7,8 +7,13 @@ import type {
   Task,
 } from "@squad/protocol";
 import { Icon } from "../ui/Icon.js";
-import { useGateway, type SubagentTreeNode } from "../state/GatewayContext.js";
+import {
+  useGateway,
+  type LiveToolEvent,
+  type SubagentTreeNode,
+} from "../state/GatewayContext.js";
 import { estimateCost, fmtAgo, fmtCost, fmtTokens, modelShort } from "../state/fmt.js";
+import { usePersistedState } from "../state/usePersistedState.js";
 
 type Drawer = "tasks" | "discord" | "inspector" | null;
 
@@ -40,13 +45,14 @@ export function Chat(): JSX.Element {
     sessions,
     treeSessions,
     messages,
+    liveTools,
     streaming,
     awaitingResponse,
     tasks,
     subagentTree,
     pendingQuestions,
     sessionQuestions,
-    pendingApprovals,
+    sessionApprovals,
     setActiveSessionId,
     sendChat,
     startSession,
@@ -65,6 +71,11 @@ export function Chat(): JSX.Element {
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [pickingModel, setPickingModel] = useState(false);
+  // Persisted across reloads so the user's preference sticks. Defaults to "on"
+  // — same as the CLI, which always shows tool calls inline.
+  const [showToolsRaw, setShowToolsRaw] = usePersistedState("squad-chat-show-tools", "1");
+  const showTools = showToolsRaw !== "0";
+  const toggleShowTools = (): void => setShowToolsRaw(showTools ? "0" : "1");
   const transcriptRef = useRef<HTMLDivElement | null>(null);
 
   // Escape collapses whatever transient surface is open, in priority order.
@@ -122,10 +133,13 @@ export function Chat(): JSX.Element {
   // suppression below via pendingForSession.
   const sessQuestions = sessionQuestions;
   const pendingForSession = pendingQuestions.filter((q) => q.sessionId === activeSession.id);
-  const sessApprovals = pendingApprovals.filter((a) => a.sessionId === activeSession.id);
+  // Use the full session-approval list (any status) so decided approvals
+  // stay in the transcript with their "approved" / "denied" status instead
+  // of disappearing the moment the user clicks a button.
+  const sessApprovals = sessionApprovals;
   const cost = estimateCost(activeSession.model, activeSession.tokensIn, activeSession.tokensOut);
 
-  const rows = buildRows(messages, streaming, sessQuestions, sessApprovals);
+  const rows = buildRows(messages, streaming, sessQuestions, sessApprovals, liveTools, showTools);
 
   const submit = async (): Promise<void> => {
     if (!composer.trim() || sending) return;
@@ -289,6 +303,18 @@ export function Chat(): JSX.Element {
               title="Start a new chat session (⌘N)"
             >
               <Icon name="plus" size={11} /> new
+            </button>
+            <button
+              className={"btn sm " + (showTools ? "primary" : "")}
+              onClick={toggleShowTools}
+              title={
+                showTools
+                  ? "tool calls visible in transcript — click to hide"
+                  : "tool calls hidden — click to show"
+              }
+            >
+              <Icon name="term" size={11} /> tools{" "}
+              <span className="faint">{showTools ? "on" : "off"}</span>
             </button>
             <button
               className={"btn sm " + (drawer === "tasks" ? "primary" : "")}
@@ -610,8 +636,14 @@ function buildRows(
   streaming: string,
   questions: QuestionRecord[],
   approvals: ApprovalRecord[],
+  liveTools: LiveToolEvent[],
+  showTools: boolean,
 ): ChatRowMessage[] {
   const rows: ChatRowMessage[] = [];
+  // Tool-use ids we've already emitted from persisted assistant messages.
+  // Live broadcast events for the same call are skipped so we don't render
+  // it twice when the final assistant_message lands at end-of-run.
+  const seenToolUseIds = new Set<string>();
   for (const m of messages) {
     const at = m.createdAt;
     if (m.role === "user") {
@@ -631,24 +663,30 @@ function buildRows(
             rows.push({ kind: "assistant", text: chunk, at });
             chunk = "";
           }
-          rows.push({
-            kind: "tool_use",
-            toolName: b.name,
-            toolInput: b.input,
-            at,
-          });
+          if (showTools) {
+            rows.push({
+              kind: "tool_use",
+              toolName: b.name,
+              toolInput: b.input,
+              at,
+            });
+          }
+          seenToolUseIds.add(b.id);
         }
       }
       if (chunk) rows.push({ kind: "assistant", text: chunk, at });
     } else if (m.role === "tool") {
       for (const b of m.content) {
         if (b.type === "tool_result") {
-          rows.push({
-            kind: "tool_result",
-            toolResult: b.content,
-            toolIsError: b.isError,
-            at,
-          });
+          if (showTools) {
+            rows.push({
+              kind: "tool_result",
+              toolResult: b.content,
+              toolIsError: b.isError,
+              at,
+            });
+          }
+          seenToolUseIds.add(b.toolUseId);
         }
       }
     } else if (m.role === "system") {
@@ -661,6 +699,26 @@ function buildRows(
   }
   if (streaming) {
     rows.push({ kind: "assistant", text: streaming, at: new Date().toISOString(), streaming: true });
+  }
+  if (showTools) {
+    for (const ev of liveTools) {
+      if (seenToolUseIds.has(ev.toolCallId)) continue;
+      if (ev.kind === "call") {
+        rows.push({
+          kind: "tool_use",
+          toolName: ev.name,
+          toolInput: ev.input,
+          at: ev.at,
+        });
+      } else {
+        rows.push({
+          kind: "tool_result",
+          toolResult: ev.result,
+          toolIsError: ev.isError,
+          at: ev.at,
+        });
+      }
+    }
   }
   for (const q of questions) {
     rows.push({ kind: "question", questionId: q.id, at: q.askedAt });
@@ -809,39 +867,60 @@ function ChatRow({
     return <QuestionCard question={question} onAnswer={onAnswer} />;
   }
   if (row.kind === "approval" && approval) {
+    const isPending = approval.status === "pending";
+    const accent = isPending
+      ? "var(--warn)"
+      : approval.status === "approved"
+        ? "var(--ok)"
+        : "var(--danger)";
     return (
       <div
         style={{
           marginBottom: 14,
-          border: "1px solid color-mix(in oklab, var(--warn) 35%, var(--border))",
+          border: `1px solid color-mix(in oklab, ${accent} 35%, var(--border))`,
           borderRadius: 4,
           padding: 10,
-          background: "color-mix(in oklab, var(--warn) 6%, var(--bg))",
+          background: `color-mix(in oklab, ${accent} 6%, var(--bg))`,
+          opacity: isPending ? 1 : 0.92,
         }}
       >
         <div className="row gap-2" style={{ marginBottom: 4 }}>
-          <Icon name="lock" size={12} style={{ color: "var(--warn)" }} />
-          <span className="strong">approval required</span>
-          {approval.tags[0] && <span className="tag warn">{approval.tags[0]}</span>}
+          <Icon
+            name={isPending ? "lock" : approval.status === "approved" ? "check" : "x"}
+            size={12}
+            style={{ color: accent }}
+          />
+          <span className="strong">
+            {isPending ? "approval required" : approval.status}
+          </span>
+          {approval.tags[0] && (
+            <span className={"tag " + (isPending ? "warn" : approval.status === "approved" ? "ok" : "danger")}>
+              {approval.tags[0]}
+            </span>
+          )}
           <span className="spacer" />
-          <span className="hint">{fmtAgo(approval.createdAt)}</span>
+          <span className="hint">
+            {fmtAgo(isPending ? approval.createdAt : approval.decidedAt ?? approval.createdAt)}
+          </span>
         </div>
-        <div className="mono" style={{ fontSize: "var(--t-sm)", marginBottom: 6 }}>
+        <div className="mono" style={{ fontSize: "var(--t-sm)", marginBottom: isPending ? 6 : 0 }}>
           <span className="muted">$ </span>
           {approval.toolName} <span className="faint">→</span>{" "}
           <span className="strong">{formatToolTarget(approval.input) ?? "(no target)"}</span>
         </div>
-        <div className="row gap-2">
-          <button className="btn primary sm" onClick={() => onDecide(approval.id, "approve")}>
-            approve
-          </button>
-          <button className="btn sm" onClick={() => onDecide(approval.id, "deny")}>
-            deny
-          </button>
-          <button className="btn ghost sm" onClick={() => onAlwaysAllow(approval.id)}>
-            always allow this path
-          </button>
-        </div>
+        {isPending && (
+          <div className="row gap-2">
+            <button className="btn primary sm" onClick={() => onDecide(approval.id, "approve")}>
+              approve
+            </button>
+            <button className="btn sm" onClick={() => onDecide(approval.id, "deny")}>
+              deny
+            </button>
+            <button className="btn ghost sm" onClick={() => onAlwaysAllow(approval.id)}>
+              always allow this path
+            </button>
+          </div>
+        )}
       </div>
     );
   }
@@ -1049,7 +1128,7 @@ function TypingIndicator(): JSX.Element {
 function formatToolTarget(input: unknown): string | null {
   if (!input || typeof input !== "object") return null;
   const i = input as Record<string, unknown>;
-  for (const key of ["path", "file_path", "filePath", "target", "command", "url", "query"]) {
+  for (const key of ["path", "file_path", "filePath", "target", "cmd", "command", "url", "query"]) {
     const v = i[key];
     if (typeof v === "string") return v.length > 80 ? v.slice(0, 78) + "…" : v;
   }

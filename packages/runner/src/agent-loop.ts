@@ -390,6 +390,7 @@ export async function runAgent(spec: AgentSpec): Promise<AgentResult> {
             agentType: agent,
             toolName,
             toolInput,
+            toolUseId,
           });
 
           // Execute with timeout
@@ -480,7 +481,9 @@ export async function runAgent(spec: AgentSpec): Promise<AgentResult> {
             agentType: agent,
             toolName,
             toolInput,
+            toolUseId,
             result: finalResult,
+            isError: finalResult.is_error === true,
           });
         }),
       );

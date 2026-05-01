@@ -3,7 +3,7 @@ import type { SessionStore } from "../db/sessions.js";
 import { augmentWithExtras, listAvailableModels } from "@squad/llm";
 import type { PeerSource } from "../peers/source.js";
 import type { PairingStore } from "../auth/pairing.js";
-import type { ConfigBackend } from "@squad/tools";
+import type { ConfigBackend, ToolRegistry } from "@squad/tools";
 
 export interface AdminDeps {
   sessions: SessionStore;
@@ -16,7 +16,17 @@ export interface AdminDeps {
   /** Provider names with credentials wired up. */
   providers: string[];
   subagents: { maxConcurrentGlobal: number; maxConcurrentPerParent: number; maxTreeDepth: number };
-  approvals: { requireForTags: string[]; timeoutSeconds: number };
+  approvals: {
+    requireForTags: string[];
+    requireForTools: string[];
+    timeoutSeconds: number;
+  };
+  /**
+   * Tool registry — used to surface `admin.tools.catalog` so the dashboard's
+   * approvals editor can render meaningful pickers instead of asking the user
+   * to type tool/tag names from memory.
+   */
+  toolRegistry?: ToolRegistry;
   /** Squad name as known to the manager (matches the docker compose service). */
   squadName: string;
   /** TCP port this gateway is listening on. */
@@ -117,6 +127,20 @@ export function registerAdminMethods(dispatcher: Dispatcher, deps: AdminDeps): v
         ...(m.notes !== undefined ? { notes: m.notes } : {}),
       })),
     };
+  });
+
+  dispatcher.register("admin.tools.catalog", async () => {
+    const registry = deps.toolRegistry;
+    if (!registry) return { tools: [] };
+    const defs = registry.getDefinitions();
+    const tools = defs
+      .map((d) => ({
+        name: d.name,
+        description: d.description ?? "",
+        tags: [...(d.tags ?? [])],
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return { tools };
   });
 
   dispatcher.register("admin.identity", async () => ({

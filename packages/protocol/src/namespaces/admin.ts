@@ -68,6 +68,21 @@ export const adminModelsResult = z.object({
   ),
 });
 
+// Tool catalog — every tool currently registered with the gateway, with the
+// tags it carries. The dashboard's approvals editor uses this to render a
+// searchable picker instead of asking the user to type tool / tag names.
+export const toolCatalogEntrySchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  tags: z.array(z.string()),
+});
+export type ToolCatalogEntry = z.infer<typeof toolCatalogEntrySchema>;
+
+export const adminToolsCatalogParams = z.object({}).optional();
+export const adminToolsCatalogResult = z.object({
+  tools: z.array(toolCatalogEntrySchema),
+});
+
 // ── Identity + peers ─────────────────────────────────────────────────────
 //
 // These exist so a single dashboard SPA can serve every squad. `identity`
@@ -178,6 +193,7 @@ export const adminMethods = {
   "admin.config.set": { params: adminConfigSetParams, result: adminConfigSetResult },
   "admin.config.unset": { params: adminConfigUnsetParams, result: adminConfigUnsetResult },
   "admin.models": { params: adminModelsParams, result: adminModelsResult },
+  "admin.tools.catalog": { params: adminToolsCatalogParams, result: adminToolsCatalogResult },
   "admin.identity": { params: adminIdentityParams, result: adminIdentityResult },
   "admin.peers": { params: adminPeersParams, result: adminPeersResult },
   "admin.tokens.create": { params: adminTokensCreateParams, result: adminTokensCreateResult },
@@ -194,10 +210,44 @@ export const logLineEvent = z.object({
   source: z.string().optional(),
 });
 
+/**
+ * One LLM-call worth of structured tracing — emitted after each agent loop
+ * iteration so dashboards / observability tools can render a flame graph.
+ *
+ * Topic: `trace.step/<sessionId>` (per-session) so subscribers can scope
+ * their listeners. Cumulative usage is on the event so a late subscriber
+ * still sees the running total.
+ */
+export const traceStepEvent = z.object({
+  sessionId: z.string(),
+  runId: z.string(),
+  /** Monotonic per-run step counter starting at 1. */
+  step: z.number().int().nonnegative(),
+  model: z.string(),
+  /** Wall-clock duration of the LLM call in ms. */
+  durationMs: z.number().nonnegative(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  cacheReadTokens: z.number().int().nonnegative(),
+  cacheWriteTokens: z.number().int().nonnegative(),
+  /** Cumulative tokens for the run so far. */
+  cumulative: z.object({
+    inputTokens: z.number().int().nonnegative(),
+    outputTokens: z.number().int().nonnegative(),
+    costUsd: z.number().nonnegative(),
+  }),
+  /** Tool calls the LLM emitted *in this turn*. Empty for end-turn responses. */
+  toolCalls: z.array(z.object({ id: z.string(), name: z.string() })),
+  /** Cache hit ratio over input tokens (0..1). 0 when no cache info. */
+  cacheHitRatio: z.number().min(0).max(1),
+  occurredAt: z.string(),
+});
+
 export const adminEvents = {
   "log.line": logLineEvent,
   "peers.changed": peersChangedEvent,
   "pair.requested": pairRequestedEvent,
   "pair.approved": pairApprovedEvent,
   "pair.cancelled": pairCancelledEvent,
+  "trace.step": traceStepEvent,
 } as const;

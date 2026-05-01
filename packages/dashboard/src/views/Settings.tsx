@@ -981,6 +981,36 @@ function SubagentsEditor({
 // approvals
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Short, plain-English descriptions for the well-known tags emitted by the
+// built-in tools. Anything not listed here still works — it just renders
+// without a description and counts as a "custom" tag.
+const TAG_DESCRIPTIONS: Record<string, string> = {
+  write: "modifies files or persistent state",
+  exec: "runs a shell command",
+  network: "makes outbound network requests",
+  shell: "spawns shell processes (Bash, exec)",
+  filesystem: "touches the local filesystem",
+  readonly: "reads only — no side effects",
+  search: "searches files or the web",
+  directory: "lists or walks directories",
+  web: "uses the open internet",
+  fetch: "fetches a URL",
+  config: "reads or writes gateway config",
+  meta: "introspects tools or groups",
+  subagent: "spawns or talks to subagents",
+  restart: "restarts the gateway",
+  dangerous: "explicitly marked dangerous",
+  pdf: "generates or edits PDFs",
+  pptx: "generates or edits slide decks",
+  html: "renders or edits HTML",
+};
+
+interface ToolCatalogEntry {
+  name: string;
+  description: string;
+  tags: string[];
+}
+
 function ApprovalsEditor({
   fullConfig,
   setConfigPath,
@@ -988,90 +1018,395 @@ function ApprovalsEditor({
   fullConfig: FullConfigState | null;
   setConfigPath: (p: string, v: unknown) => Promise<void>;
 }): JSX.Element {
+  const { client } = useGateway();
   const editable = !!fullConfig?.editable;
   const cfg = (getPath(fullConfig?.config, ["policy", "approvals"]) as
     | {
         default?: "tag-match" | "allow-all" | "deny-all";
         require_for_tags?: string[];
+        require_for_tools?: string[];
         timeout_seconds?: number;
       }
     | undefined) ?? {};
-  const tags = cfg.require_for_tags ?? ["write", "exec", "network"];
-  const [newTag, setNewTag] = useState("");
+  const selectedTags = cfg.require_for_tags ?? ["write", "exec", "network"];
+  const selectedTools = cfg.require_for_tools ?? [];
+  const defaultPolicy = cfg.default ?? "tag-match";
+  const tagMatchActive = defaultPolicy === "tag-match";
+
+  const [catalog, setCatalog] = useState<ToolCatalogEntry[] | null>(null);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [toolQuery, setToolQuery] = useState("");
+  const [customTag, setCustomTag] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const r = await client.request("admin.tools.catalog", {});
+        if (!cancelled) setCatalog(r.tools as ToolCatalogEntry[]);
+      } catch (err) {
+        if (!cancelled) {
+          setCatalogError(err instanceof Error ? err.message : String(err));
+          setCatalog([]);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  // Derive the set of tags that actually exist on at least one registered
+  // tool — these are the ones we render as first-class chips. Any tag in
+  // `selectedTags` that isn't in the catalog is rendered as "custom".
+  const knownTags = useMemo(() => {
+    const set = new Set<string>();
+    for (const t of catalog ?? []) for (const tag of t.tags) set.add(tag);
+    // Always surface the documented ones even if a tool with that tag isn't
+    // currently loaded — keeps the picker stable across plugin reloads.
+    for (const t of Object.keys(TAG_DESCRIPTIONS)) set.add(t);
+    return Array.from(set).sort();
+  }, [catalog]);
+
+  const tagToolCount = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const t of catalog ?? []) {
+      for (const tag of t.tags) m.set(tag, (m.get(tag) ?? 0) + 1);
+    }
+    return m;
+  }, [catalog]);
+
+  const customSelectedTags = useMemo(
+    () => selectedTags.filter((t) => !knownTags.includes(t)),
+    [selectedTags, knownTags],
+  );
+
+  // Effective "will prompt" set: every tool whose tag is in selectedTags
+  // OR whose name is in selectedTools. Drives the impact preview at the top.
+  const willPrompt = useMemo(() => {
+    if (defaultPolicy === "allow-all") return new Set<string>();
+    if (defaultPolicy === "deny-all") return new Set((catalog ?? []).map((t) => t.name));
+    const tags = new Set(selectedTags);
+    const tools = new Set(selectedTools);
+    const out = new Set<string>();
+    for (const t of catalog ?? []) {
+      if (tools.has(t.name)) out.add(t.name);
+      else if (t.tags.some((x) => tags.has(x))) out.add(t.name);
+    }
+    return out;
+  }, [catalog, defaultPolicy, selectedTags, selectedTools]);
+
+  const filteredTools = useMemo(() => {
+    const q = toolQuery.trim().toLowerCase();
+    const all = catalog ?? [];
+    if (!q) return all;
+    return all.filter(
+      (t) =>
+        t.name.toLowerCase().includes(q) ||
+        t.description.toLowerCase().includes(q) ||
+        t.tags.some((tag) => tag.toLowerCase().includes(q)),
+    );
+  }, [catalog, toolQuery]);
+
+  const toggleTag = async (tag: string): Promise<void> => {
+    const next = selectedTags.includes(tag)
+      ? selectedTags.filter((t) => t !== tag)
+      : [...selectedTags, tag];
+    await setConfigPath("policy.approvals.require_for_tags", next);
+  };
+
+  const toggleTool = async (name: string): Promise<void> => {
+    const next = selectedTools.includes(name)
+      ? selectedTools.filter((t) => t !== name)
+      : [...selectedTools, name];
+    await setConfigPath("policy.approvals.require_for_tools", next);
+  };
 
   return (
     <Card title="approvals">
       <div className="hint" style={{ marginBottom: 12 }}>
-        gate which tools require user approval before running. {LIVE_HINT}
+        Decide which tools pause for your approval before running. {LIVE_HINT}
       </div>
+
       <SelectField
         label="default policy"
-        hint="tag-match: prompt only for tools tagged below. allow-all / deny-all bypass tags entirely."
-        value={cfg.default ?? "tag-match"}
+        hint="tag-match: only the tags / tools you pick below pause. allow-all auto-approves every call. deny-all blocks every call."
+        value={defaultPolicy}
         options={[
-          { value: "tag-match", label: "tag-match" },
-          { value: "allow-all", label: "allow-all (auto-approve everything)" },
-          { value: "deny-all", label: "deny-all (block everything)" },
+          { value: "tag-match", label: "tag-match — prompt only for selected tags / tools" },
+          { value: "allow-all", label: "allow-all — auto-approve everything" },
+          { value: "deny-all", label: "deny-all — block everything" },
         ]}
         disabled={!editable}
         onChange={(v) => setConfigPath("policy.approvals.default", v)}
       />
+
       <NumberField
-        label="timeout_seconds"
-        hint="how long the agent waits for an answer before treating it as a denial."
+        label="approval timeout (seconds)"
+        hint="how long the agent waits for an answer before treating no-response as a denial."
         initial={cfg.timeout_seconds}
         min={1}
         disabled={!editable}
         onSave={(n) => setConfigPath("policy.approvals.timeout_seconds", n)}
       />
-      <div className="section-label" style={{ marginTop: 8, marginBottom: 6 }}>
-        require_for_tags
-      </div>
-      <div className="hint" style={{ marginBottom: 8 }}>
-        tools tagged with any of these will prompt for approval. common: write, exec, network.
-      </div>
-      <div className="row gap-1" style={{ flexWrap: "wrap", marginBottom: 8 }}>
-        {tags.map((t) => (
-          <span key={t} className="chip">
-            {t}
-            <button
-              className="btn ghost sm"
-              style={{ padding: "0 4px", marginLeft: 4 }}
+
+      {tagMatchActive && (
+        <>
+          <div
+            style={{
+              marginTop: 12,
+              padding: "8px 10px",
+              background: "var(--bg-inset)",
+              border: "1px solid var(--border-soft)",
+              borderRadius: 4,
+              fontSize: "var(--t-xs)",
+              color: "var(--fg-muted)",
+            }}
+          >
+            {catalog === null
+              ? "loading tool catalog…"
+              : catalog.length === 0
+                ? "no registered tools were reported by the gateway."
+                : (
+                  <>
+                    <strong style={{ color: "var(--fg)" }}>{willPrompt.size}</strong> of{" "}
+                    {catalog.length} registered tools will prompt for approval.
+                  </>
+                )}
+          </div>
+
+          <div className="section-label" style={{ marginTop: 16, marginBottom: 4 }}>
+            require approval by tag
+          </div>
+          <div className="hint" style={{ marginBottom: 8 }}>
+            Click a tag to require approval for every tool that carries it. Tap again to remove.
+          </div>
+          <div className="col gap-1" style={{ marginBottom: 10 }}>
+            {knownTags.map((tag) => {
+              const on = selectedTags.includes(tag);
+              const count = tagToolCount.get(tag) ?? 0;
+              const desc = TAG_DESCRIPTIONS[tag];
+              return (
+                <button
+                  key={tag}
+                  className="btn"
+                  type="button"
+                  disabled={!editable}
+                  onClick={() => void toggleTag(tag)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: "6px 10px",
+                    textAlign: "left",
+                    borderColor: on ? "var(--accent-line)" : undefined,
+                    background: on ? "var(--accent-soft)" : undefined,
+                    color: on ? "var(--accent)" : undefined,
+                  }}
+                >
+                  <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <Icon name={on ? "check" : "circle"} size={12} />
+                    <span style={{ fontWeight: 600 }}>{tag}</span>
+                    {desc && (
+                      <span className="hint" style={{ marginLeft: 4 }}>
+                        — {desc}
+                      </span>
+                    )}
+                  </span>
+                  <span className="hint" style={{ fontVariantNumeric: "tabular-nums" }}>
+                    {count} {count === 1 ? "tool" : "tools"}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {customSelectedTags.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <div className="hint" style={{ marginBottom: 4 }}>
+                custom tags currently set:
+              </div>
+              <div className="row gap-1" style={{ flexWrap: "wrap" }}>
+                {customSelectedTags.map((t) => (
+                  <span key={t} className="chip on">
+                    {t}
+                    <button
+                      className="btn ghost sm"
+                      style={{ padding: "0 4px", marginLeft: 4 }}
+                      disabled={!editable}
+                      onClick={() => void toggleTag(t)}
+                      aria-label={`remove tag ${t}`}
+                    >
+                      <Icon name="x" size={10} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="row gap-2" style={{ marginBottom: 16 }}>
+            <input
+              className="input"
+              placeholder="add a custom tag (rare — only if a plugin defines one)"
+              value={customTag}
+              onChange={(e) => setCustomTag(e.target.value)}
+              style={{ flex: 1 }}
               disabled={!editable}
-              onClick={() =>
-                void setConfigPath(
-                  "policy.approvals.require_for_tags",
-                  tags.filter((x) => x !== t),
-                )
-              }
+            />
+            <button
+              className="btn sm"
+              disabled={!editable || !customTag.trim()}
+              onClick={async () => {
+                const t = customTag.trim();
+                if (!t || selectedTags.includes(t)) {
+                  setCustomTag("");
+                  return;
+                }
+                await setConfigPath("policy.approvals.require_for_tags", [...selectedTags, t]);
+                setCustomTag("");
+              }}
             >
-              <Icon name="x" size={10} />
+              add tag
             </button>
-          </span>
-        ))}
-      </div>
-      <div className="row gap-2">
-        <input
-          className="input"
-          placeholder="add tag (e.g. delete)"
-          value={newTag}
-          onChange={(e) => setNewTag(e.target.value)}
-          style={{ flex: 1 }}
-          disabled={!editable}
-        />
-        <button
-          className="btn primary sm"
-          disabled={!editable || !newTag.trim()}
-          onClick={async () => {
-            const t = newTag.trim();
-            if (!t || tags.includes(t)) return;
-            await setConfigPath("policy.approvals.require_for_tags", [...tags, t]);
-            setNewTag("");
-          }}
-        >
-          add
-        </button>
-      </div>
+          </div>
+
+          <div className="section-label" style={{ marginTop: 8, marginBottom: 4 }}>
+            require approval for specific tools
+          </div>
+          <div className="hint" style={{ marginBottom: 8 }}>
+            Pick individual tools that should always pause — independent of tags. Useful when you
+            want, say, only <code>Bash</code> to prompt without gating everything tagged{" "}
+            <code>exec</code>.
+          </div>
+
+          {selectedTools.length > 0 && (
+            <div className="row gap-1" style={{ flexWrap: "wrap", marginBottom: 8 }}>
+              {selectedTools.map((name) => (
+                <span key={name} className="chip on">
+                  {name}
+                  <button
+                    className="btn ghost sm"
+                    style={{ padding: "0 4px", marginLeft: 4 }}
+                    disabled={!editable}
+                    onClick={() => void toggleTool(name)}
+                    aria-label={`remove tool ${name}`}
+                  >
+                    <Icon name="x" size={10} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          <input
+            className="input"
+            placeholder={
+              catalog && catalog.length > 0
+                ? `search ${catalog.length} tools by name, description, or tag…`
+                : "search tools…"
+            }
+            value={toolQuery}
+            onChange={(e) => setToolQuery(e.target.value)}
+            disabled={!editable || !catalog || catalog.length === 0}
+            style={{ marginBottom: 6 }}
+          />
+
+          {catalogError && (
+            <div className="hint" style={{ color: "var(--danger)", marginBottom: 6 }}>
+              couldn't load tool catalog: {catalogError}
+            </div>
+          )}
+
+          <div
+            style={{
+              maxHeight: 280,
+              overflowY: "auto",
+              border: "1px solid var(--border-soft)",
+              borderRadius: 4,
+              background: "var(--bg-inset)",
+            }}
+          >
+            {catalog === null ? (
+              <div className="hint" style={{ padding: 10 }}>
+                loading…
+              </div>
+            ) : filteredTools.length === 0 ? (
+              <div className="hint" style={{ padding: 10 }}>
+                {toolQuery ? `no tools match "${toolQuery}".` : "no tools registered."}
+              </div>
+            ) : (
+              filteredTools.map((tool) => {
+                const onTool = selectedTools.includes(tool.name);
+                const onByTag = tool.tags.some((tag) => selectedTags.includes(tag));
+                const willGate = onTool || onByTag;
+                return (
+                  <button
+                    key={tool.name}
+                    type="button"
+                    onClick={() => void toggleTool(tool.name)}
+                    disabled={!editable}
+                    style={{
+                      display: "flex",
+                      width: "100%",
+                      alignItems: "flex-start",
+                      gap: 10,
+                      padding: "8px 10px",
+                      textAlign: "left",
+                      background: onTool ? "var(--accent-soft)" : "transparent",
+                      borderTop: "1px solid var(--border-soft)",
+                      borderLeft: "none",
+                      borderRight: "none",
+                      borderBottom: "none",
+                      cursor: editable ? "pointer" : "default",
+                      color: "var(--fg)",
+                    }}
+                  >
+                    <Icon
+                      name={onTool || willGate ? "check" : "circle"}
+                      size={14}
+                      style={{ color: onTool ? "var(--accent)" : "var(--fg-muted)", marginTop: 2 }}
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ fontWeight: 600 }}>{tool.name}</span>
+                        {tool.tags.map((tag) => (
+                          <span
+                            key={tag}
+                            className={selectedTags.includes(tag) ? "chip on" : "chip"}
+                            style={{ padding: "0 5px" }}
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                        {willGate && !onTool && (
+                          <span className="hint" style={{ fontSize: "var(--t-xs)" }}>
+                            (already gated by tag)
+                          </span>
+                        )}
+                      </div>
+                      {tool.description && (
+                        <div
+                          className="hint"
+                          style={{
+                            marginTop: 2,
+                            display: "-webkit-box",
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: "vertical",
+                            overflow: "hidden",
+                          }}
+                        >
+                          {tool.description}
+                        </div>
+                      )}
+                    </div>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </>
+      )}
     </Card>
   );
 }

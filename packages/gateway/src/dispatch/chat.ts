@@ -40,6 +40,8 @@ export interface ChatDeps {
   titleGenerator?: TitleGenerator;
   /** Testing seam: inject a stub LLMClient to bypass real provider calls. */
   clientOverride?: LLMClient;
+  /** Trace registry — wired by boot, optional in tests. */
+  traceRegistry?: import("../traces.js").TraceSessionRegistry;
 }
 
 export function registerChatMethods(dispatcher: Dispatcher, deps: ChatDeps): void {

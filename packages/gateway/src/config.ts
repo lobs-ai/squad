@@ -8,9 +8,30 @@ const authTokenSchema = z.object({
   scopes: z.array(z.string()).default(["*"]),
 });
 
+/**
+ * One concrete key (literal or env-var pointer) inside a key pool. Tagged
+ * with an optional `label` so 429 backoff and dashboards can refer to a key
+ * without leaking its value.
+ */
+const keyEntrySchema = z.preprocess(
+  (raw) => (typeof raw === "string" ? { key: raw } : raw),
+  z.object({
+    key: z.string().optional(),
+    key_env: z.string().optional(),
+    label: z.string().optional(),
+  }),
+);
+
 const providerConfigSchema = z.object({
   api_key_env: z.string().optional(),
   api_key: z.string().optional(),
+  /**
+   * Optional pool of additional keys. The gateway rotates round-robin across
+   * the (api_key + keys[]) union and excludes any key that produces a 429
+   * or 5xx for a backoff window. Each entry can be a literal string, a
+   * `{ key }` object, or a `{ key_env }` env-var reference.
+   */
+  keys: z.array(keyEntrySchema).optional(),
   base_url: z.string().optional(),
 });
 
@@ -233,6 +254,13 @@ export const configSchema = z.object({
         .object({
           default: z.enum(["tag-match", "allow-all", "deny-all"]).default("tag-match"),
           require_for_tags: z.array(z.string()).default(["write", "exec", "network"]),
+          /**
+           * Specific tool names that always require approval, regardless of
+           * tags. Lets you require approval for, say, `Bash` without gating
+           * everything tagged `exec`. Independent of `require_for_tags` —
+           * either match escalates.
+           */
+          require_for_tools: z.array(z.string()).default([]),
           timeout_seconds: z.number().int().positive().default(120),
         })
         .default({}),
@@ -254,6 +282,28 @@ export const configSchema = z.object({
       ]),
     )
     .default([]),
+  // MCP — Model Context Protocol — servers. Each entry spawns a stdio server
+  // at boot; its advertised tools land in the regular `ToolRegistry` and
+  // are indistinguishable from native tools at the agent loop layer.
+  mcp: z
+    .object({
+      servers: z
+        .array(
+          z.object({
+            id: z.string().min(1),
+            command: z.string().min(1),
+            args: z.array(z.string()).optional(),
+            env: z.record(z.string()).optional(),
+            cwd: z.string().optional(),
+            allow: z.array(z.string()).optional(),
+            deny: z.array(z.string()).optional(),
+            sample: z.number().int().positive().optional(),
+            tags: z.array(z.string()).optional(),
+          }),
+        )
+        .default([]),
+    })
+    .default({ servers: [] }),
 });
 
 export type Config = z.infer<typeof configSchema>;

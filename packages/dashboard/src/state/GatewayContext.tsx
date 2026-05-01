@@ -86,6 +86,30 @@ export interface SubagentTreeNode {
   children: SubagentTreeNode[];
 }
 
+/**
+ * Live tool-call/tool-result events captured for the active session while a
+ * run is in flight. These come from the `chat.tool_call/<sid>` and
+ * `chat.tool_result/<sid>` broadcast topics — the same source the CLI uses
+ * for its inline tool-call output. We hold them in dashboard memory only;
+ * navigating away from the session clears them, since the gateway persists
+ * the tool-call audit trail in its own table.
+ */
+export type LiveToolEvent =
+  | {
+      kind: "call";
+      toolCallId: string;
+      name: string;
+      input: unknown;
+      at: string;
+    }
+  | {
+      kind: "result";
+      toolCallId: string;
+      result: unknown;
+      isError: boolean;
+      at: string;
+    };
+
 export type ActivityKind =
   | "chat.user_message"
   | "chat.assistant_message"
@@ -133,6 +157,13 @@ export interface GatewayState {
    */
   sessionQuestions: QuestionRecord[];
   pendingApprovals: ApprovalRecord[];
+  /**
+   * Every approval record for the active session, regardless of status.
+   * Used by the chat transcript so decided approvals stay visible inline
+   * with an "approved" / "denied" status instead of vanishing the moment
+   * the user clicks a button.
+   */
+  sessionApprovals: ApprovalRecord[];
   routines: RoutineRecord[];
   pairings: PairingView[];
   activity: ActivityItem[];
@@ -149,6 +180,11 @@ export interface GatewayState {
   rootSession: SessionRecord | null;
   treeSessions: SessionRecord[];
   messages: MessageRecord[];
+  /**
+   * Live tool-call events for the active session. Captured from broadcast
+   * topics during a run; reset when the active session changes.
+   */
+  liveTools: LiveToolEvent[];
   tasks: Task[];
   streaming: string;
   /**
@@ -339,6 +375,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
   const [pendingQuestions, setPendingQuestions] = useState<QuestionRecord[]>([]);
   const [sessionQuestions, setSessionQuestions] = useState<QuestionRecord[]>([]);
   const [pendingApprovals, setPendingApprovals] = useState<ApprovalRecord[]>([]);
+  const [sessionApprovals, setSessionApprovals] = useState<ApprovalRecord[]>([]);
   const [routines, setRoutines] = useState<RoutineRecord[]>([]);
   const [pairings, setPairings] = useState<PairingView[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
@@ -358,6 +395,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     }
   }, [activeSessionId]);
   const [messages, setMessages] = useState<MessageRecord[]>([]);
+  const [liveTools, setLiveTools] = useState<LiveToolEvent[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [streaming, setStreaming] = useState<string>("");
   const [awaitingResponse, setAwaitingResponse] = useState<boolean>(false);
@@ -410,6 +448,20 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
         [] as QuestionRecord[],
       );
       setSessionQuestions(list);
+    },
+    [client],
+  );
+
+  // Pulls every approval record (any status) for the given session so the
+  // chat transcript can show pending and decided approvals inline.
+  const refreshSessionApprovals = useCallback(
+    async (sessionId: string) => {
+      const list = await tryRequest(
+        () =>
+          client.request("approvals.list", { sessionId }).then((r) => r.approvals),
+        [] as ApprovalRecord[],
+      );
+      setSessionApprovals(list);
     },
     [client],
   );
@@ -633,14 +685,17 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
   useEffect(() => {
     if (!activeSessionId) {
       setSessionQuestions([]);
+      setSessionApprovals([]);
       return;
     }
     setMessages([]);
+    setLiveTools([]);
     setStreaming("");
     setAwaitingResponse(false);
     setChatError(null);
     setTasks([]);
     setSessionQuestions([]);
+    setSessionApprovals([]);
     let cancelled = false;
     void (async () => {
       const [hist, taskList] = await Promise.all([
@@ -661,11 +716,19 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
       setTasks(taskList);
     })();
     void refreshSessionQuestions(activeSessionId);
+    void refreshSessionApprovals(activeSessionId);
     if (rootSessionId) void refreshTreeFor(rootSessionId);
     return () => {
       cancelled = true;
     };
-  }, [client, activeSessionId, rootSessionId, refreshTreeFor, refreshSessionQuestions]);
+  }, [
+    client,
+    activeSessionId,
+    rootSessionId,
+    refreshTreeFor,
+    refreshSessionQuestions,
+    refreshSessionApprovals,
+  ]);
 
   // Subscribe to all event streams once.
   useEffect(() => {
@@ -731,13 +794,46 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
           setStreaming("");
           setAwaitingResponse(false);
         }
-      } else if (topic.startsWith("chat.tool_result/")) {
-        // Between a tool finishing and the next text/tool_use, the agent is
-        // thinking again — re-arm the indicator. The dashboard doesn't render
-        // tool calls live (they appear via the final assistant_message), so
-        // without this the UI looks idle for the whole tool turn.
+      } else if (topic.startsWith("chat.tool_call/")) {
         const tSess = topic.split("/")[1];
         if (activeSessionId && tSess === activeSessionId) {
+          const d = data as { toolCallId: string; name: string; input: unknown };
+          setLiveTools((cur) => [
+            ...cur,
+            {
+              kind: "call",
+              toolCallId: d.toolCallId,
+              name: d.name,
+              input: d.input,
+              at: new Date().toISOString(),
+            },
+          ]);
+          // The agent is mid-tool — text streaming is paused, so clear it
+          // (the next text_delta will start a fresh chunk after the result).
+          setStreaming("");
+          setAwaitingResponse(false);
+        }
+      } else if (topic.startsWith("chat.tool_result/")) {
+        // Between a tool finishing and the next text/tool_use, the agent is
+        // thinking again — re-arm the indicator. We also append the result so
+        // the transcript can pair it with the call (CLI-style ⏺/⎿ output).
+        const tSess = topic.split("/")[1];
+        if (activeSessionId && tSess === activeSessionId) {
+          const d = data as {
+            toolCallId: string;
+            result: unknown;
+            isError?: boolean;
+          };
+          setLiveTools((cur) => [
+            ...cur,
+            {
+              kind: "result",
+              toolCallId: d.toolCallId,
+              result: d.result,
+              isError: d.isError ?? false,
+              at: new Date().toISOString(),
+            },
+          ]);
           setAwaitingResponse(true);
         }
       } else if (topic.startsWith("chat.error/")) {
@@ -767,6 +863,14 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
         }
       } else if (topic.startsWith("approvals.")) {
         void refreshPending();
+        // Topic format: `approvals.<event>/<sessionId>` (rule events have no
+        // session and are skipped here). Re-pull the active session's full
+        // list when the event matches so decided approvals stay visible
+        // with their final status.
+        const tSess = topic.split("/")[1];
+        if (activeSessionId && tSess === activeSessionId) {
+          void refreshSessionApprovals(activeSessionId);
+        }
       } else if (topic.startsWith("subagents.spawned")) {
         void refreshSessions();
         if (rootSessionId) void refreshTreeFor(rootSessionId);
@@ -793,6 +897,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     rootSessionId,
     refreshPending,
     refreshSessionQuestions,
+    refreshSessionApprovals,
     refreshSessions,
     refreshPlugins,
     refreshTreeFor,
@@ -1026,6 +1131,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     pendingQuestions,
     sessionQuestions,
     pendingApprovals,
+    sessionApprovals,
     routines,
     pairings,
     activity,
@@ -1036,6 +1142,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     rootSession,
     treeSessions,
     messages,
+    liveTools,
     tasks,
     streaming,
     awaitingResponse,

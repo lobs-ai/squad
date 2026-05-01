@@ -177,6 +177,9 @@ export function isDue(
 }
 
 function graceWindowMs(s: Schedule): number {
+  // Webhook routines never fire from the scheduler — return any value; this
+  // path is unreachable for them because nextRunAt is null.
+  if (s.kind === "webhook") return MIN_GRACE_MS;
   if (s.kind === "once") return ONCE_GRACE_MS;
   if (s.kind === "interval") {
     return clamp(s.everyMs / 2, MIN_GRACE_MS, MAX_GRACE_MS);
@@ -203,6 +206,10 @@ function clamp(n: number, lo: number, hi: number): number {
  * Returns null when the schedule has no future fires (one-shot in the past).
  */
 export function computeNextRunAt(s: Schedule, after: Date, seed: string = "squad"): Date | null {
+  if (s.kind === "webhook") {
+    // Webhook routines are HTTP-fired; the scheduler never auto-fires them.
+    return null;
+  }
   if (s.kind === "once") {
     const at = new Date(s.at);
     if (at.getTime() <= after.getTime()) return null;

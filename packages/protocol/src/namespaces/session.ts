@@ -169,7 +169,27 @@ export const sessionMethods = {
 export const sessionCreatedEvent = z.object({ session: sessionRecordSchema });
 export const sessionUpdatedEvent = z.object({ session: sessionRecordSchema });
 
+/**
+ * Fires when an external signal asks a session to resume — typically a
+ * background subagent finishing, a webhook landing, or any other "the world
+ * changed, give the agent another turn" trigger. Channels and clients can
+ * surface this as a notification; the gateway's coordinator also uses it to
+ * decide whether to start a fresh turn.
+ *
+ * Suffixed with `/<sessionId>` so subscribers can scope per-session. Reasons
+ * are deliberately freeform — common values include `subagent_completed`,
+ * `subagent_failed`, `webhook`, `routine_fired`.
+ */
+export const sessionWakeEvent = z.object({
+  sessionId: z.string(),
+  reason: z.string(),
+  /** Optional structured detail — varies per `reason`. */
+  detail: z.record(z.unknown()).optional(),
+  occurredAt: z.string(),
+});
+
 export const sessionEvents = {
   "session.created": sessionCreatedEvent,
   "session.updated": sessionUpdatedEvent,
+  "session.wake": sessionWakeEvent,
 } as const;

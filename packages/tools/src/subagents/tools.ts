@@ -9,7 +9,7 @@ interface SpawnSubagentInput extends Record<string, unknown> {
   prompt?: string;
   /** Optional structured payload. Stringified into the first user message. */
   input?: unknown;
-  /** Telemetry label for ad-hoc spawns (no effect for named spawns). */
+  /** Short label for ad-hoc spawns — used as the session title in the UI. */
   name?: string;
   model?: string;
   wait?: boolean;
@@ -30,6 +30,13 @@ export class SpawnSubagentTool extends BaseTool<SpawnSubagentInput> {
     "  • **Named** — pass `subagent` to spawn a registered definition (see",
     "    `create_subagent`). It uses its own SOUL/USER/MEMORY under",
     "    `.squad/subagents/<name>/` and the model/tools you registered.",
+    "",
+    "**Always pass `name` for ad-hoc spawns.** It becomes the session title",
+    "the user sees in the sidebar — and when you fan out two or three workers",
+    "in parallel, generic titles make them indistinguishable. Use a short,",
+    "specific kebab-case label that describes the job: `doc-search`,",
+    "`fix-flaky-tests`, `audit-deps`, `rewrite-readme`. Not `task`, `work`,",
+    "or `subagent`.",
     "",
     "Spawns are async by default — the tool returns immediately with a",
     "sessionId and the subagent runs in the background. You keep working and",
@@ -57,7 +64,8 @@ export class SpawnSubagentTool extends BaseTool<SpawnSubagentInput> {
       },
       name: {
         type: "string",
-        description: "Telemetry label for ad-hoc spawns.",
+        description:
+          "Short kebab-case label for ad-hoc spawns — becomes the session title in the UI. Always provide one (e.g. `doc-search`, `fix-flaky-tests`); avoid generic words like `task` or `work`.",
       },
       model: { type: "string", description: "Model id (overrides the named def)" },
       wait: {
@@ -115,7 +123,11 @@ export class SpawnSubagentTool extends BaseTool<SpawnSubagentInput> {
       : {
           status: "spawned",
           sessionId,
-          note: `${label} is running in the background — keep working. Subscribe to subagents.text_delta/${sessionId} or subagents.completed/${sessionId} to follow it.`,
+          note:
+            `${label} is now running in the background. ` +
+            "Don't sit waiting for it — keep going with whatever else is on your plate. " +
+            "When it finishes you'll get a fresh user message announcing the outcome " +
+            "and can react then. End this turn now if there's nothing else queued.",
         };
     return { result: JSON.stringify(payload, null, 2) };
   }

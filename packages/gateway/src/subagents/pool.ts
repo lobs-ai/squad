@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Session, runAgent, type AgentSpec } from "@squad/runner";
 import {
   ToolRegistry,
@@ -5,8 +6,10 @@ import {
   formatGroupIndexForPrompt,
 } from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
-import type { SubagentDefinition } from "@squad/protocol";
+import type { ContentBlock, SubagentDefinition } from "@squad/protocol";
 import type { SessionStore } from "../db/sessions.js";
+import type { MessageStore } from "../db/messages.js";
+import type { ToolCallStore } from "../db/tool-calls.js";
 import type { Broadcast } from "../broadcast.js";
 import type { Logger } from "../logger.js";
 import type { SubagentRegistry } from "./registry.js";
@@ -20,6 +23,10 @@ import {
   EMPTY_CORE_FILES,
   type CoreFileContents,
 } from "../agent-prompt.js";
+import {
+  discoverContextFiles,
+  renderContextFilesSection,
+} from "../context-discovery.js";
 
 export interface PoolLimits {
   maxConcurrentGlobal: number;
@@ -59,6 +66,8 @@ export interface BackgroundOutcome {
   parentSessionId: string;
   sessionId: string;
   subagent: string;
+  /** Caller-supplied label for ad-hoc spawns. Undefined for named spawns. */
+  name?: string;
   /** True for ad-hoc spawns (subagentDefId is null on the session row). */
   adHoc: boolean;
   succeeded: boolean;
@@ -69,6 +78,12 @@ export interface BackgroundOutcome {
 export interface SubagentPoolDeps {
   registry: SubagentRegistry;
   sessions: SessionStore;
+  /** Used to persist the subagent's user/assistant turns so the dashboard's
+   *  `chat.history` can show the transcript when the user clicks the row. */
+  messages: MessageStore;
+  /** Used to persist tool-call rows so the dashboard inspector can render
+   *  the per-call detail the same way it does for the primary chat. */
+  toolCalls?: ToolCallStore;
   broadcast: Broadcast;
   logger: Logger;
   toolRegistry: ToolRegistry;
@@ -83,6 +98,12 @@ export interface SubagentPoolDeps {
   memory?: MemoryService;
   /** Default model used for ad-hoc spawns when the caller didn't pin one. */
   defaultModel?: string;
+  /**
+   * Optional runtime registry — when set, subagent definitions with
+   * `runtime: <id>` dispatch to the matching runtime instead of running
+   * the in-process Squad agent loop. Plugins register runtimes here.
+   */
+  runtimes?: import("./runtime.js").SubagentRuntimeRegistry;
   /**
    * Fired when a backgrounded spawn (`wait: false`) finishes — succeeded or
    * failed. The gateway uses this to wake the parent session up by injecting
@@ -134,7 +155,7 @@ export class SubagentPool {
       // Ad-hoc spawns leave subagentDefId null so the row clearly marks the
       // run as one-off.
       ...(isAdHoc ? {} : { subagentDefId: def.name }),
-      title: isAdHoc ? input.name ?? "ad-hoc subagent" : def.name,
+      title: titleForSpawn(input, def, isAdHoc),
     });
 
     const spawnInput: SpawnInput & { _resolvedTools?: string[]; _adHoc?: boolean } = {
@@ -181,6 +202,7 @@ export class SubagentPool {
               parentSessionId: input.parentSessionId,
               sessionId: session.id,
               subagent: def.name,
+              ...(input.name !== undefined ? { name: input.name } : {}),
               adHoc: isAdHoc,
               succeeded: result.succeeded,
               result: result.output,
@@ -210,6 +232,7 @@ export class SubagentPool {
               parentSessionId: input.parentSessionId,
               sessionId: session.id,
               subagent: def.name,
+              ...(input.name !== undefined ? { name: input.name } : {}),
               adHoc: isAdHoc,
               succeeded: false,
               result: null,
@@ -366,6 +389,14 @@ export class SubagentPool {
     def: SubagentDefinition,
     input: SpawnInput & { _resolvedTools?: string[]; _adHoc?: boolean },
   ) {
+    // External runtime path: dispatch to a registered SubagentRuntime
+    // instead of running the in-process Squad agent loop. The pool keeps
+    // doing concurrency control / broadcast / session bookkeeping; only
+    // the run-it-and-collect-output step is replaced.
+    if (def.runtime) {
+      return this.runExternalRuntime(sessionId, def, input);
+    }
+
     // Build a filtered tool registry: only tools the subagent definition allows.
     const allowed = input._resolvedTools ?? def.tools;
     const filtered = new ToolRegistry();
@@ -413,14 +444,50 @@ export class SubagentPool {
       ? formatGroupIndexForPrompt(this.deps.toolGroups.lazy())
       : undefined;
 
+    const contextFiles = discoverContextFiles(this.deps.workspaceDir);
+    const contextFilesSection = renderContextFilesSection(contextFiles);
+    if (contextFiles.length > 0) {
+      this.deps.broadcast.publish(`context.injected/${sessionId}`, {
+        sessionId,
+        files: contextFiles.map((f) => ({
+          path: f.path,
+          name: f.name,
+          distance: f.distance,
+          tokens: f.tokens,
+        })),
+      });
+    }
+
     const systemPrompt = buildSquadSystemPrompt({
       workspaceDir: this.deps.workspaceDir,
       coreFiles,
       memoryEager,
       ...(toolGroupsIndex ? { toolGroupsIndex } : {}),
+      ...(contextFilesSection ? { contextFilesSection } : {}),
     });
 
     const session = new Session([{ role: "user", content: task }]);
+
+    // Persist + broadcast the user turn so the dashboard's chat.history (and
+    // anyone live-watching this session) sees the same transcript shape it
+    // uses for the primary chat. Without this, clicking a subagent row in the
+    // sidebar shows a blank pane.
+    const userBlocks: ContentBlock[] = [{ type: "text", text: task }];
+    const userMessage = this.deps.messages.append({
+      sessionId,
+      role: "user",
+      content: userBlocks,
+    });
+    this.deps.broadcast.publish(`chat.user_message/${sessionId}`, {
+      sessionId,
+      message: userMessage,
+    });
+
+    const runId = randomUUID();
+
+    // toolUseId → tool_calls row id, so tool_result can complete the row
+    // begin() returned. Lifetime is one subagent run.
+    const toolCallIdByUseId = new Map<string, string>();
 
     const spec: AgentSpec = {
       task,
@@ -433,9 +500,14 @@ export class SubagentPool {
       maxTokens: def.limits?.maxTokens ?? 16384,
       session,
       systemPrompt,
-      context: { sessionId, parentTaskId: input.parentSessionId },
+      context: { sessionId, taskId: runId, parentTaskId: input.parentSessionId },
       ...(this.deps.clientOverride !== undefined ? { clientOverride: this.deps.clientOverride } : {}),
       onTextChunk: (delta) => {
+        this.deps.broadcast.publish(`chat.text_delta/${sessionId}`, {
+          sessionId,
+          runId,
+          delta,
+        });
         this.deps.broadcast.publish(`subagents.text_delta/${sessionId}`, {
           sessionId,
           delta,
@@ -443,22 +515,190 @@ export class SubagentPool {
       },
       onProgress: (update) => {
         if (update.type === "tool_start" && update.toolName) {
+          const record = this.deps.toolCalls?.begin({
+            sessionId,
+            runId,
+            name: update.toolName,
+            input: update.toolInput ?? {},
+          });
+          const toolCallId = record?.id ?? update.toolUseId ?? update.toolName;
+          if (record && update.toolUseId) {
+            toolCallIdByUseId.set(update.toolUseId, record.id);
+          }
+          this.deps.broadcast.publish(`chat.tool_call/${sessionId}`, {
+            sessionId,
+            runId,
+            toolCallId,
+            name: update.toolName,
+            input: update.toolInput ?? {},
+          });
           this.deps.broadcast.publish(`subagents.tool_call/${sessionId}`, {
             sessionId,
-            toolCallId: update.toolName,
+            toolCallId,
             name: update.toolName,
             input: update.toolInput ?? {},
           });
         } else if (update.type === "tool_result" && update.toolName) {
+          const toolCallId = update.toolUseId
+            ? toolCallIdByUseId.get(update.toolUseId)
+            : undefined;
+          const isError = update.isError === true;
+          if (toolCallId) {
+            this.deps.toolCalls?.complete(toolCallId, update.result ?? null, isError);
+            if (update.toolUseId) toolCallIdByUseId.delete(update.toolUseId);
+          }
+          const broadcastId = toolCallId ?? update.toolUseId ?? "";
+          this.deps.broadcast.publish(`chat.tool_result/${sessionId}`, {
+            sessionId,
+            runId,
+            toolCallId: broadcastId,
+            result: update.result,
+            ...(isError ? { isError: true } : {}),
+          });
           this.deps.broadcast.publish(`subagents.tool_result/${sessionId}`, {
             sessionId,
-            toolCallId: update.toolName,
+            toolCallId: broadcastId,
             result: update.result,
           });
         }
       },
     };
 
-    return runAgent(spec);
+    let result;
+    try {
+      result = await runAgent(spec);
+    } catch (err) {
+      this.deps.broadcast.publish(`chat.error/${sessionId}`, {
+        sessionId,
+        runId,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
+
+    // Persist whatever the runner accumulated as the assistant turn so the
+    // transcript pane has both halves of the exchange.
+    const finalMessages = session._ref();
+    const lastAssistant = [...finalMessages].reverse().find((m) => m.role === "assistant");
+    const assistantBlocks: ContentBlock[] = lastAssistant
+      ? toWireBlocks(lastAssistant.content)
+      : [{ type: "text", text: result.output }];
+    const assistantMessage = this.deps.messages.append({
+      sessionId,
+      role: "assistant",
+      content: assistantBlocks,
+    });
+    this.deps.broadcast.publish(`chat.assistant_message/${sessionId}`, {
+      sessionId,
+      message: assistantMessage,
+      runId,
+    });
+
+    return result;
   }
+
+  private async runExternalRuntime(
+    sessionId: string,
+    def: SubagentDefinition,
+    input: SpawnInput & { _resolvedTools?: string[]; _adHoc?: boolean },
+  ) {
+    const runtimeId = def.runtime!;
+    const runtime = this.deps.runtimes?.get(runtimeId);
+    if (!runtime) {
+      throw new Error(
+        `subagent "${def.name}" requests runtime "${runtimeId}" which is not registered`,
+      );
+    }
+
+    // Compose the prompt the same way the native runOne does so external
+    // agents see the same input shape.
+    const segments: string[] = [];
+    if (input.input !== undefined && input.input !== null) {
+      segments.push(typeof input.input === "string" ? input.input : JSON.stringify(input.input));
+    }
+    if (input.prompt) segments.push(input.prompt);
+    const promptText = segments.join("\n\n") || def.description;
+
+    // Persist + broadcast the user turn so the dashboard's chat.history sees
+    // the same transcript shape it uses for native subagents.
+    const userBlocks: ContentBlock[] = [{ type: "text", text: promptText }];
+    const userMessage = this.deps.messages.append({
+      sessionId,
+      role: "user",
+      content: userBlocks,
+    });
+    this.deps.broadcast.publish(`chat.user_message/${sessionId}`, {
+      sessionId,
+      message: userMessage,
+    });
+
+    const controller = new AbortController();
+    const allowed = input._resolvedTools ?? def.tools;
+    const result = await runtime.run({
+      prompt: promptText,
+      model: input.modelOverride ?? def.model,
+      allowedTools: allowed,
+      cwd: this.deps.workspaceDir,
+      definition: def,
+      signal: controller.signal,
+      onTextChunk: (delta) => {
+        this.deps.broadcast.publish(`subagents.text_delta/${sessionId}`, {
+          sessionId,
+          delta,
+        });
+      },
+    });
+
+    // Persist the assistant turn so it shows up in the transcript pane.
+    const assistantBlocks: ContentBlock[] = [{ type: "text", text: result.output }];
+    const assistantMessage = this.deps.messages.append({
+      sessionId,
+      role: "assistant",
+      content: assistantBlocks,
+    });
+    this.deps.broadcast.publish(`chat.assistant_message/${sessionId}`, {
+      sessionId,
+      message: assistantMessage,
+      runId: sessionId,
+    });
+
+    return {
+      output: result.output,
+      succeeded: result.succeeded,
+      usage: {
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      },
+    };
+  }
+}
+
+function toWireBlocks(content: string | Array<Record<string, unknown>>): ContentBlock[] {
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  return content.map((b) => b as unknown as ContentBlock);
+}
+
+/**
+ * Resolve the human-readable title for a spawn. Named spawns use the
+ * registered name. Ad-hoc spawns prefer the caller-supplied `name` so the
+ * sidebar can show meaningful labels; without one we fall back to a generic
+ * label suffixed with the prompt's first few words so adjacent runs are
+ * distinguishable.
+ */
+function titleForSpawn(
+  input: SpawnInput,
+  def: SubagentDefinition,
+  isAdHoc: boolean,
+): string {
+  if (!isAdHoc) return def.name;
+  if (input.name && input.name.trim().length > 0) return input.name.trim();
+  const promptHint = typeof input.prompt === "string" ? input.prompt.trim() : "";
+  if (promptHint.length > 0) {
+    const firstLine = promptHint.split(/\r?\n/, 1)[0]!.trim();
+    const snippet = firstLine.length > 40 ? firstLine.slice(0, 40) + "…" : firstLine;
+    return `subagent — ${snippet}`;
+  }
+  return "subagent";
 }

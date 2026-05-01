@@ -1,10 +1,34 @@
 import type { ClientConfig, KeyConfig, Provider } from "@squad/llm";
 
+export interface KeyEntryConfig {
+  key?: string;
+  key_env?: string;
+  label?: string;
+}
+
 export interface ProviderConfig {
   api_key?: string;
   api_key_env?: string;
   base_url?: string;
+  /**
+   * Optional pool of additional keys. Rotated round-robin by the gateway
+   * RotatingLLMClient; each entry can be a literal string, `{ key }`, or
+   * `{ key_env }`.
+   */
+  keys?: KeyEntryConfig[];
 }
+
+/**
+ * Resolved key pool entry — a literal key paired with its provenance label
+ * so logs/metrics can identify a misbehaving key without leaking its value.
+ */
+export interface ResolvedKey {
+  key: string;
+  label: string;
+}
+
+/** Every key pool, keyed by provider — used by the rotating LLM client. */
+export type ResolvedKeyPools = Partial<Record<string, ResolvedKey[]>>;
 
 export interface ResolveProviderConfigResult {
   /** Ready-to-pass `ClientConfig` for `createClient` / `createModelChain`. */
@@ -13,6 +37,12 @@ export interface ResolveProviderConfigResult {
   resolved: string[];
   /** Provider names that look configured but have no resolvable key. */
   missingKeys: Array<{ provider: string; envVar: string | null; reason: string }>;
+  /**
+   * Full key pools per provider, in the order they should be rotated.
+   * Includes the primary key plus every entry from `keys[]`. Used by
+   * `RotatingLLMClient` to round-robin / 429-exclude.
+   */
+  keyPools: ResolvedKeyPools;
 }
 
 const LOCAL_PROVIDERS = new Set(["ollama", "lmstudio", "llamacpp", "vllm"]);
@@ -68,6 +98,7 @@ export function resolveProviderConfig(
   const baseUrls: Partial<Record<Provider, string>> = {};
   const resolved: string[] = [];
   const missingKeys: ResolveProviderConfigResult["missingKeys"] = [];
+  const keyPools: ResolvedKeyPools = {};
 
   for (const [provider, cfg] of Object.entries(providers)) {
     if (cfg.base_url) baseUrls[provider as Provider] = cfg.base_url;
@@ -77,20 +108,39 @@ export function resolveProviderConfig(
       continue;
     }
 
-    const literal = cfg.api_key;
     const envName = cfg.api_key_env ?? FALLBACK_ENV_VARS[provider] ?? defaultEnvVar(provider);
-    const envValue = envName ? process.env[envName] : undefined;
-    const key = literal ?? envValue;
-    if (key && key.trim().length > 0) {
-      keys[provider] = { keys: [{ key }] };
+    const pool: ResolvedKey[] = [];
+
+    // Primary key — literal first, then standard env var.
+    const primary = cfg.api_key ?? (envName ? process.env[envName] : undefined);
+    if (primary && primary.trim().length > 0) {
+      pool.push({ key: primary, label: cfg.api_key ? "api_key" : envName ?? "primary" });
+    }
+
+    // Pool entries from keys[]: each may be literal or env-backed.
+    for (let i = 0; i < (cfg.keys?.length ?? 0); i++) {
+      const entry = cfg.keys![i]!;
+      const literal = entry.key;
+      const envValue = entry.key_env ? process.env[entry.key_env] : undefined;
+      const value = literal ?? envValue;
+      if (!value || value.trim().length === 0) continue;
+      pool.push({
+        key: value,
+        label: entry.label ?? entry.key_env ?? `pool[${i}]`,
+      });
+    }
+
+    if (pool.length > 0) {
+      keys[provider] = { keys: pool.map((k) => ({ key: k.key, label: k.label })) };
+      keyPools[provider] = pool;
       resolved.push(provider);
     } else {
       missingKeys.push({
         provider,
         envVar: envName,
-        reason: literal
+        reason: cfg.api_key
           ? "api_key was empty"
-          : envValue == null
+          : process.env[envName] == null
             ? `set ${envName}=… or providers.${provider}.api_key in config.json`
             : "env var was empty",
       });
@@ -101,5 +151,6 @@ export function resolveProviderConfig(
     clientConfig: { keys, baseUrls },
     resolved,
     missingKeys,
+    keyPools,
   };
 }

@@ -56,12 +56,19 @@ export interface MemoryServiceOptions {
   containerTag?: string;
   /** Eager-block char budget. Defaults to EAGER_BLOCK_BUDGET. */
   eagerBudget?: number;
+  /**
+   * When set, every successful write/update/archive mirrors the entry as a
+   * `<dataDir>/memory/<id>.md` file with frontmatter metadata. Best-effort —
+   * mirror failures don't block the DB write. Tests typically omit this.
+   */
+  markdownMirror?: import("./markdown-mirror.js").MarkdownMemoryMirror;
 }
 
 export class MemoryService {
   private readonly containerTag: string;
   private readonly eagerBudget: number;
   private readonly eagerCache = new Map<string, PromptMemoryEntry[]>();
+  private readonly markdownMirror: import("./markdown-mirror.js").MarkdownMemoryMirror | undefined;
 
   constructor(
     private readonly memcore: MemCore,
@@ -70,6 +77,7 @@ export class MemoryService {
   ) {
     this.containerTag = opts.containerTag ?? "squad";
     this.eagerBudget = opts.eagerBudget ?? EAGER_BLOCK_BUDGET;
+    this.markdownMirror = opts.markdownMirror;
   }
 
   // ── Write path ────────────────────────────────────────────────────────
@@ -121,7 +129,9 @@ export class MemoryService {
     if (!id) throw new Error("memcore.add returned no memory id");
     const row = await this.memcore.get({ containerTag: this.containerTag, id });
     if (!row) throw new Error(`memcore.add wrote id=${id} but get() returned null`);
-    return this.rowToEntry(row);
+    const entry = this.rowToEntry(row);
+    this.markdownMirror?.upsert(entry);
+    return entry;
   }
 
   async update(input: MemoryUpdateInput): Promise<MemoryEntry> {
@@ -158,7 +168,9 @@ export class MemoryService {
         provenanceAgentId: input.agentId ?? existing.provenanceAgentId,
       }),
     });
-    return this.rowToEntry(updated);
+    const entry = this.rowToEntry(updated);
+    this.markdownMirror?.upsert(entry);
+    return entry;
   }
 
   async archive(
@@ -166,6 +178,7 @@ export class MemoryService {
     _opts: { reason?: string; agentId?: string | null } = {},
   ): Promise<MemoryEntry> {
     const row = await this.memcore.archive({ containerTag: this.containerTag, id });
+    this.markdownMirror?.remove(id);
     return this.rowToEntry(row);
   }
 

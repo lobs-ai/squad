@@ -320,6 +320,12 @@ export interface BuildSquadPromptInput {
    * `formatGroupIndexForPrompt`. When omitted, the section is skipped.
    */
   toolGroupsIndex?: string;
+  /**
+   * Pre-rendered project-context section (AGENTS.md / CLAUDE.md / SQUAD.md /
+   * .cursorrules discovered by walking up from the agent's cwd). Built by the
+   * runner via `renderContextFilesSection`. Empty/undefined → section skipped.
+   */
+  contextFilesSection?: string;
 }
 
 /**
@@ -335,7 +341,14 @@ export interface BuildSquadPromptInput {
  * files. Keep the static part tight — every token here is paid on every turn.
  */
 export function buildSquadSystemPrompt(input: BuildSquadPromptInput): string {
-  const { workspaceDir, coreFiles, memoryEager, memoryRetrieval, toolGroupsIndex } = input;
+  const {
+    workspaceDir,
+    coreFiles,
+    memoryEager,
+    memoryRetrieval,
+    toolGroupsIndex,
+    contextFilesSection,
+  } = input;
   const sections: string[] = [];
 
   sections.push(`# Squad agent
@@ -401,6 +414,10 @@ wrong; don't let stale entries rot.`);
 
   const live = renderCoreFilesSection(coreFiles);
   if (live) sections.push(live);
+
+  if (contextFilesSection && contextFilesSection.trim().length > 0) {
+    sections.push(contextFilesSection);
+  }
 
   // ── Persistent memory ─────────────────────────────────────────────────────
   // Mention the system unconditionally so the agent knows the eager block is

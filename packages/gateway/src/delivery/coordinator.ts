@@ -136,17 +136,20 @@ export class RunCoordinator {
   }
 
   /**
-   * Trigger a fresh chat turn from outside chat dispatch — used by the
-   * subagent pool to wake the parent session up when a backgrounded child
-   * finishes. The injected user message is persisted by `runChatTurn`
-   * itself (persistUserMessage: true). When a run is already active for the
-   * session we enqueue instead, mirroring `decide`.
+   * Deliver a user-facing message that originated outside `chat.send` — e.g.
+   * a backgrounded subagent finished and the parent needs to know. Caller
+   * has already persisted the message row + broadcast it. We then route via
+   * the same decide() logic chat.send uses:
+   *   - no active run: start a fresh turn (persistUserMessage: false; the
+   *     row's already on disk).
+   *   - active run: enqueue. interrupt mode picks it up at the next
+   *     before_llm_call; queue mode drains it at finish().
    */
-  async startSyntheticTurn(sessionId: string, content: ContentBlock[]): Promise<void> {
+  async deliverExternalMessage(sessionId: string, content: ContentBlock[]): Promise<void> {
     if (!this.starter) {
       this.logger.warn(
         { sessionId },
-        "startSyntheticTurn called before starter was wired — dropping",
+        "deliverExternalMessage called before starter was wired — dropping",
       );
       return;
     }
@@ -161,7 +164,7 @@ export class RunCoordinator {
       this.injectedForRun.delete(active.runId);
       return;
     }
-    await this.starter(sessionId, content, { persistUserMessage: true });
+    await this.starter(sessionId, content, { persistUserMessage: false });
   }
 
   /**

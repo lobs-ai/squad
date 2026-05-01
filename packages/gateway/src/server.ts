@@ -45,6 +45,8 @@ import type { CommandRegistry } from "./commands/registry.js";
 import type { ToolsetRegistry } from "./toolsets/registry.js";
 import { registerCommandMethods } from "./dispatch/commands.js";
 import { registerToolsetMethods } from "./dispatch/toolsets.js";
+import type { HttpApiHandler } from "./http-api.js";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 export interface GatewayDeps {
   config: Config;
@@ -121,6 +123,13 @@ export interface GatewayDeps {
    * `chat.auto_title` is false in config.
    */
   titleGenerator?: import("./title-generator.js").TitleGenerator;
+  /**
+   * Optional HTTP API shim. When present, POST /v1/chat/completions and
+   * /v1/messages are dispatched into this handler. Absent in tests.
+   */
+  httpApi?: HttpApiHandler;
+  /** Trace registry — wired by boot, optional in tests. */
+  traceRegistry?: import("./traces.js").TraceSessionRegistry;
 }
 
 export interface GatewayHandle {
@@ -281,6 +290,35 @@ function handleHttp(req: IncomingMessage, res: ServerResponse, deps: GatewayDeps
     sendJson(res, 200, result);
     return;
   }
+  // ── Webhook-triggered routines ───────────────────────────────────────
+  // POST /webhook/<routine-id> fires a routine whose schedule.kind === "webhook".
+  // Authenticated via the schedule's auth mode (none / secret / hmac).
+  if (
+    deps.routineStore &&
+    deps.routineRunner &&
+    req.method === "POST" &&
+    typeof req.url === "string" &&
+    req.url.startsWith("/webhook/")
+  ) {
+    void handleWebhook(req, res, deps).catch((err) => {
+      deps.logger.error({ err }, "webhook handler crashed");
+      sendJson(res, 500, { error: "internal error" });
+    });
+    return;
+  }
+  // ── HTTP API shim (OpenAI / Anthropic compat) ─────────────────────────
+  if (deps.httpApi && req.method === "POST" && typeof req.url === "string") {
+    const u = new URL(req.url, "http://host");
+    if (u.pathname === "/v1/chat/completions" || u.pathname === "/v1/messages") {
+      void deps.httpApi
+        .handle(u.pathname, req, res)
+        .catch((err) => {
+          deps.logger.error({ err, path: u.pathname }, "http api handler crashed");
+          sendJson(res, 500, { error: "internal error" });
+        });
+      return;
+    }
+  }
   // Dashboard static assets at / and /assets/*. Resolve per request so a
   // dashboard built after gateway start gets picked up.
   const root = dashboardRoot();
@@ -334,6 +372,7 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
     ...(deps.memory !== undefined ? { memory: deps.memory } : {}),
     ...(deps.clientOverride !== undefined ? { clientOverride: deps.clientOverride } : {}),
     ...(deps.titleGenerator ? { titleGenerator: deps.titleGenerator } : {}),
+    ...(deps.traceRegistry ? { traceRegistry: deps.traceRegistry } : {}),
   });
   registerTaskMethods(d, deps.tasks, deps.broadcast);
   registerQuestionMethods(d, deps.questions);
@@ -389,8 +428,10 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
     },
     approvals: {
       requireForTags: deps.config.policy.approvals.require_for_tags,
+      requireForTools: deps.config.policy.approvals.require_for_tools,
       timeoutSeconds: deps.config.policy.approvals.timeout_seconds,
     },
+    toolRegistry: deps.toolRegistry,
     squadName: deps.config.server.squad_name,
     squadPort: deps.config.server.port,
     squadHost: deps.config.server.host === "0.0.0.0" ? "127.0.0.1" : deps.config.server.host,
@@ -407,6 +448,110 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
+}
+
+async function readBody(req: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const c of req) chunks.push(c as Buffer);
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function lowercaseHeaders(req: IncomingMessage): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(req.headers)) {
+    if (typeof v === "string") out[k.toLowerCase()] = v;
+    else if (Array.isArray(v)) out[k.toLowerCase()] = v[v.length - 1] ?? "";
+  }
+  return out;
+}
+
+async function handleWebhook(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: GatewayDeps,
+): Promise<void> {
+  const url = new URL(req.url ?? "/", "http://host");
+  // Path is /webhook/<routine-id> with no further segments.
+  const id = url.pathname.replace(/^\/webhook\//, "").replace(/\/$/, "");
+  if (!id) {
+    sendJson(res, 404, { error: "missing routine id" });
+    return;
+  }
+  const job = deps.routineStore!.getJob(id);
+  if (!job) {
+    sendJson(res, 404, { error: "unknown routine" });
+    return;
+  }
+  if (job.schedule.kind !== "webhook") {
+    sendJson(res, 404, { error: "routine is not webhook-scheduled" });
+    return;
+  }
+  if (!job.enabled) {
+    sendJson(res, 423, { error: "routine disabled" });
+    return;
+  }
+
+  const headers = lowercaseHeaders(req);
+  const rawBody = await readBody(req);
+  const auth = job.schedule.auth ?? "secret";
+  if (auth === "secret") {
+    const provided =
+      url.searchParams.get("token") ??
+      (() => {
+        const a = headers["authorization"];
+        if (!a) return null;
+        const m = /^Bearer\s+(.+)$/i.exec(a);
+        return m ? m[1]! : null;
+      })();
+    if (!provided || !job.schedule.secret || !safeEq(provided, job.schedule.secret)) {
+      sendJson(res, 401, { error: "invalid token" });
+      return;
+    }
+  } else if (auth === "hmac") {
+    const sig = headers["x-squad-signature"];
+    if (!sig || !job.schedule.secret) {
+      sendJson(res, 401, { error: "missing signature" });
+      return;
+    }
+    const expected = createHmac("sha256", job.schedule.secret).update(rawBody).digest("hex");
+    if (!safeEq(sig, expected)) {
+      sendJson(res, 401, { error: "bad signature" });
+      return;
+    }
+  }
+
+  let parsedBody: unknown = rawBody;
+  if (rawBody.trim().length > 0) {
+    try {
+      parsedBody = JSON.parse(rawBody);
+    } catch {
+      // Leave parsedBody as the raw string when not JSON.
+    }
+  }
+  const query: Record<string, string> = {};
+  url.searchParams.forEach((v, k) => {
+    if (k !== "token") query[k] = v;
+  });
+
+  try {
+    const result = await deps.routineStore!.fireWebhook(id, deps.routineRunner!, {
+      body: parsedBody,
+      headers,
+      query,
+      rawBody,
+    });
+    sendJson(res, 200, { ok: true, sessionId: result.sessionId });
+  } catch (err) {
+    deps.logger.error({ err, routineId: id }, "webhook routine fire failed");
+    sendJson(res, 500, { error: err instanceof Error ? err.message : "fire failed" });
+  }
+}
+
+function safeEq(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
 }
 
 function readJson(req: IncomingMessage): Promise<unknown> {

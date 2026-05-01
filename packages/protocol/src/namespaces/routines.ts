@@ -26,14 +26,43 @@ export const onceScheduleSchema = z.object({
   kind: z.literal("once"),
   at: z.string(), // ISO timestamp
 });
+
+/**
+ * Webhook-driven routine: fires when an HTTP POST lands at
+ * `/webhook/<routine-id>`. The request body is forwarded into the routine
+ * payload (substituted into `{{body}}` / `{{header.X}}` / `{{query.X}}`
+ * placeholders for prompt-style payloads, or attached as the first
+ * `agentTurn` message for agentTurn payloads). `auth` controls how
+ * the gateway verifies the caller; `none` is allowed but heavily
+ * discouraged outside of dev.
+ */
+export const webhookScheduleSchema = z.object({
+  kind: z.literal("webhook"),
+  /**
+   * Authorization mode for incoming requests.
+   *  - `secret`: caller passes `?token=<secret>` or `Authorization: Bearer <secret>`
+   *  - `hmac`:   caller signs the body; gateway recomputes HMAC-SHA256 with `secret`
+   *               and compares against `X-Squad-Signature` (hex)
+   *  - `none`:   no auth (only for trusted networks).
+   */
+  auth: z.enum(["secret", "hmac", "none"]).default("secret"),
+  /**
+   * Shared secret. Required for `secret` and `hmac`; ignored when `none`.
+   * Stored in plaintext in the routine record — keep separate from regular
+   * config and rotate via `routines.update`.
+   */
+  secret: z.string().optional(),
+});
 export const scheduleSchema = z.discriminatedUnion("kind", [
   cronScheduleSchema,
   intervalScheduleSchema,
   onceScheduleSchema,
+  webhookScheduleSchema,
 ]);
 export type CronSchedule = z.infer<typeof cronScheduleSchema>;
 export type IntervalSchedule = z.infer<typeof intervalScheduleSchema>;
 export type OnceSchedule = z.infer<typeof onceScheduleSchema>;
+export type WebhookSchedule = z.infer<typeof webhookScheduleSchema>;
 export type Schedule = z.infer<typeof scheduleSchema>;
 
 // -- Payload ---------------------------------------------------------------

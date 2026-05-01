@@ -47,6 +47,10 @@ import { ApprovalStore } from "./approvals/store.js";
 import { ApprovalRuleStore, allowListPolicy } from "./approvals/rules.js";
 import { JsonFileApprovalRulePersistence } from "./approvals/rules-persist.js";
 import { installApprovalHook } from "./approvals/hook.js";
+import { installTraceHook, TraceSessionRegistry } from "./traces.js";
+import { createHttpApiHandler } from "./http-api.js";
+import { McpRegistry } from "./mcp/registry.js";
+import { SubagentRuntimeRegistry } from "./subagents/runtime.js";
 import { getHookRegistry } from "@squad/runner";
 import { ChannelRegistry } from "./channels/registry.js";
 import { PeerSource } from "./peers/source.js";
@@ -61,13 +65,20 @@ import type {
   SlashCommandDescriptor,
   ToolsetDescriptor,
 } from "@squad/plugin-sdk";
-import { createClient, createModelChain, type LLMClient } from "@squad/llm";
+import {
+  createClient,
+  createModelChain,
+  inferProvider,
+  type LLMClient,
+} from "@squad/llm";
 import { resolveProviderConfig } from "./llm-config.js";
+import { RotatingLLMClient, shouldRotateKeys } from "./rotating-client.js";
 import { createGatewayServer, type GatewayHandle } from "./server.js";
 import { seedCoreFiles } from "./agent-prompt.js";
 import { memoryBackendFor } from "./memory/backend.js";
 import { SquadLLMClientForMemCore } from "./memory/llm-adapter.js";
 import { MemoryService } from "./memory/service.js";
+import { MarkdownMemoryMirror } from "./memory/markdown-mirror.js";
 import { SessionIngestionService } from "./memory/session-ingest.js";
 import type { MemCore } from "memcore";
 
@@ -128,6 +139,23 @@ export {
 } from "./restart/manager.js";
 export { runSupervisor } from "./restart/supervisor.js";
 export { tagMatchPolicy, allowAllPolicy, denyAllPolicy, cascade } from "./approvals/policy.js";
+export { RotatingLLMClient, shouldRotateKeys } from "./rotating-client.js";
+export { McpRegistry } from "./mcp/registry.js";
+export { McpClient } from "./mcp/client.js";
+export { createMcpServer } from "./mcp/server.js";
+export {
+  SubagentRuntimeRegistry,
+  type SubagentRuntime,
+  type SubagentRuntimeRunInput,
+  type SubagentRuntimeRunResult,
+} from "./subagents/runtime.js";
+export { stdioRuntime } from "./subagents/runtime-stdio.js";
+export {
+  discoverContextFiles,
+  discoverProgressiveContextFiles,
+  renderContextFilesSection,
+  CONTEXT_FILE_NAMES,
+} from "./context-discovery.js";
 export { Dispatcher } from "./dispatch/index.js";
 export { runChatTurn } from "./runs.js";
 export {
@@ -137,6 +165,7 @@ export {
   CORE_DIR,
   CORE_FILES,
 } from "./agent-prompt.js";
+export { MarkdownMemoryMirror } from "./memory/markdown-mirror.js";
 export {
   MemoryService,
   memoryBackendFor,
@@ -308,14 +337,42 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     if (!config.llm.primary?.model) return undefined;
     try {
       const fallbackModels = config.llm.fallbacks.map((f) => f.model);
-      if (fallbackModels.length > 0) {
-        return createModelChain({
-          primary: config.llm.primary.model,
-          fallbacks: fallbackModels,
-          config: llmResolution.clientConfig,
-        }) as unknown as LLMClient;
+      const baseClient: LLMClient =
+        fallbackModels.length > 0
+          ? (createModelChain({
+              primary: config.llm.primary.model,
+              fallbacks: fallbackModels,
+              config: llmResolution.clientConfig,
+            }) as unknown as LLMClient)
+          : createClient(config.llm.primary.model, llmResolution.clientConfig);
+      // Wrap in a key-rotating client when any provider has 2+ keys configured.
+      if (shouldRotateKeys(llmResolution.keyPools)) {
+        const rotating = new RotatingLLMClient({
+          pools: llmResolution.keyPools,
+          buildClient: (provider, key) =>
+            createClient(`${provider}/probe`, {
+              keys: { [provider]: { keys: [{ key: key.key }] } },
+              ...(llmResolution.clientConfig.baseUrls
+                ? { baseUrls: llmResolution.clientConfig.baseUrls }
+                : {}),
+            }),
+          logger,
+          inferProvider: (model) => {
+            try {
+              return inferProvider(model);
+            } catch {
+              return null;
+            }
+          },
+          delegate: baseClient,
+        });
+        const poolSummary = Object.fromEntries(
+          Object.entries(llmResolution.keyPools).map(([p, keys]) => [p, keys?.length ?? 0]),
+        );
+        logger.info({ pools: poolSummary }, "key rotation enabled — multi-key provider pool active");
+        return rotating;
       }
-      return createClient(config.llm.primary.model, llmResolution.clientConfig);
+      return baseClient;
     } catch (err) {
       logger.error(
         { err, primary: config.llm.primary.model },
@@ -341,10 +398,16 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   // the GatewayAPI; the registry is mutable so the reference holds.
   const toolsetRegistry = new ToolsetRegistry(toolRegistry);
 
+  // Registry for external subagent runtimes (Claude Code, Codex, …) that
+  // plugins register via `api.subagentRuntimes.register(...)`.
+  const subagentRuntimes = new SubagentRuntimeRegistry();
+
   const subagentPool = new SubagentPool(
     {
       registry: subagentRegistry,
       sessions,
+      messages,
+      toolCalls,
       broadcast,
       logger,
       toolRegistry,
@@ -352,6 +415,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
       toolsets: toolsetRegistry,
       toolGroups,
       defaultModel: config.llm.primary.model,
+      runtimes: subagentRuntimes,
       ...(sharedClient !== undefined ? { clientOverride: sharedClient } : {}),
     },
     {
@@ -439,8 +503,11 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     });
   }
   const containerTag = memcoreCfg.container_tag || config.server.squad_name;
+  const markdownMirror = new MarkdownMemoryMirror(config.server.data_dir, logger);
+  markdownMirror.ensureDir();
   const memoryService = new MemoryService(memcoreInstance, logger, {
     containerTag,
+    markdownMirror,
   });
   registerMemoryTools(toolRegistry, memoryBackendFor(memoryService));
   subagentPool.setMemory(memoryService);
@@ -525,25 +592,44 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     logger,
   });
 
-  // When a backgrounded subagent finishes, walk up to the root chat session
-  // and start a fresh turn announcing the outcome. Without this the parent
-  // sits idle after spawn_subagent (the LLM ended its turn on the spawn ack)
-  // and the user sees the agent "freeze" while subagents quietly complete in
-  // the background.
+  // When a backgrounded subagent finishes, deliver the outcome to the root
+  // chat session via the same interrupt/queue path a real `chat.send` uses.
+  // The parent's turn is allowed to end naturally on spawn (the LLM is told
+  // to keep working with whatever else is on its plate) — this is what
+  // re-engages it later, riding the user's configured delivery mode.
   subagentPool.setBackgroundOutcomeHandler((outcome) => {
     let rootId: string;
     try {
       rootId = sessions.rootId(outcome.parentSessionId);
     } catch {
-      return; // session vanished
+      return;
     }
+    // Always emit a session.wake event so subscribers (dashboards, channels)
+    // can render an "agent re-engaged" affordance even if the wake doesn't
+    // result in a synthetic message (nested subagent grandchildren, etc.).
+    const wakeReason = outcome.succeeded ? "subagent_completed" : "subagent_failed";
+    broadcast.publish(`session.wake/${rootId}`, {
+      sessionId: rootId,
+      reason: wakeReason,
+      detail: {
+        subagent: outcome.subagent,
+        subagentSessionId: outcome.sessionId,
+        adHoc: outcome.adHoc,
+        ...(outcome.error ? { error: outcome.error } : {}),
+      },
+      occurredAt: new Date().toISOString(),
+    });
     // Only wake the root if it's a user-facing chat session — i.e. it has no
     // subagentDefId. Nested subagents that fired off grandchildren don't get
     // re-engaged automatically.
     const rootSession = sessions.tryGet(rootId);
     if (!rootSession || rootSession.subagentDefId) return;
 
-    const label = outcome.adHoc ? "ad-hoc subagent" : `subagent "${outcome.subagent}"`;
+    const label = outcome.adHoc
+      ? outcome.name
+        ? `subagent "${outcome.name}"`
+        : "ad-hoc subagent"
+      : `subagent "${outcome.subagent}"`;
     const status = outcome.succeeded ? "completed" : "failed";
     const body = outcome.succeeded
       ? typeof outcome.result === "string"
@@ -557,17 +643,32 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     ].join("\n");
 
     // Defer to the next tick so we don't re-enter the agent loop from inside
-    // the pool's IIFE (it's still holding the running-set entry until the
-    // finally clears).
+    // the pool's IIFE (the running-set entry is still being released).
     setImmediate(() => {
-      void coordinator
-        .startSyntheticTurn(rootId, [{ type: "text", text }])
-        .catch((err) => {
+      void (async () => {
+        try {
+          // Persist the synthetic message + broadcast it so the dashboard /
+          // CLI render it in the parent's transcript like any other user
+          // message. Then hand off to the coordinator which decides whether
+          // to start a fresh turn or queue/interrupt-inject onto an active
+          // one based on the session's deliveryMode.
+          const userMessage = messages.append({
+            sessionId: rootId,
+            role: "user",
+            content: [{ type: "text", text }],
+          });
+          broadcast.publish(`chat.user_message/${rootId}`, {
+            sessionId: rootId,
+            message: userMessage,
+          });
+          await coordinator.deliverExternalMessage(rootId, [{ type: "text", text }]);
+        } catch (err) {
           logger.error(
             { err, parentSessionId: outcome.parentSessionId, rootId },
             "failed to wake parent on subagent completion",
           );
-        });
+        }
+      })();
     });
   });
 
@@ -590,9 +691,14 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   const approvalPolicies: ApprovalPolicy[] = [
     // User-defined allow-list wins first so a matching rule short-circuits
     // any tag-match escalation below it.
-    allowListPolicy(approvalRules),
+    allowListPolicy(approvalRules, (sessionId) => {
+      if (!sessionId) return null;
+      const s = sessions.tryGet(sessionId);
+      return s?.subagentDefId ?? null;
+    }),
     tagMatchPolicy({
       requireForTags: () => liveConfig.current.policy.approvals.require_for_tags,
+      requireForTools: () => liveConfig.current.policy.approvals.require_for_tools,
     }),
   ];
   const channelHandles: ChannelHandle[] = [];
@@ -629,6 +735,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   const plugins = new PluginHost({
     toolRegistry,
     subagentRegistry,
+    subagentRuntimes,
     logger,
     providers,
     routines: routinesList,
@@ -666,9 +773,51 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
       logger.error({ err, toolset: ts.name }, "failed to register toolset");
     }
   }
+  // Skills with structured shape (model / tools / inputSchema set) become
+  // first-class subagents named `skill:<id>`. Skills that only carry a
+  // `systemPromptFragment` keep the legacy injection behavior.
+  for (const skill of skillsList) {
+    const isStructured =
+      skill.model !== undefined ||
+      (skill.tools && skill.tools.length > 0) ||
+      (skill.toolsets && skill.toolsets.length > 0) ||
+      skill.inputSchema !== undefined;
+    if (!isStructured) continue;
+    try {
+      subagentRegistry.register(
+        {
+          name: `skill:${skill.name}`,
+          description: skill.description ?? `skill ${skill.name}`,
+          model: skill.model ?? config.llm.primary.model,
+          tools: skill.tools ?? [],
+          ...(skill.toolsets ? { toolsets: skill.toolsets } : {}),
+          ...(skill.systemPrompt ? { systemPrompt: skill.systemPrompt } : {}),
+          ...(skill.inputSchema ? { inputSchema: skill.inputSchema } : {}),
+          ...(skill.limits ? { limits: skill.limits } : {}),
+        },
+        "plugin",
+      );
+      logger.info({ skill: skill.name }, "skill registered as subagent");
+    } catch (err) {
+      logger.error({ err, skill: skill.name }, "failed to register skill as subagent");
+    }
+  }
 
   // Drop run-log files for jobs that have been deleted from disk.
   pruneOrphanedRunLogs(cronPaths.runs, routineStore.ids());
+
+  // ── MCP servers ─────────────────────────────────────────────────────
+  // Each configured MCP server spawns a subprocess and imports its tools
+  // into the gateway's ToolRegistry. Failures are non-fatal — the gateway
+  // boots even when one server is broken; subsequent reload() can fix it.
+  const mcpRegistry = new McpRegistry({ toolRegistry, logger });
+  for (const cfg of config.mcp.servers) {
+    try {
+      await mcpRegistry.load(cfg);
+    } catch (err) {
+      logger.error({ err, serverId: cfg.id }, "failed to load mcp server");
+    }
+  }
 
   // Wire the approval policy into the runner's before_tool_call hook.
   // Plugins may have added more policies during plugin load; cascade the
@@ -682,6 +831,10 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     sessions,
     logger,
   });
+
+  // Trace hook: emits per-LLM-call telemetry events scoped per session.
+  const traceRegistry = new TraceSessionRegistry();
+  installTraceHook(getHookRegistry(), broadcast, traceRegistry, logger);
 
   const cronExecutor = new CronExecutor({
     sessions,
@@ -812,6 +965,22 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     pairing,
     commands: commandRegistry,
     toolsets: toolsetRegistry,
+    traceRegistry,
+    httpApi: createHttpApiHandler({
+      authenticator,
+      sessions,
+      messages,
+      toolCalls,
+      broadcast,
+      logger,
+      toolRegistry,
+      defaultModel: config.llm.primary.model,
+      defaultFallbacks: config.llm.fallbacks.map((f) => f.model),
+      workspaceDir,
+      ...(memoryService ? { memory: memoryService } : {}),
+      ...(sharedClient !== undefined ? { clientOverride: sharedClient } : {}),
+      traceRegistry,
+    }),
     ...(sharedClient !== undefined ? { clientOverride: sharedClient } : {}),
     ...(configBackend ? { configBackend } : {}),
     ...(opts.configPath ? { configPath: opts.configPath } : {}),
@@ -845,6 +1014,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
         logger.error({ err, channel: ch.id }, "channel failed to stop");
       }
     }
+    await mcpRegistry.stopAll();
     await handle.close();
     try {
       await memcoreInstance.close();
