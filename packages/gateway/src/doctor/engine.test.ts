@@ -39,7 +39,7 @@ function staticCheck(opts: {
       ? {
           fix: async () => {
             await opts.fixImpl?.();
-            return { id: opts.id, ok: true, message: "fixed" };
+            return { id: opts.id, ok: true, applied: true, message: "fixed" };
           },
         }
       : {}),
@@ -94,6 +94,8 @@ describe("Doctor.list", () => {
     const entries = d.list();
     expect(entries.find((e) => e.id === "a")?.fixable).toBe(true);
     expect(entries.find((e) => e.id === "b")?.fixable).toBe(false);
+    // dependsOn defaults to an empty array.
+    expect(entries.find((e) => e.id === "a")?.dependsOn).toEqual([]);
   });
 
   it("rejects duplicate registrations", () => {
@@ -139,6 +141,89 @@ describe("Doctor.fix", () => {
     expect(fixCalls).toBe(1);
   });
 
+  it("dryRun=true: reports the fix without invoking it", async () => {
+    const d = new Doctor({ logger: silentLogger() });
+    let fixCalls = 0;
+    d.register({
+      id: "a",
+      category: "test",
+      title: "a",
+      async run() {
+        return { id: "a", title: "a", severity: "warn", message: "bad", fixable: true };
+      },
+      async fix(_d, ctx) {
+        if (!ctx.dryRun) fixCalls += 1;
+        return {
+          id: "a",
+          ok: true,
+          applied: !ctx.dryRun,
+          message: ctx.dryRun ? "would do X" : "did X",
+          changes: ["- X"],
+        };
+      },
+    });
+    const out = await d.fix("a", { dryRun: true });
+    expect(out.ok).toBe(true);
+    expect(out.applied).toBe(false);
+    expect(out.message).toMatch(/would/);
+    expect(out.changes).toEqual(["- X"]);
+    expect(fixCalls).toBe(0);
+  });
+
+  it("dependsOn: refuses to fix when a dependency is in error", async () => {
+    const d = new Doctor({ logger: silentLogger() });
+    d.register({
+      id: "dep",
+      category: "test",
+      title: "dep",
+      async run() {
+        return { id: "dep", title: "dep", severity: "error", message: "broken", fixable: false };
+      },
+    });
+    let fixCalls = 0;
+    d.register({
+      id: "child",
+      category: "test",
+      title: "child",
+      dependsOn: ["dep"],
+      async run() {
+        return { id: "child", title: "child", severity: "warn", message: "bad", fixable: true };
+      },
+      async fix() {
+        fixCalls += 1;
+        return { id: "child", ok: true, applied: true, message: "fixed" };
+      },
+    });
+    const out = await d.fix("child");
+    expect(out.ok).toBe(false);
+    expect(out.applied).toBe(false);
+    expect(out.blockedBy).toEqual(["dep"]);
+    expect(fixCalls).toBe(0);
+  });
+
+  it("dependsOn: proceeds when the dependency is healthy", async () => {
+    const d = new Doctor({ logger: silentLogger() });
+    d.register(staticCheck({ id: "dep", severity: "ok" }));
+    let fixCalls = 0;
+    d.register({
+      id: "child",
+      category: "test",
+      title: "child",
+      dependsOn: ["dep"],
+      async run() {
+        return { id: "child", title: "child", severity: "warn", message: "bad", fixable: true };
+      },
+      async fix() {
+        fixCalls += 1;
+        return { id: "child", ok: true, applied: true, message: "fixed" };
+      },
+    });
+    const out = await d.fix("child");
+    expect(out.ok).toBe(true);
+    expect(out.applied).toBe(true);
+    expect(fixCalls).toBe(1);
+  });
+
   it("traps a thrown fix into ok=false instead of bubbling", async () => {
     const d = new Doctor({ logger: silentLogger() });
     d.register({
@@ -148,7 +233,7 @@ describe("Doctor.fix", () => {
       async run() {
         return { id: "a", title: "a", severity: "warn", message: "bad", fixable: true };
       },
-      async fix() {
+      async fix(_d, _ctx) {
         throw new Error("repair failed");
       },
     });

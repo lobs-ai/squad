@@ -38,6 +38,12 @@ export class MarkdownMemoryMirror {
     this.dir = join(dataDir, "memory");
   }
 
+  /** Absolute path of the mirror directory. Used when surfacing the location
+   * to the agent (system prompt) or to ops tooling. */
+  getDir(): string {
+    return this.dir;
+  }
+
   ensureDir(): void {
     mkdirSync(this.dir, { recursive: true });
   }

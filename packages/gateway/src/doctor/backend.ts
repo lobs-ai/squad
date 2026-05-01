@@ -10,6 +10,7 @@ export function doctorBackendFor(doctor: Doctor): DoctorBackend {
   return {
     list: () => doctor.list(),
     run: async (ids) => doctor.run(ids),
-    fix: async (id) => doctor.fix(id),
+    fix: async (id, opts) =>
+      doctor.fix(id, opts?.dryRun !== undefined ? { dryRun: opts.dryRun } : {}),
   };
 }

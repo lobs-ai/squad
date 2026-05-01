@@ -26,8 +26,14 @@ export interface DoctorReport {
 export interface DoctorFixOutcome {
   id: string;
   ok: boolean;
+  /** True iff the fix actually mutated state. False on dry-run, no-op, or refusal. */
+  applied: boolean;
   message: string;
+  changes?: string[];
+  warnings?: string[];
   detail?: Record<string, unknown>;
+  /** Set when the fix was blocked because a prerequisite check is still erroring. */
+  blockedBy?: string[];
 }
 
 export interface DoctorListEntry {
@@ -35,10 +41,15 @@ export interface DoctorListEntry {
   category: string;
   title: string;
   fixable: boolean;
+  dependsOn: string[];
+}
+
+export interface DoctorFixOptions {
+  dryRun?: boolean;
 }
 
 export interface DoctorBackend {
   list(): DoctorListEntry[];
   run(ids?: readonly string[]): Promise<DoctorReport>;
-  fix(id: string): Promise<DoctorFixOutcome>;
+  fix(id: string, opts?: DoctorFixOptions): Promise<DoctorFixOutcome>;
 }

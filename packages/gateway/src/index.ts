@@ -970,9 +970,16 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
         };
       },
       plugins,
+      configuredPlugins: () =>
+        liveConfig.current.plugins.map((entry) =>
+          typeof entry === "string" ? { path: entry } : { path: entry.path },
+        ),
       pluginFailures: () => [...pluginLoadFailures],
       mcp: mcpRegistry,
+      configuredMcpServers: () =>
+        liveConfig.current.mcp.servers.map((s) => ({ id: s.id })),
       mcpFailures: () => [...mcpLoadFailures],
+      ...(configBackend ? { configBackend } : {}),
       channels,
       subagents: {
         pool: subagentPool,

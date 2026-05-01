@@ -206,6 +206,7 @@ export async function runChatTurn(
     });
   }
 
+  const memoryDir = deps.memory?.getMirrorDir() ?? null;
   const systemPrompt =
     options.systemPrompt ??
     buildSquadSystemPrompt({
@@ -213,6 +214,7 @@ export async function runChatTurn(
       coreFiles: loadCoreFiles(options.cwd),
       memoryEager,
       memoryRetrieval,
+      ...(memoryDir ? { memoryDir } : {}),
       ...(toolGroupsIndex ? { toolGroupsIndex } : {}),
       ...(contextFilesSection ? { contextFilesSection } : {}),
     });

@@ -30,7 +30,27 @@ export interface FixOutcome {
   id: string;
   ok: boolean;
   message: string;
+  /**
+   * False when `dryRun` was set — the check ran its preview path and the
+   * system was not modified. True for a normal fix or when there was nothing
+   * to do.
+   */
+  applied: boolean;
+  /** Granular per-step changes the fix applied (or would apply, in dryRun). */
+  changes?: string[];
+  /** Side notes the fix raised — caveats, follow-ups, partial failures. */
+  warnings?: string[];
   detail?: Record<string, unknown>;
+  /**
+   * Set when the engine refused to call the fix because a `dependsOn` check
+   * is still in `error`. The check that blocked is in `blockedBy`.
+   */
+  blockedBy?: string[];
+}
+
+export interface FixContext {
+  /** Preview-only run — perform no mutations, just report what would change. */
+  dryRun: boolean;
 }
 
 export interface Check {
@@ -41,6 +61,12 @@ export interface Check {
   /** Short human-readable label. */
   title: string;
   /**
+   * Other check ids whose `error` severity should block this check's `fix`.
+   * The engine never auto-applies a fix while a prerequisite is broken —
+   * acting on a stale view is how doctors do harm. Diagnoses still run.
+   */
+  dependsOn?: readonly string[];
+  /**
    * Inspect the system. Must never throw — return an `error` severity
    * diagnosis instead. Implementations should be cheap and not have
    * cross-check side effects.
@@ -48,9 +74,10 @@ export interface Check {
   run(): Promise<Diagnosis>;
   /**
    * Optional repair. Only called when the latest diagnosis was `fixable`.
-   * Returns whatever the operation produced; the engine wraps failures.
+   * Implementations must honor `ctx.dryRun`: when true, return what *would*
+   * change in `changes`/`detail` without mutating any state.
    */
-  fix?(diagnosis: Diagnosis): Promise<FixOutcome>;
+  fix?(diagnosis: Diagnosis, ctx: FixContext): Promise<FixOutcome>;
 }
 
 export interface DoctorReport {

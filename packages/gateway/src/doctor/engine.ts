@@ -9,7 +9,12 @@
  */
 
 import type { Logger } from "../logger.js";
-import type { Check, Diagnosis, DoctorReport, FixOutcome } from "./types.js";
+import type { Check, Diagnosis, DoctorReport, FixContext, FixOutcome } from "./types.js";
+
+export interface FixOptions {
+  /** Preview-only: report what the fix would change without applying it. */
+  dryRun?: boolean;
+}
 
 export interface DoctorOptions {
   logger?: Logger;
@@ -38,12 +43,19 @@ export class Doctor {
   }
 
   /** Listing for the `list` action — id, category, title, fixable hint. */
-  list(): Array<{ id: string; category: string; title: string; fixable: boolean }> {
+  list(): Array<{
+    id: string;
+    category: string;
+    title: string;
+    fixable: boolean;
+    dependsOn: string[];
+  }> {
     return Array.from(this.checks.values()).map((c) => ({
       id: c.id,
       category: c.category,
       title: c.title,
       fixable: typeof c.fix === "function",
+      dependsOn: [...(c.dependsOn ?? [])],
     }));
   }
 
@@ -65,34 +77,54 @@ export class Doctor {
   }
 
   /**
-   * Apply a check's fix. Re-runs the check first so we don't fix a stale
-   * diagnosis; bails when the check is healthy or unfixable.
+   * Apply a check's fix. Re-runs the check first so we don't act on a stale
+   * diagnosis; bails when the check is healthy, unfixable, or blocked by a
+   * still-broken dependency. With `dryRun: true`, the fix is asked to
+   * report what it *would* change without mutating state.
    */
-  async fix(id: string): Promise<FixOutcome> {
+  async fix(id: string, opts: FixOptions = {}): Promise<FixOutcome> {
+    const dryRun = opts.dryRun === true;
     const check = this.checks.get(id);
     if (!check) {
-      return { id, ok: false, message: `unknown check "${id}"` };
+      return { id, ok: false, applied: false, message: `unknown check "${id}"` };
     }
     if (!check.fix) {
-      return { id, ok: false, message: `check "${id}" has no fix` };
+      return { id, ok: false, applied: false, message: `check "${id}" has no fix` };
     }
     const fresh = await this.runOne(check);
     if (fresh.severity === "ok") {
-      return { id, ok: true, message: "already healthy — nothing to fix" };
+      return {
+        id,
+        ok: true,
+        applied: false,
+        message: "already healthy — nothing to fix",
+      };
     }
     if (!fresh.fixable) {
-      return { id, ok: false, message: fresh.message };
+      return { id, ok: false, applied: false, message: fresh.message };
     }
-    try {
-      const outcome = await check.fix(fresh);
-      // Re-run to refresh the cache so a follow-up `list` reflects the fix.
-      await this.runOne(check);
-      return outcome;
-    } catch (err) {
-      this.logger?.error({ err, id }, "doctor fix threw");
+    const blockedBy = await this.findBlockingDeps(check);
+    if (blockedBy.length > 0) {
       return {
         id,
         ok: false,
+        applied: false,
+        message: `fix blocked: prerequisite check(s) still failing: ${blockedBy.join(", ")}`,
+        blockedBy,
+      };
+    }
+    const ctx: FixContext = { dryRun };
+    try {
+      const outcome = await check.fix(fresh, ctx);
+      // Re-run only on a real apply — dryRun didn't change anything.
+      if (!dryRun) await this.runOne(check);
+      return outcome;
+    } catch (err) {
+      this.logger?.error({ err, id, dryRun }, "doctor fix threw");
+      return {
+        id,
+        ok: false,
+        applied: false,
         message: err instanceof Error ? err.message : String(err),
       };
     }
@@ -101,6 +133,24 @@ export class Doctor {
   /** Look up the most recent diagnosis for an id without re-running. */
   peek(id: string): Diagnosis | undefined {
     return this.lastDiagnosis.get(id);
+  }
+
+  /**
+   * Re-run every dependency of `check` and return the ids whose latest
+   * severity is `error`. The engine treats `error`-state deps as a hard
+   * block on the dependent fix; other severities are advisory.
+   */
+  private async findBlockingDeps(check: Check): Promise<string[]> {
+    const deps = check.dependsOn ?? [];
+    if (deps.length === 0) return [];
+    const blocking: string[] = [];
+    for (const depId of deps) {
+      const dep = this.checks.get(depId);
+      if (!dep) continue;
+      const d = await this.runOne(dep);
+      if (d.severity === "error") blocking.push(depId);
+    }
+    return blocking;
   }
 
   private resolveTargets(ids?: readonly string[]): Set<string> {

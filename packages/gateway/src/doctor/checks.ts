@@ -7,8 +7,8 @@
  * checks can be straight-line code that focuses on the diagnosis logic.
  */
 
-import { accessSync, constants as fsConstants, statSync } from "node:fs";
-import { join } from "node:path";
+import { accessSync, constants as fsConstants, statSync, existsSync } from "node:fs";
+import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import type { MemCore } from "memcore";
 import type { McpRegistry } from "../mcp/registry.js";
 import type { PluginHost } from "../plugins/host.js";
@@ -19,7 +19,14 @@ import type { SessionStore } from "../db/sessions.js";
 import type { DatabaseHandle } from "../db/index.js";
 import type { Logger } from "../logger.js";
 import { CORE_DIR, CORE_FILES } from "../agent-prompt.js";
+import type { ConfigBackend } from "@squad/tools";
 import type { Check, Diagnosis } from "./types.js";
+
+/** Truncate a list of human-readable lines to `max` and append "+N more". */
+function truncate(lines: string[], max = 5): string {
+  if (lines.length <= max) return lines.join("\n");
+  return [...lines.slice(0, max), `- … +${lines.length - max} more`].join("\n");
+}
 
 /**
  * Snapshot of the resolution outcome we need from `resolveProviderConfig`.
@@ -48,14 +55,25 @@ export interface BuiltinDeps {
   dataDir: string;
   llm: () => LlmResolutionSnapshot;
   plugins: PluginHost;
+  /** Configured plugin entries from config.plugins (path + optional config). */
+  configuredPlugins: () => Array<{ path: string }>;
   /** Plugin sources that failed to load at boot or via `reload()`. */
   pluginFailures: () => Array<{ source: string; error: string }>;
   mcp: McpRegistry;
+  /** Configured mcp servers from config.mcp.servers. */
+  configuredMcpServers: () => Array<{ id: string }>;
   /** MCP server ids that failed to load at boot. */
   mcpFailures: () => Array<{ id: string; error: string }>;
   channels: ChannelRegistry;
   subagents: { pool: SubagentPool; limits: { maxConcurrentGlobal: number; maxTreeDepth: number } };
   routines: { scheduler: RoutineScheduler; isRunning: () => boolean };
+  /**
+   * Optional config-file backend. When present, fixes that need to mutate
+   * config.json (e.g. removing stale plugin entries) can do so. When absent
+   * (test/ephemeral deployments), those fixes report what they would do but
+   * mark themselves as not applied.
+   */
+  configBackend?: ConfigBackend;
 }
 
 /** Helpers ------------------------------------------------------------------ */
@@ -230,6 +248,7 @@ function dbStuckIngestCheck(deps: BuiltinDeps): Check {
     id: "db.stuck_ingest",
     category: "database",
     title: "No sessions stuck in in-flight ingest",
+    dependsOn: ["db.integrity"],
     async run() {
       const row = deps.db
         .prepare("SELECT COUNT(*) AS c FROM sessions WHERE ingest_status = 'in_flight'")
@@ -252,12 +271,25 @@ function dbStuckIngestCheck(deps: BuiltinDeps): Check {
         },
       );
     },
-    async fix() {
+    async fix(diagnosis, ctx) {
+      const expected = (diagnosis.detail?.count as number | undefined) ?? 0;
+      if (ctx.dryRun) {
+        return {
+          id: "db.stuck_ingest",
+          ok: true,
+          applied: false,
+          message: `would reset ${expected} stuck ingest row(s)`,
+          changes: [`- sessions: ${expected} row(s) ingest_status in_flight → pending`],
+          detail: { wouldReset: expected },
+        };
+      }
       const reset = deps.sessions.resetInFlightIngest();
       return {
         id: "db.stuck_ingest",
         ok: true,
+        applied: true,
         message: `reset ${reset} stuck ingest row(s)`,
+        changes: [`- sessions: ${reset} row(s) ingest_status in_flight → pending`],
         detail: { reset },
       };
     },
@@ -305,11 +337,13 @@ function llmKeysCheck(deps: BuiltinDeps): Check {
           { resolved: snap.resolvedProviders },
         );
       }
-      const which = snap.missingKeys.map((m) => m.provider).join(", ");
+      const lines = snap.missingKeys.map(
+        (m) => `- ${m.provider}: ${m.reason}${m.envVar ? ` (env ${m.envVar})` : ""}`,
+      );
       return warn(
         "llm.keys",
         "Configured LLM providers have resolvable keys",
-        `provider(s) without resolvable keys: ${which}`,
+        `${snap.missingKeys.length} provider(s) without resolvable keys:\n${truncate(lines)}`,
         {
           detail: { missing: snap.missingKeys },
           remediation:
@@ -383,6 +417,8 @@ function fsCoreFilesCheck(deps: BuiltinDeps): Check {
     id: "fs.core_files",
     category: "filesystem",
     title: "Agent core context files are seeded",
+    // Don't seed into a workspace we can't write to.
+    dependsOn: ["fs.workspace_writable"],
     async run() {
       const missing: string[] = [];
       for (const name of required) {
@@ -410,14 +446,28 @@ function fsCoreFilesCheck(deps: BuiltinDeps): Check {
         },
       );
     },
-    async fix() {
+    async fix(diagnosis, ctx) {
+      const missing = (diagnosis.detail?.missing as string[] | undefined) ?? [];
+      const changes = missing.map((name) => `- seed ${join(coreDir, name)}`);
+      if (ctx.dryRun) {
+        return {
+          id: "fs.core_files",
+          ok: true,
+          applied: false,
+          message: `would seed ${missing.length} core file(s) under ${coreDir}`,
+          changes,
+          detail: { coreDir, missing },
+        };
+      }
       const { seedCoreFiles } = await import("../agent-prompt.js");
       seedCoreFiles(deps.workspaceDir);
       return {
         id: "fs.core_files",
         ok: true,
+        applied: true,
         message: `re-seeded core files under ${coreDir}`,
-        detail: { coreDir },
+        changes,
+        detail: { coreDir, missing },
       };
     },
   };
@@ -440,16 +490,170 @@ function pluginFailuresCheck(deps: BuiltinDeps): Check {
           `${loaded} plugin(s) loaded, 0 failed`,
         );
       }
+      const lines = failures.map((f) => `- ${f.source}: ${f.error}`);
       return err(
         "plugins.load_failures",
         "All configured plugins loaded",
-        `${failures.length} plugin(s) failed to load`,
+        `${failures.length} plugin(s) failed to load:\n${truncate(lines)}`,
         {
           detail: { failures },
           remediation:
             "fix the plugin source or remove it from config.plugins, then call plugins.reload or restart_gateway",
         },
       );
+    },
+  };
+}
+
+function pluginStaleConfigCheck(deps: BuiltinDeps): Check {
+  return {
+    id: "plugins.stale_config",
+    category: "plugins",
+    title: "config.plugins entries point at sources that exist",
+    async run() {
+      const entries = deps.configuredPlugins();
+      const stale = entries.filter((e) => {
+        // npm-style specs (no path separator, not absolute, not starting with
+        // '.' or '@scope/') are out of scope — we can only check on-disk paths.
+        if (!e.path.startsWith(".") && !e.path.startsWith("/") && !e.path.startsWith("@")) {
+          return false;
+        }
+        const abs = isAbsolute(e.path) ? e.path : resolvePath(process.cwd(), e.path);
+        return !existsSync(abs);
+      });
+      if (stale.length === 0) {
+        return ok(
+          "plugins.stale_config",
+          "config.plugins entries point at sources that exist",
+          `${entries.length} plugin entr${entries.length === 1 ? "y" : "ies"} resolved`,
+        );
+      }
+      const lines = stale.map((s) => `- ${s.path}`);
+      return warn(
+        "plugins.stale_config",
+        "config.plugins entries point at sources that exist",
+        `${stale.length} plugin path(s) no longer exist on disk:\n${truncate(lines)}`,
+        {
+          fixable: deps.configBackend !== undefined,
+          detail: { stale: stale.map((s) => s.path) },
+          remediation: deps.configBackend
+            ? "remove the stale entries from config.plugins and restart_gateway"
+            : "config-file backend not available — remove the stale entries from config.plugins manually",
+        },
+      );
+    },
+    async fix(diagnosis, ctx) {
+      const stale = (diagnosis.detail?.stale as string[] | undefined) ?? [];
+      const changes = stale.map((p) => `- config.plugins: remove "${p}"`);
+      if (!deps.configBackend) {
+        return {
+          id: "plugins.stale_config",
+          ok: false,
+          applied: false,
+          message: "no config-file backend wired — cannot mutate config.json",
+        };
+      }
+      if (ctx.dryRun) {
+        return {
+          id: "plugins.stale_config",
+          ok: true,
+          applied: false,
+          message: `would remove ${stale.length} stale plugin entr${stale.length === 1 ? "y" : "ies"}`,
+          changes,
+        };
+      }
+      const cfg = await deps.configBackend.get();
+      const current = Array.isArray(cfg.plugins) ? (cfg.plugins as unknown[]) : [];
+      const staleSet = new Set(stale);
+      const next = current.filter((entry) => {
+        const path = typeof entry === "string" ? entry : (entry as { path?: string }).path;
+        return typeof path !== "string" || !staleSet.has(path);
+      });
+      await deps.configBackend.setValue("plugins", next);
+      return {
+        id: "plugins.stale_config",
+        ok: true,
+        applied: true,
+        message: `removed ${current.length - next.length} stale plugin entr${current.length - next.length === 1 ? "y" : "ies"} from config.plugins`,
+        changes,
+        warnings: ["restart_gateway is required for the change to take effect"],
+      };
+    },
+  };
+}
+
+function mcpStaleConfigCheck(deps: BuiltinDeps): Check {
+  return {
+    id: "mcp.stale_config",
+    category: "mcp",
+    title: "mcp.servers entries that consistently fail to load",
+    async run() {
+      const failures = deps.mcpFailures();
+      const configured = deps.configuredMcpServers();
+      const configuredIds = new Set(configured.map((c) => c.id));
+      // A "stale" MCP entry is one in config that failed at boot — same
+      // surface openclaw uses for stale plugin ids. Live-running ones are fine.
+      const staleIds = failures.map((f) => f.id).filter((id) => configuredIds.has(id));
+      if (staleIds.length === 0) {
+        return ok(
+          "mcp.stale_config",
+          "mcp.servers entries that consistently fail to load",
+          "no consistently-failing mcp entries to clean up",
+        );
+      }
+      const lines = staleIds.map((id) => `- ${id}`);
+      return warn(
+        "mcp.stale_config",
+        "mcp.servers entries that consistently fail to load",
+        `${staleIds.length} mcp entr${staleIds.length === 1 ? "y" : "ies"} failed at boot — fix the command or remove:\n${truncate(lines)}`,
+        {
+          // Only fixable when there's a config backend AND the operator
+          // explicitly opts in via fix. Treat removal as a destructive op.
+          fixable: deps.configBackend !== undefined,
+          detail: { staleIds },
+          remediation: deps.configBackend
+            ? "remove the failing entries from mcp.servers (or fix the command/env) and restart_gateway"
+            : "no config-file backend — fix mcp.servers manually",
+        },
+      );
+    },
+    async fix(diagnosis, ctx) {
+      const stale = (diagnosis.detail?.staleIds as string[] | undefined) ?? [];
+      const changes = stale.map((id) => `- mcp.servers: remove "${id}"`);
+      if (!deps.configBackend) {
+        return {
+          id: "mcp.stale_config",
+          ok: false,
+          applied: false,
+          message: "no config-file backend wired — cannot mutate config.json",
+        };
+      }
+      if (ctx.dryRun) {
+        return {
+          id: "mcp.stale_config",
+          ok: true,
+          applied: false,
+          message: `would remove ${stale.length} failing mcp entr${stale.length === 1 ? "y" : "ies"}`,
+          changes,
+        };
+      }
+      const cfg = await deps.configBackend.get();
+      const mcpRaw = (cfg.mcp as { servers?: unknown[] } | undefined)?.servers;
+      const current = Array.isArray(mcpRaw) ? mcpRaw : [];
+      const staleSet = new Set(stale);
+      const next = current.filter((entry) => {
+        const id = (entry as { id?: string }).id;
+        return typeof id !== "string" || !staleSet.has(id);
+      });
+      await deps.configBackend.setValue("mcp.servers", next);
+      return {
+        id: "mcp.stale_config",
+        ok: true,
+        applied: true,
+        message: `removed ${current.length - next.length} failing mcp entr${current.length - next.length === 1 ? "y" : "ies"} from mcp.servers`,
+        changes,
+        warnings: ["restart_gateway is required for the change to take effect"],
+      };
     },
   };
 }
@@ -471,10 +675,11 @@ function mcpFailuresCheck(deps: BuiltinDeps): Check {
           `${loaded.length} server(s) loaded, 0 failed`,
         );
       }
+      const lines = failures.map((f) => `- ${f.id}: ${f.error}`);
       return err(
         "mcp.load_failures",
         "All configured MCP servers loaded",
-        `${failures.length} MCP server(s) failed to load`,
+        `${failures.length} MCP server(s) failed to load:\n${truncate(lines)}`,
         {
           detail: { failures, loaded: loaded.map((l) => l.id) },
           remediation:
@@ -509,12 +714,11 @@ function channelsConnectedCheck(deps: BuiltinDeps): Check {
           `${records.length} channel(s) connected`,
         );
       }
+      const lines = disconnected.map((c) => `- ${c.id} (${c.kind})`);
       return warn(
         "channels.connected",
         "Registered channels are connected",
-        `${disconnected.length}/${records.length} channel(s) disconnected: ${disconnected
-          .map((c) => c.id)
-          .join(", ")}`,
+        `${disconnected.length}/${records.length} channel(s) disconnected:\n${truncate(lines)}`,
         {
           detail: { disconnected: disconnected.map((c) => ({ id: c.id, kind: c.kind })) },
           remediation:
@@ -576,12 +780,23 @@ function routinesSchedulerCheck(deps: BuiltinDeps): Check {
         },
       );
     },
-    async fix() {
+    async fix(_diagnosis, ctx) {
+      if (ctx.dryRun) {
+        return {
+          id: "routines.scheduler_running",
+          ok: true,
+          applied: false,
+          message: "would start the routine scheduler",
+          changes: ["- RoutineScheduler.start()"],
+        };
+      }
       deps.routines.scheduler.start();
       return {
         id: "routines.scheduler_running",
         ok: true,
+        applied: true,
         message: "scheduler started",
+        changes: ["- RoutineScheduler.start()"],
       };
     },
   };
@@ -602,7 +817,9 @@ export function createBuiltinChecks(deps: BuiltinDeps): Check[] {
     fsDataDirCheck(deps),
     fsCoreFilesCheck(deps),
     pluginFailuresCheck(deps),
+    pluginStaleConfigCheck(deps),
     mcpFailuresCheck(deps),
+    mcpStaleConfigCheck(deps),
     channelsConnectedCheck(deps),
     subagentLimitsCheck(deps),
     routinesSchedulerCheck(deps),

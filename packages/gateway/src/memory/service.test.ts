@@ -139,3 +139,76 @@ describe("MemoryService (MemCore-backed)", () => {
     ).rejects.toBeInstanceOf(DuplicateMemoryError);
   });
 });
+
+describe("MemoryService mirror integration", () => {
+  class FakeMirror {
+    upserts: string[] = [];
+    removes: string[] = [];
+    upsert(entry: { id: string }) {
+      this.upserts.push(entry.id);
+    }
+    remove(id: string) {
+      this.removes.push(id);
+    }
+    getDir(): string {
+      return "/tmp/fake-mirror/memory";
+    }
+  }
+
+  it("mirrorMemoriesByIds writes one .md per resolved row, skips missing", async () => {
+    const stubMc = new StubMemCore();
+    const mirror = new FakeMirror();
+    const svc = new MemoryService(stubMc as unknown as MemCore, logger, {
+      containerTag: "test",
+      markdownMirror: mirror as unknown as import("./markdown-mirror.js").MarkdownMemoryMirror,
+    });
+    // Seed two rows via propose so we get real ids.
+    const a = await svc.propose({
+      type: "project",
+      name: "first",
+      description: "an entry",
+      body: "Content for the first entry.",
+    });
+    const b = await svc.propose({
+      type: "project",
+      name: "second",
+      description: "an entry",
+      body: "Content for the second entry.",
+    });
+    // propose() already mirrors once; clear so we observe only the new path.
+    mirror.upserts = [];
+    await svc.mirrorMemoriesByIds([a.id, "missing-id-xyz", b.id]);
+    expect(mirror.upserts.sort()).toEqual([a.id, b.id].sort());
+  });
+
+  it("mirrorMemoriesByIds is a no-op when no mirror is configured", async () => {
+    const stubMc = new StubMemCore();
+    const svc = new MemoryService(stubMc as unknown as MemCore, logger, {
+      containerTag: "test",
+    });
+    // Should not throw and should resolve fine even with bogus ids.
+    await expect(svc.mirrorMemoriesByIds(["whatever"])).resolves.toBeUndefined();
+  });
+
+  it("mirrorMemoriesByIds with an empty list is a fast no-op", async () => {
+    const stubMc = new StubMemCore();
+    const mirror = new FakeMirror();
+    const svc = new MemoryService(stubMc as unknown as MemCore, logger, {
+      containerTag: "test",
+      markdownMirror: mirror as unknown as import("./markdown-mirror.js").MarkdownMemoryMirror,
+    });
+    await svc.mirrorMemoriesByIds([]);
+    expect(mirror.upserts).toEqual([]);
+  });
+
+  it("getMirrorDir reflects the configured mirror, null otherwise", () => {
+    const stubMc = new StubMemCore();
+    const mirror = new FakeMirror();
+    const withMirror = new MemoryService(stubMc as unknown as MemCore, logger, {
+      markdownMirror: mirror as unknown as import("./markdown-mirror.js").MarkdownMemoryMirror,
+    });
+    const without = new MemoryService(stubMc as unknown as MemCore, logger);
+    expect(withMirror.getMirrorDir()).toBe("/tmp/fake-mirror/memory");
+    expect(without.getMirrorDir()).toBeNull();
+  });
+});

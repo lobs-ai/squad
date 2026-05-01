@@ -12,6 +12,8 @@ interface DoctorInput extends Record<string, unknown> {
   ids?: string[];
   /** For `fix`: which check to repair. */
   id?: string;
+  /** For `fix`: preview what would change without applying. */
+  dryRun?: boolean;
 }
 
 export class SquadDoctorTool extends BaseTool<DoctorInput> {
@@ -22,10 +24,13 @@ export class SquadDoctorTool extends BaseTool<DoctorInput> {
     "subagents, and routines, and applies their fixes when possible.",
     "",
     "Actions:",
-    "  • list — show every available check (id, category, fixable hint).",
+    "  • list — show every available check (id, category, fixable, dependsOn).",
     "  • run  — run all checks (or a subset via `ids`) and return diagnoses",
     "          ranked by severity. Use this first to find what's broken.",
-    "  • fix  — apply the auto-repair for one fixable check by `id`.",
+    "  • fix  — apply the auto-repair for one fixable check by `id`. Set",
+    "          `dryRun: true` to see what the fix would change without",
+    "          applying it. Fixes whose dependsOn checks are still in error",
+    "          are refused with `blockedBy` populated.",
     "",
     "Use this when the user reports something not working (e.g. \"memory",
     "isn't saving\", \"the agent can't reach the model\") OR proactively at",
@@ -44,6 +49,11 @@ export class SquadDoctorTool extends BaseTool<DoctorInput> {
       id: {
         type: "string",
         description: "Required for `fix` — the check id to repair.",
+      },
+      dryRun: {
+        type: "boolean",
+        description:
+          "For `fix`: preview the changes without applying them (`applied=false`).",
       },
     },
     required: ["action"],
@@ -66,7 +76,9 @@ export class SquadDoctorTool extends BaseTool<DoctorInput> {
         if (!input.id || typeof input.id !== "string") {
           throw new Error('squad_doctor: action="fix" requires `id`');
         }
-        const outcome = await this.backend.fix(input.id);
+        const outcome = await this.backend.fix(input.id, {
+          dryRun: input.dryRun === true,
+        });
         return format(outcome);
       }
       default:

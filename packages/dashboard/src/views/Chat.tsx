@@ -7,6 +7,7 @@ import type {
   Task,
 } from "@squad/protocol";
 import { Icon } from "../ui/Icon.js";
+import { Markdown } from "../ui/Markdown.js";
 import {
   useGateway,
   type LiveToolEvent,
@@ -757,9 +758,7 @@ function ChatRow({
           <span className="strong">you</span>
           <span className="hint">{fmtAgo(row.at)}</span>
         </div>
-        <div style={{ fontFamily: "var(--font-ui)", fontSize: "var(--t-md)", lineHeight: 1.55, whiteSpace: "pre-wrap" }}>
-          {row.text}
-        </div>
+        <Markdown text={row.text ?? ""} />
       </div>
     );
   }
@@ -772,8 +771,8 @@ function ChatRow({
           <span className="hint">{fmtAgo(row.at)}</span>
           {row.streaming && <span className="tag accent">streaming</span>}
         </div>
-        <div style={{ fontFamily: "var(--font-ui)", fontSize: "var(--t-md)", lineHeight: 1.55, whiteSpace: "pre-wrap" }}>
-          {row.text}
+        <div style={{ position: "relative" }}>
+          <Markdown text={row.text ?? ""} />
           {row.streaming && <span className="cursor" />}
         </div>
       </div>

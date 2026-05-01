@@ -182,6 +182,36 @@ export class MemoryService {
     return this.rowToEntry(row);
   }
 
+  /**
+   * Mirror a batch of memcore-written memory rows to disk. Used by the
+   * session ingestion pipeline after `memcore.add({extract:true})` — that
+   * path bypasses `propose()` (no typed metadata, no dedup) but the
+   * extracted memories still need to land as `.md` files so users can
+   * read/grep them. No-op when the mirror isn't configured. Best-effort:
+   * a missing row or a mirror write error is logged, never thrown — the
+   * memcore DB row is the source of truth.
+   */
+  async mirrorMemoriesByIds(ids: readonly string[]): Promise<void> {
+    if (!this.markdownMirror || ids.length === 0) return;
+    for (const id of ids) {
+      try {
+        const entry = await this.get(id);
+        if (!entry) {
+          this.logger.warn({ id }, "mirrorMemoriesByIds: row not found");
+          continue;
+        }
+        this.markdownMirror.upsert(entry);
+      } catch (err) {
+        this.logger.warn({ err, id }, "mirrorMemoriesByIds: per-id mirror failed");
+      }
+    }
+  }
+
+  /** Absolute path of the markdown mirror dir, or null when not configured. */
+  getMirrorDir(): string | null {
+    return this.markdownMirror?.getDir() ?? null;
+  }
+
   // ── Read path ─────────────────────────────────────────────────────────
 
   async get(id: string): Promise<MemoryEntry | null> {
