@@ -170,7 +170,7 @@ interface SearchInput extends Record<string, unknown> {
 export class MemorySearchTool extends BaseTool<SearchInput> {
   readonly name = "memory_search";
   readonly description =
-    "FTS5 search over your memory store. Returns top-k hits with snippets. Use this BEFORE memory_propose to avoid creating duplicates.";
+    "Hybrid (vector + keyword) search over your memory store. Returns top-k hits with snippets. Use this BEFORE memory_propose to avoid creating duplicates.";
   readonly inputSchema = {
     type: "object" as const,
     properties: {

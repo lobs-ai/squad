@@ -513,6 +513,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
       conflictModel: stageModel(memcoreCfg.conflict_model),
       temporalParserModel: stageModel(memcoreCfg.temporal_parser_model),
       profileGeneratorModel: stageModel(memcoreCfg.profile_generator_model),
+      abstainSimilarityFloor: memcoreCfg.abstain_similarity_floor,
       llmClient: memoryLlmClient,
     });
   }

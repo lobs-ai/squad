@@ -80,6 +80,7 @@ export function Chat(): JSX.Element {
   const showTools = showToolsRaw !== "0";
   const toggleShowTools = (): void => setShowToolsRaw(showTools ? "0" : "1");
   const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const pinnedSessionIdRef = useRef<string | null>(null);
 
   // Escape collapses whatever transient surface is open, in priority order.
   // Stops at the first one so a user pressing esc with no drawer/edit/etc.
@@ -112,14 +113,22 @@ export function Chat(): JSX.Element {
     return () => window.removeEventListener("keydown", onKey);
   }, [pickingModel, editingTitle, drawer, chatError, clearChatError]);
 
-  // Auto-scroll the transcript when new content arrives. Only scrolls when
-  // already near the bottom so a user reading history isn't yanked away.
+  // Auto-scroll the transcript. On session switch we pin to the bottom once
+  // the new session's messages have loaded so the user lands on the newest
+  // turn. For follow-up updates within the same session we only auto-follow
+  // when already near the bottom so a user reading history isn't yanked away.
   useEffect(() => {
     const el = transcriptRef.current;
     if (!el) return;
+    const sessionId = activeSession?.id ?? null;
+    if (sessionId && pinnedSessionIdRef.current !== sessionId && messages.length > 0) {
+      pinnedSessionIdRef.current = sessionId;
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
     if (nearBottom) el.scrollTop = el.scrollHeight;
-  }, [messages.length, streaming, awaitingResponse]);
+  }, [messages.length, streaming, awaitingResponse, activeSession?.id]);
 
   if (!activeSession) {
     return (

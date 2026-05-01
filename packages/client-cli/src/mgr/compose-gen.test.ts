@@ -67,4 +67,10 @@ describe("generateCompose", () => {
   it("rejects an empty build_context", () => {
     expect(() => generateCompose({ ...REG, build_context: "" })).toThrow(/build_context/);
   });
+
+  it("wires host.docker.internal so containers can reach host-bound services", () => {
+    const out = generateCompose(REG);
+    const alphaBlock = out.split("squad-alpha:")[1]!.split("squad-beta:")[0]!;
+    expect(alphaBlock).toMatch(/extra_hosts:\s*\n\s+-\s+"host\.docker\.internal:host-gateway"/);
+  });
 });

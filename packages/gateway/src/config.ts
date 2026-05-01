@@ -199,6 +199,16 @@ export const configSchema = z.object({
           temporal_parser_model: z.string().default(""),
           profile_generator_model: z.string().default(""),
           /**
+           * Cosine-similarity floor below which `memcore.search` returns an
+           * empty result list (RAG abstain). 0 disables the gate, which is
+           * what the typed-memory tools want — the agent explicitly asked for
+           * results, so even a weak match is more useful than silence. Crank
+           * back up (memcore default was 0.3) if you wire up RAG-style
+           * automatic injection where hallucination from thin matches is the
+           * bigger risk.
+           */
+          abstain_similarity_floor: z.number().min(0).max(1).default(0),
+          /**
            * Idle-driven incremental ingestion: a sweeper periodically picks
            * sessions that have gone quiet and feeds the unprocessed message
            * delta into MemCore's extraction pipeline. Watermarks track what's

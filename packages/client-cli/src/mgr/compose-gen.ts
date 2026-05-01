@@ -58,7 +58,13 @@ function renderSquadService(squad: Squad, buildContext: string): string {
       - SQUAD_RESTART_POLICY=docker
     volumes:
       - ${sd}:/app/docker
-${extensionsMount}    depends_on:
+${extensionsMount}    # Lets the container reach services bound to the host's loopback (Ollama,
+    # LM Studio, vLLM, etc.) via http://host.docker.internal:<port>. Docker
+    # Desktop wires this automatically; the host-gateway alias makes the same
+    # compose work on Linux too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
       searxng:
         condition: service_healthy
     healthcheck:
