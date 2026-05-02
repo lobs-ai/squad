@@ -130,6 +130,14 @@ If a script you need doesn't exist, add it to the appropriate `package.json` rat
 - Don't mock the protocol layer in integration tests — exercise the real WebSocket loop.
 - When testing tools, use the real tool registry, not a stub.
 
+## UI testing
+
+When you change anything the user sees in the dashboard (`packages/dashboard`) — new views, layout changes, protocol-driven rendering of subagents/tasks/questions, auth flow, etc. — verify it in a real browser before reporting the task done. Use the **vibium** skill to drive Chromium: load the running dashboard, exercise the affected flow, and check the actual rendered state (DOM, screenshots, console errors). Type checks and unit tests do not catch broken UI.
+
+- Start the dev stack first (`pnpm dev` or whatever script runs gateway + dashboard) so the dashboard is served.
+- Drive the golden path and at least one edge case (empty state, error state, or a mid-flight WS event).
+- If you cannot reach the UI for some reason, say so explicitly instead of claiming the change works.
+
 ## When adding a tool
 
 1. Extend `BaseTool` in the owning package (usually `packages/tools/src/<tool>.ts`, or a plugin).
