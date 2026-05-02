@@ -1,0 +1,9 @@
+{
+  "id": "@squad/plugin-google-auth",
+  "name": "Google OAuth",
+  "version": "0.0.1",
+  "entry": "./dist/plugin.js",
+  "exposes": ["tool"],
+  "permissions": ["tools", "toolGroups", "http"],
+  "description": "Shared Google OAuth + token storage for the calendar/gmail/drive plugins."
+}

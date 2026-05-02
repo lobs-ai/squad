@@ -46,6 +46,8 @@ import type { ToolsetRegistry } from "./toolsets/registry.js";
 import { registerCommandMethods } from "./dispatch/commands.js";
 import { registerToolsetMethods } from "./dispatch/toolsets.js";
 import type { HttpApiHandler } from "./http-api.js";
+import type { PluginRouteRegistry } from "./plugins/http-routes.js";
+import { dispatchPluginRoute } from "./plugins/http-routes.js";
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 export interface GatewayDeps {
@@ -130,6 +132,8 @@ export interface GatewayDeps {
   httpApi?: HttpApiHandler;
   /** Trace registry — wired by boot, optional in tests. */
   traceRegistry?: import("./traces.js").TraceSessionRegistry;
+  /** Plugin-contributed HTTP routes; consulted between built-ins and statics. */
+  pluginRoutes?: PluginRouteRegistry;
 }
 
 export interface GatewayHandle {
@@ -319,6 +323,28 @@ function handleHttp(req: IncomingMessage, res: ServerResponse, deps: GatewayDeps
       return;
     }
   }
+  // ── Plugin-contributed routes ─────────────────────────────────────────
+  // These run after gateway built-ins so plugins can't shadow /health,
+  // /pair/*, webhooks, or /v1/*. Dashboard statics still get the last word
+  // for unmatched GETs.
+  if (deps.pluginRoutes && deps.pluginRoutes.count() > 0) {
+    void (async () => {
+      const handled = await dispatchPluginRoute(deps.pluginRoutes!, req, res, deps.logger);
+      if (handled) return;
+      // Fall through to statics / 404 by re-entering the handler is not
+      // safe (req body may be consumed). Instead, only call out to plugin
+      // dispatch when we know we want it, and otherwise fall through here.
+      handleStaticOrNotFound(req, res);
+    })().catch((err) => {
+      deps.logger.error({ err }, "plugin route dispatch crashed");
+      if (!res.headersSent) sendJson(res, 500, { error: "internal error" });
+    });
+    return;
+  }
+  handleStaticOrNotFound(req, res);
+}
+
+function handleStaticOrNotFound(req: IncomingMessage, res: ServerResponse): void {
   // Dashboard static assets at / and /assets/*. Resolve per request so a
   // dashboard built after gateway start gets picked up.
   const root = dashboardRoot();

@@ -1,0 +1,10 @@
+{
+  "id": "@squad/plugin-google-calendar",
+  "name": "Google Calendar",
+  "version": "0.0.1",
+  "entry": "./dist/plugin.js",
+  "exposes": ["tool"],
+  "permissions": ["tools", "toolGroups", "toolsets"],
+  "requires": ["@squad/plugin-google-auth"],
+  "description": "Google Calendar tools — list, create, update, delete, RSVP."
+}

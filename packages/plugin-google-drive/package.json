@@ -1,5 +1,5 @@
 {
-  "name": "@squad/channel-discord",
+  "name": "@squad/plugin-google-drive",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -13,10 +13,6 @@
     "./plugin": {
       "import": "./dist/plugin.js",
       "types": "./dist/plugin.d.ts"
-    },
-    "./standalone": {
-      "import": "./dist/standalone.js",
-      "types": "./dist/standalone.d.ts"
     }
   },
   "scripts": {
@@ -26,14 +22,10 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "@buape/carbon": "0.16.0",
-    "@squad/channel-sdk": "workspace:*",
+    "@squad/plugin-google-auth": "workspace:*",
     "@squad/plugin-sdk": "workspace:*",
-    "@squad/protocol": "workspace:*",
     "@squad/tools": "workspace:*",
-    "discord-api-types": "^0.38.47",
-    "ws": "^8.18.0",
-    "zod": "^3.23.8"
+    "googleapis": "^144.0.0"
   },
   "devDependencies": {
     "typescript": "^5.6.0",

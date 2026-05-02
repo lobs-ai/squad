@@ -95,6 +95,15 @@ export class DiscordChannel extends Channel {
   }
 
   /**
+   * Live bot handle, or null when not connected. Exposed so the tools
+   * backend can route REST calls through the same Carbon client the channel
+   * uses for inbound/outbound traffic.
+   */
+  getBot(): BotHandle | null {
+    return this.bot;
+  }
+
+  /**
    * Post a one-shot message to a specific Discord channel — used by the
    * routine delivery handler ("post the cron run output to #ops"). Errors
    * propagate so the delivery dispatch can record them in the run log.

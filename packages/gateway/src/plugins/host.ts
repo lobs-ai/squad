@@ -13,10 +13,12 @@ import type {
   SlashCommandDescriptor,
   ToolsetDescriptor,
   PluginDeliveryHandler,
+  PluginHttpHandler,
+  HttpMethod,
 } from "@squad/plugin-sdk";
 import type { SubagentRuntimeRegistry } from "../subagents/runtime.js";
 import { parsePluginManifest, satisfiesRequires } from "@squad/plugin-sdk";
-import type { ToolRegistry, BaseTool } from "@squad/tools";
+import type { ToolRegistry, ToolGroupRegistry, ToolGroup, BaseTool } from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
 import type { PluginRecord, PluginUiContribution, SubagentDefinition } from "@squad/protocol";
 import type { SubagentRegistry } from "../subagents/registry.js";
@@ -26,6 +28,12 @@ type AnyTool = BaseTool<Record<string, unknown>>;
 
 export interface PluginHostDeps {
   toolRegistry: ToolRegistry;
+  /**
+   * Tool group registry. Plugins can contribute lazy groups via
+   * `api.toolGroups.register(...)`; the gateway exposes them in the
+   * `<tool_groups>` system-prompt index alongside built-in groups.
+   */
+  toolGroups: ToolGroupRegistry;
   subagentRegistry: SubagentRegistry;
   logger: Logger;
   /** Providers registry — a simple Map<name, LLMClient> the gateway wires up. */
@@ -49,6 +57,16 @@ export interface PluginHostDeps {
    * to its DeliveryRegistry on register.
    */
   registerDelivery: (kind: string, handler: PluginDeliveryHandler) => void;
+  /**
+   * Optional HTTP route registry. The gateway hands each plugin-registered
+   * route to its server's request dispatcher; absent in tests / ephemeral
+   * deployments where no HTTP listener is wired up.
+   */
+  registerHttpRoute?: (
+    method: HttpMethod,
+    path: string,
+    handler: PluginHttpHandler,
+  ) => void;
   /**
    * Optional notifier called whenever a plugin's record changes (loaded,
    * enabled/disabled, configured, reloaded). The gateway wires this to
@@ -258,6 +276,12 @@ export class PluginHost {
           this.deps.toolRegistry.register(tool);
         },
       },
+      toolGroups: {
+        register: (group: ToolGroup) => {
+          if (!allow("toolGroups")) denied("toolGroups");
+          this.deps.toolGroups.register(group);
+        },
+      },
       providers: {
         register: (name: string, client: LLMClient) => {
           if (!allow("providers")) denied("providers");
@@ -316,6 +340,17 @@ export class PluginHost {
         register: (kind: string, handler: PluginDeliveryHandler) => {
           if (!allow("delivery")) denied("delivery");
           this.deps.registerDelivery(kind, handler);
+        },
+      },
+      http: {
+        register: (method: HttpMethod, path: string, handler: PluginHttpHandler) => {
+          if (!allow("http")) denied("http");
+          if (!this.deps.registerHttpRoute) {
+            throw new Error(
+              "plugin tried to register an HTTP route but the host has no HTTP server attached",
+            );
+          }
+          this.deps.registerHttpRoute(method, path, handler);
         },
       },
       ui: {

@@ -25,8 +25,10 @@ function makeFakeApi(config: Record<string, unknown>): {
   const noop = (): void => {};
   const api: GatewayAPI = {
     tools: { register: noop },
+    toolGroups: { register: noop },
     providers: { register: noop },
     subagents: { register: noop },
+    subagentRuntimes: { register: noop },
     routines: { register: noop },
     skills: { register: (s) => void skills.push(s) },
     approvalPolicies: { register: noop },
@@ -34,6 +36,7 @@ function makeFakeApi(config: Record<string, unknown>): {
     commands: { register: noop },
     toolsets: { register: noop },
     delivery: { register: noop },
+    http: { register: noop },
     ui: { contribute: noop },
     logger: {
       info: (msg) => logs.push(`info:${msg}`),

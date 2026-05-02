@@ -13,6 +13,7 @@ import { z } from "zod";
 
 export const pluginPermissionSchema = z.enum([
   "tools",
+  "toolGroups",
   "providers",
   "subagents",
   "routines",
@@ -23,6 +24,7 @@ export const pluginPermissionSchema = z.enum([
   "toolsets",
   "delivery",
   "ui",
+  "http",
 ]);
 export type PluginPermission = z.infer<typeof pluginPermissionSchema>;
 

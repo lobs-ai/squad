@@ -1,4 +1,4 @@
-import type { BaseTool } from "@squad/tools";
+import type { BaseTool, ToolGroup } from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
 import type { PluginUiContribution, SubagentDefinition } from "@squad/protocol";
 
@@ -215,6 +215,40 @@ export type PluginDeliveryHandler = (
   ctx: DeliveryHandlerInput,
 ) => Promise<{ ok: boolean; error?: string }>;
 
+/**
+ * HTTP route registration for plugins. The handler runs against the same
+ * Node `http.IncomingMessage` / `http.ServerResponse` the gateway already
+ * dispatches over — plugins are responsible for writing a response (status,
+ * headers, body) before returning. Anything thrown is logged and turned
+ * into a 500.
+ *
+ * Routes are matched after the gateway's own paths (`/health`, `/pair/*`,
+ * webhooks, `/v1/*`, dashboard statics) but before the static-file 404, so
+ * a plugin can claim e.g. `/oauth/google/*` without colliding with the
+ * built-ins. Path matching is exact unless the path ends in `/*`, in which
+ * case it's a prefix match.
+ */
+export type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
+
+export interface PluginHttpHandlerCtx {
+  /** The full request URL parsed against `http://host`. */
+  url: URL;
+  /** Path segments captured by a wildcard route (`/foo/*` → `["bar", "baz"]` for `/foo/bar/baz`). */
+  wildcardPath: string;
+  /** Lower-cased headers — duplicates collapse to the last value. */
+  headers: Record<string, string>;
+  /** Raw body bytes; resolves once the request stream ends. */
+  readBody: () => Promise<Buffer>;
+  /** Convenience helper: parse the raw body as JSON, throws on invalid JSON. */
+  readJson: () => Promise<unknown>;
+}
+
+export type PluginHttpHandler = (
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse,
+  ctx: PluginHttpHandlerCtx,
+) => Promise<void> | void;
+
 type AnyTool = BaseTool<Record<string, unknown>>;
 
 /**
@@ -243,6 +277,14 @@ export interface SubagentRuntimeRegistration {
 
 export interface GatewayAPI {
   tools: { register(tool: AnyTool): void };
+  /**
+   * Tool groups contributed by the plugin. The gateway exposes lazy groups
+   * in the `<tool_groups>` system-prompt index — registering one here lets
+   * the plugin add a group whose schemas become available to the agent only
+   * when it calls `describe_tool_group({ groups: "<name>" })`. Plugins
+   * usually pair this with `tools.register(...)` for the same names.
+   */
+  toolGroups: { register(group: ToolGroup): void };
   providers: { register(name: string, client: LLMClient): void };
   subagents: { register(def: SubagentDefinition): void };
   /**
@@ -273,6 +315,19 @@ export interface GatewayAPI {
    * kinds are handled by the gateway and cannot be overridden.
    */
   delivery: { register(kind: string, handler: PluginDeliveryHandler): void };
+  /**
+   * HTTP routes contributed by the plugin. The gateway mounts each route on
+   * its primary HTTP listener so plugins can implement OAuth callbacks,
+   * webhook receivers, embed-from-the-browser endpoints, etc. without
+   * standing up their own server.
+   *
+   * Path is exact-match unless it ends in `/*` (prefix match). Method is
+   * matched verbatim. Plugins must declare the `http` permission in their
+   * manifest to register routes.
+   */
+  http: {
+    register(method: HttpMethod, path: string, handler: PluginHttpHandler): void;
+  };
   /**
    * UI contribution surface. Plugins call `ui.contribute({...})` once per
    * slot they want to claim — the gateway records the metadata and exposes

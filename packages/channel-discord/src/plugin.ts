@@ -1,6 +1,8 @@
 import { definePlugin } from "@squad/plugin-sdk";
+import { CarbonDiscordBackend } from "./backend.js";
 import { DiscordChannel } from "./channel.js";
 import { discordConfigSchema } from "./config.js";
+import { discordGroup, registerDiscordTools } from "./tools/index.js";
 
 /**
  * Discord-as-a-plugin. The gateway has no Discord-specific code; this plugin
@@ -47,6 +49,18 @@ export default definePlugin({
       start: () => channel.connect(),
       stop: () => channel.disconnect(),
     });
+    // Contribute the discord tool group + its executors. The group makes the
+    // tools lazy-loadable (agents must call describe_tool_group({groups:
+    // "discord"}) to see schemas); the executors resolve the live bot lazily
+    // because tools are wired at register time but the bot only connects
+    // after the gateway fires `start()`.
+    api.toolGroups.register(discordGroup);
+    const backend = new CarbonDiscordBackend(() => {
+      const bot = channel.getBot();
+      if (!bot) throw new Error("discord channel not connected yet");
+      return bot;
+    });
+    registerDiscordTools(api.tools, backend);
     api.delivery.register("discord", async (ctx) => {
       const delivery = ctx.delivery as { kind: "discord"; channelId: string; guildId?: string };
       if (!delivery.channelId) {

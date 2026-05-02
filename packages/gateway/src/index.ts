@@ -37,6 +37,7 @@ import { SubagentDefStore } from "./db/subagent-defs.js";
 import { DeliveryQueue } from "./delivery/queue.js";
 import { RunCoordinator } from "./delivery/coordinator.js";
 import { PluginHost } from "./plugins/host.js";
+import { PluginRouteRegistry } from "./plugins/http-routes.js";
 import { RoutineScheduler } from "./routines/scheduler.js";
 import { RoutineStore } from "./routines/store.js";
 import { CronExecutor } from "./routines/executor.js";
@@ -107,6 +108,7 @@ export { subagentBackendFor } from "./subagents/backend.js";
 export { DeliveryQueue } from "./delivery/queue.js";
 export { RunCoordinator } from "./delivery/coordinator.js";
 export { PluginHost } from "./plugins/host.js";
+export { PluginRouteRegistry } from "./plugins/http-routes.js";
 export { RoutineScheduler, matchesCron, computeNextRunAt, isDue } from "./routines/scheduler.js";
 export { RoutineStore } from "./routines/store.js";
 export { CronExecutor } from "./routines/executor.js";
@@ -758,8 +760,10 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   const commandRegistry = new CommandRegistry();
   commandRegistry.registerBuiltins();
 
+  const pluginRoutes = new PluginRouteRegistry(logger);
   const plugins = new PluginHost({
     toolRegistry,
+    toolGroups,
     subagentRegistry,
     subagentRuntimes,
     logger,
@@ -772,6 +776,9 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     toolsets: toolsetsList,
     registerDelivery: (kind, handler) => {
       deliveryRegistry.register(kind, async (ctx) => handler(ctx));
+    },
+    registerHttpRoute: (method, path, handler) => {
+      pluginRoutes.register(method, path, handler);
     },
     onPluginChanged: (rec) => broadcast.publish("plugins.changed", { plugin: rec }),
   });
@@ -1054,6 +1061,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     startedAt,
     version: VERSION,
     plugins,
+    pluginRoutes,
     approvals,
     approvalRules,
     channels,

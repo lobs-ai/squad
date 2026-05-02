@@ -6,10 +6,5 @@
   },
   "include": ["src/**/*"],
   "exclude": ["**/*.test.ts", "dist"],
-  "references": [
-    { "path": "../channel-sdk" },
-    { "path": "../plugin-sdk" },
-    { "path": "../protocol" },
-    { "path": "../tools" }
-  ]
+  "references": [{ "path": "../plugin-sdk" }, { "path": "../tools" }]
 }

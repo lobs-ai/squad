@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ToolRegistry } from "@squad/tools";
+import { ToolRegistry, ToolGroupRegistry } from "@squad/tools";
 import { PluginHost, type PluginHostDeps } from "./host.js";
 import { SubagentRegistry } from "../subagents/registry.js";
 import type { LLMClient } from "@squad/llm";
@@ -22,6 +22,7 @@ function noopLogger(): Logger {
 function makeDeps(extras: Partial<PluginHostDeps> = {}): PluginHostDeps {
   return {
     toolRegistry: new ToolRegistry(),
+    toolGroups: new ToolGroupRegistry(),
     subagentRegistry: new SubagentRegistry(),
     logger: noopLogger(),
     providers: new Map<string, LLMClient>(),
@@ -32,6 +33,7 @@ function makeDeps(extras: Partial<PluginHostDeps> = {}): PluginHostDeps {
     commands: [],
     toolsets: [],
     registerDelivery: () => {},
+    registerHttpRoute: () => {},
     ...extras,
   };
 }
@@ -150,6 +152,44 @@ describe("PluginHost", () => {
     expect(rec!.uiContributions).toHaveLength(2);
     expect(rec!.uiContributions.map((c) => c.slot)).toEqual(["navTab", "overviewWidget"]);
     expect(rec!.uiContributions[0]?.icon).toBe("spark");
+  });
+
+  it("forwards http.register calls to the host's registerHttpRoute", async () => {
+    const path = writePlugin(
+      "http",
+      `export default {
+        id: "h1", name: "H", version: "0", kinds: ["tool"],
+        register(api) {
+          api.http.register("GET", "/oauth/google/callback", async (req, res) => {
+            res.writeHead(200); res.end("ok");
+          });
+        },
+      };`,
+    );
+    const calls: { method: string; path: string }[] = [];
+    const host = new PluginHost(
+      makeDeps({
+        registerHttpRoute: (method, p) => {
+          calls.push({ method, path: p });
+        },
+      }),
+    );
+    await host.load(path);
+    expect(calls).toEqual([{ method: "GET", path: "/oauth/google/callback" }]);
+  });
+
+  it("throws when a plugin calls api.http.register with no host route registry", async () => {
+    const path = writePlugin(
+      "http-no-host",
+      `export default {
+        id: "h2", name: "H2", version: "0", kinds: ["tool"],
+        register(api) { api.http.register("GET", "/x", async () => {}); },
+      };`,
+    );
+    const deps = makeDeps();
+    delete (deps as Partial<PluginHostDeps>).registerHttpRoute;
+    const host = new PluginHost(deps);
+    await expect(host.load(path)).rejects.toThrow(/no HTTP server attached/);
   });
 
   it("setEnabled / setConfig / reload notify onPluginChanged", async () => {

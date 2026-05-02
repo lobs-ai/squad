@@ -1,0 +1,10 @@
+{
+  "id": "@squad/plugin-google-drive",
+  "name": "Google Drive",
+  "version": "0.0.1",
+  "entry": "./dist/plugin.js",
+  "exposes": ["tool"],
+  "permissions": ["tools", "toolGroups", "toolsets"],
+  "requires": ["@squad/plugin-google-auth"],
+  "description": "Google Drive tools — search, list, read."
+}

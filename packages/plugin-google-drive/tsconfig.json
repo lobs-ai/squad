@@ -7,9 +7,8 @@
   "include": ["src/**/*"],
   "exclude": ["**/*.test.ts", "dist"],
   "references": [
-    { "path": "../channel-sdk" },
     { "path": "../plugin-sdk" },
-    { "path": "../protocol" },
-    { "path": "../tools" }
+    { "path": "../tools" },
+    { "path": "../plugin-google-auth" }
   ]
 }

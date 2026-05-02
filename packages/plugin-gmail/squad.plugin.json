@@ -1,0 +1,10 @@
+{
+  "id": "@squad/plugin-gmail",
+  "name": "Gmail",
+  "version": "0.0.1",
+  "entry": "./dist/plugin.js",
+  "exposes": ["tool"],
+  "permissions": ["tools", "toolGroups", "toolsets"],
+  "requires": ["@squad/plugin-google-auth"],
+  "description": "Gmail tools — search, read, send, label."
+}
