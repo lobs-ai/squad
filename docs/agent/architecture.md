@@ -93,6 +93,33 @@ Opt-in split: `examples/compose.split-channels.yml` runs Discord as its own
 process via `@squad/channel-sdk`. Same code, same protocol — only the process
 boundary changes.
 
+## Conditional prompt fragments
+
+Tool descriptions and parts of the system prompt are **rendered live** per
+turn against two snapshots:
+
+- **`PromptContextStore`** — what's loaded right now: channels, registered
+  delivery handlers, installed plugins, skills, toolsets, plugin-supplied
+  fragments, startup warnings. Mutations (plugin load/unload, delivery
+  handler register/unregister, channel connect/disconnect) bump a `version`
+  and notify subscribers, so the next turn sees fresh descriptions
+  without a restart.
+- **`RenderContext`** — where the current turn is rendering: surface
+  (`dashboard` / `cli` / `channel` / `cron-isolated` / `subagent`),
+  channel kind (`discord`, `slack`, …), channel id, capabilities, parent
+  subagent. Threaded per-turn via `AsyncLocalStorage` from
+  `gateway/runs.ts` (`store.runWithRender(render, () => runAgent(spec))`).
+
+Plugins extend tool descriptions by registering **fragments** at named
+**slots** (`PROMPT_SLOTS.*`). Tools like `cron`, `ask_user`, `web_fetch`,
+`exec`, `web_search`, `spawn_subagent` look up the fragments for their
+slots and inline them. Fragments may carry a `when(render, ctx)`
+predicate so e.g. Discord-specific hints only appear on Discord turns.
+
+See [plugins.md](plugins.md) § "Conditional prompt fragments" for the
+authoring API and [gateway-internals.md](gateway-internals.md) for how
+the store is wired into per-turn execution.
+
 ## Where to look next
 
 - **"How does a turn actually run?"** → [gateway-internals.md](gateway-internals.md)

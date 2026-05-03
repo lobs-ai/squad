@@ -12,6 +12,7 @@ you works. Read the page that matches the question.
 | How do subagents / tasks / ask-user actually work?                | [primitives.md](primitives.md)     |
 | Why don't I see tool X? How do I unlock more tools?               | [tool-groups.md](tool-groups.md)   |
 | How do plugins extend the gateway? What can a plugin register?    | [plugins.md](plugins.md)           |
+| How do plugins inject conditional prompt hints into tools?        | [plugins.md](plugins.md) § fragments |
 | How does Discord (or any channel) talk to the gateway?            | [channels.md](channels.md)         |
 | What's on the wire? How do I add a new method/event?              | [protocol.md](protocol.md)         |
 | What exactly does the gateway do per turn? Where is X stored?     | [gateway-internals.md](gateway-internals.md) |
@@ -33,6 +34,10 @@ Squad repo root.
   contains, and how SOUL/USER/MEMORY get loaded.
 - `packages/gateway/src/runs.ts` — what happens between "user message arrives"
   and "agent loop starts".
+- `packages/tools/src/prompt-context.ts` + `packages/tools/src/prompt-slots.ts` —
+  the live PromptContextStore + canonical fragment slot taxonomy. Tool
+  descriptions render against this every turn; plugins extend it via
+  `api.promptFragments.register`.
 - `packages/gateway/src/db/migrations.ts` — the SQLite schema in append-only form.
 
 ## Reading a page

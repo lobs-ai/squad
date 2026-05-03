@@ -68,9 +68,94 @@ api.channels.register(channel)
 api.commands.register(cmd)               // slash commands surfaced via commands.list
 api.toolsets.register(def)               // curated tool bundles for spawn_subagent
 api.delivery.register(kind, handler)     // routine delivery fan-out (e.g. "discord")
+api.promptFragments.register(fragment)   // conditional prompt extensions; see below
 api.ui.contribute(contribution)          // declarative UI metadata for the dashboard
 api.logger / api.config
 ```
+
+## Conditional prompt fragments
+
+Plugins can extend the descriptions of built-in tools (and the system
+prompt) **without** rewriting them. Use this when, without your fragment,
+the agent would write a tool call that fails or picks the wrong option —
+and the schema can't carry the info. Don't use it to advertise that your
+plugin exists; the tool-group index, channel registry, and `plugin_list`
+already cover that.
+
+```ts
+import { definePlugin, PROMPT_SLOTS } from "@squad/plugin-sdk";
+
+api.promptFragments.register({
+  slot: PROMPT_SLOTS.CRON_DELIVERY_HANDLERS,
+  content:
+    'discord — post into a guild channel. Required: channelId (snowflake). ' +
+    'Example: { kind: "discord", channelId: "1234567890123456" }',
+});
+
+api.promptFragments.register({
+  slot: PROMPT_SLOTS.ASK_USER_CHANNEL_CAPABILITIES,
+  content: "Discord buttons cap at 4 options; option labels truncate at 80 chars.",
+  // Render-conditional: only fires when this turn is rendering for Discord.
+  when: (render) =>
+    render.surface === "channel" && render.channelKind === "discord",
+});
+```
+
+### How it works
+
+- `slot` is one of the canonical `PROMPT_SLOTS.*` constants. Typing a raw
+  string fails compilation. New slots land via PR to
+  `packages/tools/src/prompt-slots.ts` (the doc-comment on each member
+  describes what fragments belong there).
+- `content` is plain text the slot's owner-tool inlines into its
+  description.
+- `when(render, ctx)` is an optional predicate evaluated **at render
+  time**. `render` is the per-turn `RenderContext` (surface, channelKind,
+  channelId, capabilities, parentSubagent); `ctx` is the live
+  `PromptContextSnapshot` (channels, deliveryKinds, plugins, …). Omit
+  `when` for fragments that should always fire.
+- Fragments are tracked per-plugin and dropped automatically on `unload` /
+  `disable`. No restart needed — the next turn re-renders descriptions
+  with the new fragment set.
+
+### When to use a fragment
+
+Only when, without it, the agent would write a tool call that fails or
+behaves wrong, and the schema can't express the constraint. Each
+fragment should change a specific decision the agent is making. If your
+fragment reads "btw I also have tool X," it doesn't belong in a fragment —
+the tool-group index already handles inventory.
+
+### Render context shape
+
+```ts
+interface RenderContext {
+  surface: "dashboard" | "cli" | "channel" | "cron-isolated" | "subagent" | "unknown";
+  channelKind?: string;        // when surface === "channel": "discord", "slack", ...
+  channelId?: string;
+  capabilities?: ChannelCapabilities;
+  parentSubagent?: string;
+}
+```
+
+The gateway derives this per-turn from the channel binding for the
+session. Threaded through `AsyncLocalStorage` so tool descriptions
+(`BaseTool.describe(ctx, render)`) and the fragment `when` predicate
+both see the same value within a turn.
+
+### Source
+
+- Slot taxonomy: `packages/tools/src/prompt-slots.ts` (`PROMPT_SLOTS`,
+  `PromptSlot`).
+- Store + types: `packages/tools/src/prompt-context.ts`.
+- Plugin SDK: `PluginPromptFragment` in `packages/plugin-sdk/src/types.ts`;
+  re-exported `PROMPT_SLOTS` / `PromptSlot` / `RenderContext` /
+  `PromptContextSnapshot` from `packages/plugin-sdk/src/index.ts`.
+- Wiring: `gateway/src/index.ts` builds the `PromptContextStore`,
+  `gateway/src/runs.ts` wraps `runAgent` in `store.runWithRender(render, …)`.
+- Reference plugin: `packages/channel-discord/src/plugin.ts` registers
+  seven Discord-specific fragments (some always-on, some
+  render-conditional).
 
 ## Loading
 

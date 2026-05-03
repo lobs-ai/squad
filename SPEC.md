@@ -349,6 +349,12 @@ On startup the gateway:
    - `api.channels.register(adapter)`
    - `api.skills.register(skill)`
    - `api.routines.register(routine)`
+   - `api.delivery.register(kind, handler, meta?)` — routine delivery fan-out
+   - `api.promptFragments.register(fragment)` — conditional extensions to
+     built-in tool descriptions; `slot` is one of `PROMPT_SLOTS.*`,
+     optional `when(render, ctx)` predicate gates on the per-turn render
+     context (channel, surface, capabilities). Fragments are removed
+     automatically on plugin unload — live updates without restart.
    - `api.hooks.on(event, handler)` — subscribe to runner hooks
    - `api.logger` / `api.config` / `api.storage` — scoped helpers
 4. Stores the returned cleanup function (if any) for `plugins.disable` / `plugins.reload`.

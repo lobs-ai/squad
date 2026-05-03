@@ -28,12 +28,46 @@ Per turn:
 8. Walk up from `cwd` collecting `AGENTS.md` / `CLAUDE.md` / `SQUAD.md` /
    `.cursorrules` files (cap ~8K tokens, drop farthest first).
 9. Build the system prompt via `agent-prompt.ts/buildSquadSystemPrompt`.
-10. Call `runAgent(spec)` from the vendored runner.
+10. Compute the per-turn `RenderContext` (`renderContextFor(sessionId)`):
+    look up the session's binding in `ChannelRegistry`; falls back to
+    `subagent` if there's a parent, else `dashboard`. Wrap the runner call
+    in `promptContextStore.runWithRender(render, () => runAgent(spec))`
+    so every `BaseTool.describe(ctx, render)` and fragment `when`
+    predicate sees the right surface for this turn.
+11. Call `runAgent(spec)` from the vendored runner.
     - `onTextChunk` broadcasts `chat.text_delta`.
     - `onProgress` writes `tool_calls` rows and broadcasts `chat.tool_call` /
       `chat.tool_result`.
-11. Persist the final assistant message; broadcast `chat.assistant_message`;
+12. Persist the final assistant message; broadcast `chat.assistant_message`;
     set the session `idle`.
+
+## PromptContextStore (live extension surface)
+
+`packages/tools/src/prompt-context.ts` — owned by the gateway, shared with
+the tool registry. Holds the current `PromptContextSnapshot`:
+
+```
+channels       ← refreshed by ChannelRegistry.onChannelChanged
+deliveryKinds  ← refreshed by DeliveryRegistry.onChange
+plugins        ← refreshed by PluginHost.onPluginChanged
+skills,        ← seeded after plugin boot, refreshed on plugin events
+toolsets
+fragments      ← addFragments(...) when a plugin calls
+                  api.promptFragments.register(...);
+                  removeFragmentsForPlugin(id) on unload
+startupWarnings
+version        ← bumped on every mutation
+```
+
+Tools extending `BaseTool` opt into dynamic descriptions by implementing
+`describe(ctx, render)`. `BaseTool.toEntry()` returns a `ToolEntry` whose
+`definition` is a getter — every read re-runs `describe` against the
+current snapshot + AsyncLocalStorage `RenderContext`. Plugin
+load/unload, channel connect/disconnect, and delivery register/unregister
+all bump `version`, so the next turn picks up the change. **No restart.**
+
+See [plugins.md](plugins.md) § "Conditional prompt fragments" for the
+authoring side and the slot taxonomy.
 
 ## System prompt
 
@@ -50,7 +84,11 @@ caching keys on the prefix:
    turn, so edits take effect on the next turn).
 5. **Project context** — discovered `AGENTS.md` / `CLAUDE.md` / `SQUAD.md`
    from walking up from `cwd`.
-6. **Persistent memory** — eager block (frozen) + per-turn retrieval block.
+6. **Startup warnings** — entries from `PromptContextStore.startupWarnings`
+   (degraded plugin state, missing perms, OAuth expired). Pulled fresh
+   each turn via `deps.promptContextStore?.get().startupWarnings`. Empty
+   list → section skipped.
+7. **Persistent memory** — eager block (frozen) + per-turn retrieval block.
 
 Subagents build the same prompt with their own `.squad/subagents/<name>/`
 core dir (see `subagentCoreDir`).
