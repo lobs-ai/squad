@@ -1,8 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import pino from "pino";
-import type { Embedder, MemCore } from "memcore";
+import type { MemCore } from "memcore";
 import { StubMemCore } from "../../test/fixtures/stub-memcore.js";
-import { MemoryService, DuplicateMemoryError, chunkQuery } from "./service.js";
+import {
+  MemoryService,
+  DuplicateMemoryError,
+  chunkQuery,
+  type EmbedderWithLimit,
+} from "./service.js";
 
 const logger = pino({ level: "silent" });
 
@@ -195,7 +200,7 @@ describe("retrievalForTurn — chunked path", () => {
    * (that goes through memcore.search); it exists only to satisfy the
    * Embedder interface.
    */
-  function tinyEmbedder(maxInputChars: number): Embedder {
+  function tinyEmbedder(maxInputChars: number): EmbedderWithLimit {
     return {
       maxInputChars,
       async embed({ texts }) {

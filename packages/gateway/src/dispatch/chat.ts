@@ -47,6 +47,10 @@ export interface ChatDeps {
    * every turn's system prompt includes a "where am I running" briefing.
    */
   runtimeEnvSection?: string;
+  /** Live PromptContext store; forwarded to runChatTurn. */
+  promptContextStore?: import("@squad/tools").PromptContextStore;
+  /** Per-session RenderContext factory; forwarded to runChatTurn. */
+  renderContextFor?: (sessionId: string) => import("@squad/tools").RenderContext;
 }
 
 export function registerChatMethods(dispatcher: Dispatcher, deps: ChatDeps): void {

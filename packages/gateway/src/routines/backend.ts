@@ -20,15 +20,14 @@ export interface CronBackendDeps {
   paths: CronPaths;
   /**
    * Delivery registry — used by the agent-facing `list_delivery_kinds`
-   * tool so the LLM can discover which channel handlers are loaded
-   * (silent, dashboard, discord, plugin-registered slack/webhook/…).
-   * Optional; when omitted, listDeliveryKinds returns just the gateway
-   * built-ins.
+   * tool so the LLM can discover which delivery handlers are loaded
+   * (silent, dashboard, plus any plugin-registered kinds). Optional; when
+   * omitted, listDeliveryKinds returns just the gateway built-ins.
    */
   delivery?: DeliveryRegistry;
 }
 
-const BUILT_IN_DELIVERY: DeliveryKindInfo[] = [
+const FALLBACK_BUILT_INS: DeliveryKindInfo[] = [
   {
     kind: "silent",
     builtIn: true,
@@ -39,16 +38,6 @@ const BUILT_IN_DELIVERY: DeliveryKindInfo[] = [
     builtIn: true,
     description:
       "The resulting session opens in the dashboard chat UI. Implicit; no extras needed.",
-  },
-  {
-    kind: "discord",
-    builtIn: false,
-    description:
-      "Posts the run output into a Discord channel. Requires the channel-discord plugin.",
-    extrasSchema: {
-      channelId: { type: "string", description: "Discord channel snowflake (required)" },
-      guildId: { type: "string", description: "Optional guild id" },
-    },
   },
 ];
 
@@ -69,23 +58,15 @@ export function cronBackendFor(deps: CronBackendDeps): CronBackend {
     },
     async listDeliveryKinds() {
       // The DeliveryRegistry holds the source of truth — built-ins
-      // (silent, dashboard) plus anything plugins registered. Merge with
-      // BUILT_IN_DELIVERY so the rich descriptions/extras schemas come
-      // along even when the registry only knows the bare names.
-      const registered = delivery ? delivery.kinds() : ["silent", "dashboard"];
-      const seen = new Set<string>();
-      const out: DeliveryKindInfo[] = [];
-      for (const meta of BUILT_IN_DELIVERY) {
-        if (registered.includes(meta.kind)) {
-          out.push(meta);
-          seen.add(meta.kind);
-        }
-      }
-      for (const kind of registered) {
-        if (seen.has(kind)) continue;
-        out.push({ kind, builtIn: kind === "silent" || kind === "dashboard" });
-      }
-      return out;
+      // (silent, dashboard) plus any plugin-registered kinds with the
+      // descriptions/extrasSchemas the plugins supplied at register time.
+      if (!delivery) return FALLBACK_BUILT_INS;
+      return delivery.list().map((entry) => ({
+        kind: entry.kind,
+        builtIn: entry.builtIn,
+        ...(entry.description !== undefined ? { description: entry.description } : {}),
+        ...(entry.extrasSchema !== undefined ? { extrasSchema: entry.extrasSchema } : {}),
+      }));
     },
     async create(input) {
       const rec = store.create({
@@ -166,30 +147,13 @@ function toRunSummary(r: import("@squad/protocol").RoutineRunLog): CronRunSummar
 function toDelivery(d: CronDeliveryInput): RoutineDelivery {
   if (d.kind === "silent") return { kind: "silent" };
   if (d.kind === "dashboard") return { kind: "dashboard" };
-  if (d.kind === "discord") {
-    if (!d.channelId) {
-      throw new Error("discord delivery requires `channelId`");
-    }
-    return {
-      kind: "discord",
-      channelId: d.channelId,
-      ...(d.guildId ? { guildId: d.guildId } : {}),
-    };
-  }
-  // Plugin-registered kind (e.g. "slack"). Forward extras verbatim.
+  // Plugin-registered kind (discord, slack, …). Forward extras verbatim;
+  // the plugin's handler validates its own required fields at fire time.
   return { kind: d.kind, ...(d.extras ?? {}) };
 }
 
 function fromDelivery(d: RoutineDelivery): CronDeliveryInput {
   if (d.kind === "silent" || d.kind === "dashboard") return { kind: d.kind };
-  if (d.kind === "discord") {
-    const dd = d as { kind: "discord"; channelId: string; guildId?: string };
-    return {
-      kind: "discord",
-      channelId: dd.channelId,
-      ...(dd.guildId ? { guildId: dd.guildId } : {}),
-    };
-  }
   // Plugin-registered kind: lift everything except `kind` into `extras`.
   const { kind, ...rest } = d as { kind: string; [k: string]: unknown };
   const extras = rest as Record<string, unknown>;

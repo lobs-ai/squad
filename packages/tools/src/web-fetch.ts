@@ -13,6 +13,13 @@
 import { BrowserService, browserService as defaultService } from "./browser-service.js";
 import type { ToolDefinition, ToolExecutorResult } from "./types.js";
 import { BaseTool, type ToolContext } from "./base-tool.js";
+import type {
+  PromptContextSnapshot,
+  RenderContext,
+} from "./prompt-context.js";
+
+/** Fragment slot: each plugin lists Google-style auth-walled domains and the right tool. */
+export const WEB_FETCH_AUTH_WALLED_SLOT = "web_fetch.auth-walled-domains";
 
 // ── Tool Definition ───────────────────────────────────────────────────────────
 
@@ -51,6 +58,20 @@ export class WebFetchTool extends BaseTool {
   readonly inputSchema = webFetchToolDefinition.input_schema as import("./base-tool.js").ToolInputSchema;
   readonly tags = ["web", "fetch", "readonly"] as const;
 
+  describe(ctx: PromptContextSnapshot, render: RenderContext): string {
+    const frags = ctx.fragments
+      .filter((f) => f.slot === WEB_FETCH_AUTH_WALLED_SLOT)
+      .filter((f) => !f.when || safeWhen(f.when, render, ctx))
+      .map((f) => f.content);
+    if (frags.length === 0) return webFetchToolDefinition.description;
+    return [
+      webFetchToolDefinition.description,
+      "",
+      "Auth-walled domains (use the listed tool instead — web_fetch returns a login page):",
+      ...frags.map((f) => "  - " + f),
+    ].join("\n");
+  }
+
   private readonly _browser: BrowserService;
 
   constructor(opts: WebFetchToolOptions = {}) {
@@ -84,6 +105,18 @@ export class WebFetchTool extends BaseTool {
     } catch (err) {
       return `Failed to fetch ${url}: ${err instanceof Error ? err.message : String(err)}`;
     }
+  }
+}
+
+function safeWhen(
+  pred: NonNullable<PromptContextSnapshot["fragments"][number]["when"]>,
+  render: RenderContext,
+  ctx: PromptContextSnapshot,
+): boolean {
+  try {
+    return pred(render, ctx);
+  } catch {
+    return false;
   }
 }
 

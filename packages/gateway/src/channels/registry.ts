@@ -95,6 +95,17 @@ export class ChannelRegistry {
     return binding;
   }
 
+  /**
+   * Most-recent binding for a session, or null. Used by the runner to derive
+   * a per-turn RenderContext (which channel kind the turn is rendering for).
+   */
+  bindingForSession(sessionId: string): ChannelBinding | null {
+    for (const b of this.bindings.values()) {
+      if (b.sessionId === sessionId) return b;
+    }
+    return null;
+  }
+
   unbind(bindingId: string): boolean {
     return this.bindings.delete(bindingId);
   }

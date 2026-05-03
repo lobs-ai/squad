@@ -16,8 +16,8 @@ import { ASK_GUIDANCE } from "./prompt.js";
 
 /**
  * Default tool group for ask_user. Loaded on every turn — channels render
- * structured questions natively (Discord buttons, CLI select, etc.) so this
- * is cheap to keep resident.
+ * structured questions natively (channel-specific buttons, CLI select, etc.)
+ * so this is cheap to keep resident.
  */
 export const questionsGroup: ToolGroup = {
   name: "questions",

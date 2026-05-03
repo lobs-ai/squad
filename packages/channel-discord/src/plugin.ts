@@ -61,19 +61,90 @@ export default definePlugin({
       return bot;
     }, botLogger);
     registerDiscordTools(api.tools, backend);
-    api.delivery.register("discord", async (ctx) => {
-      const delivery = ctx.delivery as { kind: "discord"; channelId: string; guildId?: string };
-      if (!delivery.channelId) {
-        return { ok: false, error: "discord delivery missing channelId" };
-      }
-      const text = formatRoutineDelivery(ctx);
-      try {
-        await channel.sendToChannel(delivery.channelId, text);
-        return { ok: true };
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
-      }
+    api.delivery.register(
+      "discord",
+      async (ctx) => {
+        const delivery = ctx.delivery as { kind: "discord"; channelId?: string; guildId?: string };
+        if (!delivery.channelId) {
+          return { ok: false, error: "discord delivery missing channelId" };
+        }
+        const text = formatRoutineDelivery(ctx);
+        try {
+          await channel.sendToChannel(delivery.channelId, text);
+          return { ok: true };
+        } catch (err) {
+          return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      },
+      {
+        description:
+          "Posts the run output into a Discord channel. Pass channelId (snowflake) under `extras`.",
+        extrasSchema: {
+          channelId: { type: "string", description: "Discord channel snowflake (required)" },
+          guildId: { type: "string", description: "Optional guild id" },
+        },
+      },
+    );
+
+    // ── Conditional prompt fragments ────────────────────────────────────
+    // Each fragment changes a specific tool-call decision the agent would
+    // otherwise get wrong. Render-conditional ones (`when` predicate) only
+    // appear in turns rendering for a Discord channel — dashboard / CLI
+    // turns never see them.
+    const isDiscordTurn = (render: { surface?: string; channelKind?: string }) =>
+      render.surface === "channel" && render.channelKind === "discord";
+
+    api.promptFragments.register({
+      slot: "cron.delivery-handlers",
+      content:
+        'discord — post into a guild channel. Required: channelId (snowflake). ' +
+        'Example: { kind: "discord", channelId: "1234567890123456" }',
     });
+    api.promptFragments.register({
+      slot: "delivery.silent-gate-applicability",
+      content: "discord delivery honors [SILENT] — first-line wake gate suppresses the post.",
+    });
+    api.promptFragments.register({
+      slot: "cron.delivery-default",
+      content: "post the result back to this Discord channel unless told otherwise",
+      when: (render) => isDiscordTurn(render),
+    });
+    api.promptFragments.register({
+      slot: "ask_user.channel-capabilities",
+      content:
+        "Discord buttons cap at 4 options; option labels truncate at 80 chars. " +
+        "preview text renders in a markdown code block — use ASCII layouts, not images.",
+      when: (render) => isDiscordTurn(render),
+    });
+    api.promptFragments.register({
+      slot: "ask_user.escalation-target",
+      content:
+        "ask_user delivered here renders inline in the same Discord thread. " +
+        "Don't redirect to the dashboard — the user is reading Discord.",
+      when: (render) => isDiscordTurn(render),
+    });
+    api.promptFragments.register({
+      slot: "ask_user.preview-rendering",
+      content:
+        "Discord renders option.preview as a fenced code block — works for diffs, " +
+        "config snippets, ASCII tables. Avoid wide tables (>80 cols wrap badly).",
+      when: (render) => isDiscordTurn(render),
+    });
+    api.promptFragments.register({
+      slot: "tasks.notification-side-effects",
+      content:
+        "Each create_task / update_task call updates a Discord embed in the bound channel. " +
+        "Batch task creation in one turn (multiple tool calls back-to-back) instead of " +
+        "spreading them across turns to avoid edit-storm noise.",
+      when: (render) => isDiscordTurn(render),
+    });
+    api.promptFragments.register({
+      slot: "exec.environment-warnings",
+      content:
+        "DISCORD_BOT_TOKEN is in process.env. Do not run `env` / `printenv` / `set` " +
+        "and post the output to a channel — strip secrets first or scope the command.",
+    });
+
     api.logger.info("discord channel plugin registered", {
       dm_policy: cfg.dm_policy,
       dm_allow_list_size: cfg.dm_allow_list.length,

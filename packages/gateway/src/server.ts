@@ -156,6 +156,17 @@ export interface GatewayDeps {
    * every turn carries a "where am I running" briefing.
    */
   runtimeEnvSection?: string;
+  /**
+   * Live PromptContext store. Forwarded to runChatTurn so tool descriptions
+   * render against the per-turn render context (channel kind, surface,
+   * capabilities) and re-render on plugin load/unload without restart.
+   */
+  promptContextStore?: import("@squad/tools").PromptContextStore;
+  /**
+   * Map a sessionId to its current RenderContext. The gateway computes this
+   * from the channel binding for the session (or surface defaults).
+   */
+  renderContextFor?: (sessionId: string) => import("@squad/tools").RenderContext;
 }
 
 export interface GatewayHandle {
@@ -422,6 +433,8 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
     ...(deps.titleGenerator ? { titleGenerator: deps.titleGenerator } : {}),
     ...(deps.traceRegistry ? { traceRegistry: deps.traceRegistry } : {}),
     ...(deps.runtimeEnvSection ? { runtimeEnvSection: deps.runtimeEnvSection } : {}),
+    ...(deps.promptContextStore ? { promptContextStore: deps.promptContextStore } : {}),
+    ...(deps.renderContextFor ? { renderContextFor: deps.renderContextFor } : {}),
   });
   registerTaskMethods(d, deps.tasks, deps.broadcast);
   registerQuestionMethods(d, deps.questions);

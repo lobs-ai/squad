@@ -36,6 +36,7 @@ function makeFakeApi(config: Record<string, unknown>): {
     commands: { register: noop },
     toolsets: { register: noop },
     delivery: { register: noop },
+    promptFragments: { register: noop },
     http: { register: noop },
     ui: { contribute: noop },
     logger: {

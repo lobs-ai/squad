@@ -25,4 +25,11 @@ export const DISCORD_GUIDANCE = [
   "",
   "Custom emoji syntax for react / remove_reaction: name:id (e.g. partyparrot:823109283109283).",
   "Unicode emoji are passed through as-is.",
+  "",
+  "Routine delivery to Discord:",
+  "  - Pass `delivery: { kind: \"discord\", extras: { channelId: \"<snowflake>\" } }` to",
+  "    create_cron_job / update_cron_job. `guildId` is optional and goes alongside",
+  "    `channelId` inside `extras`.",
+  "  - The handler is registered by this plugin; if `discord` doesn't show up in",
+  "    list_delivery_kinds, the plugin isn't loaded — fix that before scheduling.",
 ].join("\n");

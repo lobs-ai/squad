@@ -53,18 +53,26 @@ export class DuplicateMemoryError extends Error {
   }
 }
 
+/**
+ * Embedder plus an optional self-reported input limit. Memcore's `Embedder`
+ * contract no longer carries `maxInputChars`, but gateway-side chunked
+ * retrieval still honors it when a concrete implementation chooses to
+ * expose one — purely as a hint, never required.
+ */
+export type EmbedderWithLimit = Embedder & { readonly maxInputChars?: number };
+
 export interface MemoryServiceOptions {
   containerTag?: string;
   /** Eager-block char budget. Defaults to EAGER_BLOCK_BUDGET. */
   eagerBudget?: number;
   /**
    * Optional reference to the embedder MemCore was constructed with. When
-   * present, `retrievalForTurn` reads the embedder's `maxInputChars` and
-   * runs chunked retrieval for queries that exceed it. Without it the
-   * service falls back to a conservative 2000-char cap that fits every
-   * mainstream embedder's context window.
+   * present and it reports a `maxInputChars`, `retrievalForTurn` uses that
+   * to size chunks for long queries. Otherwise the service falls back to a
+   * conservative 2000-char cap that fits every mainstream embedder's
+   * context window.
    */
-  embedder?: Embedder;
+  embedder?: EmbedderWithLimit;
 }
 
 /**
@@ -91,7 +99,7 @@ const CHUNK_OVERLAP_RATIO = 0.2;
 export class MemoryService {
   private readonly containerTag: string;
   private readonly eagerBudget: number;
-  private readonly embedder?: Embedder;
+  private readonly embedder?: EmbedderWithLimit;
   private readonly eagerCache = new Map<string, PromptMemoryEntry[]>();
 
   constructor(

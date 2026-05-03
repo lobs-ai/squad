@@ -1,6 +1,10 @@
 import { BaseTool, type ToolContext } from "../base-tool.js";
 import type { ToolExecutorResult } from "../types.js";
 import type {
+  PromptContextSnapshot,
+  RenderContext,
+} from "../prompt-context.js";
+import type {
   CronBackend,
   DeliveryInput,
   ExecutionInput,
@@ -8,7 +12,11 @@ import type {
   ScheduleInput,
   SessionTargetInput,
 } from "./backend.js";
-import { CRON_GUIDANCE } from "./prompt.js";
+import {
+  buildCronGuidance,
+  buildDeliverySchemaDescription,
+  CRON_GUIDANCE,
+} from "./prompt.js";
 
 function formatResult(payload: unknown): ToolExecutorResult {
   return { result: JSON.stringify(payload, null, 2) };
@@ -138,15 +146,7 @@ const deliverySchema = {
     kind: {
       type: "string",
       description:
-        "Where to send the run output. Built-in: 'silent' (no delivery), 'dashboard' (open in chat UI), 'discord' (post to a channel — requires channelId). Any other string targets a plugin-registered handler (e.g. 'slack'); pass that handler's required fields under `extras`.",
-    },
-    channelId: {
-      type: "string",
-      description: "Required when kind === 'discord'. Discord channel id (snowflake).",
-    },
-    guildId: {
-      type: "string",
-      description: "Optional discord guild id.",
+        "Where to send the run output. Built-in: 'silent' (no delivery), 'dashboard' (open in chat UI). Any other string targets a plugin-registered handler; pass that handler's required fields under `extras`. Call list_delivery_kinds to discover what's registered and what each handler expects.",
     },
     extras: {
       type: "object",
@@ -157,6 +157,26 @@ const deliverySchema = {
   },
   required: ["kind"],
 } as const;
+
+/** Build a deliverySchema with the `kind.description` reflecting the live PromptContext. */
+function dynamicDeliverySchema(ctx: PromptContextSnapshot) {
+  return {
+    type: "object" as const,
+    properties: {
+      kind: {
+        type: "string",
+        description: buildDeliverySchemaDescription(ctx),
+      },
+      extras: {
+        type: "object",
+        additionalProperties: true,
+        description:
+          "Free-form fields forwarded to plugin-registered delivery handlers.",
+      },
+    },
+    required: ["kind"],
+  };
+}
 
 // ── create_cron_job ──────────────────────────────────────────────────────────
 
@@ -177,6 +197,15 @@ export class CreateCronJobTool extends BaseTool<CreateInput> {
     "",
     CRON_GUIDANCE,
   ].join("\n");
+
+  describe(ctx: PromptContextSnapshot, render: RenderContext): string {
+    return [
+      "Schedule a recurring or one-off cron job. Returns the created job (with id).",
+      "",
+      buildCronGuidance(ctx, render),
+    ].join("\n");
+  }
+
   readonly inputSchema = {
     type: "object" as const,
     properties: {
@@ -191,6 +220,22 @@ export class CreateCronJobTool extends BaseTool<CreateInput> {
     required: ["name", "schedule", "payload"],
   };
   readonly tags = ["write"] as const;
+
+  override get definition() {
+    const base = super.definition;
+    if (!this.promptContextStore) return base;
+    const snap = this.promptContextStore.get();
+    return {
+      ...base,
+      input_schema: {
+        ...this.inputSchema,
+        properties: {
+          ...this.inputSchema.properties,
+          delivery: dynamicDeliverySchema(snap),
+        },
+      },
+    };
+  }
 
   constructor(private readonly backend: CronBackend) {
     super();
@@ -229,6 +274,32 @@ export class UpdateCronJobTool extends BaseTool<UpdateInput> {
     "Update an existing cron job. Pass only the fields you want to change.",
     "Set `enabled: false` to pause without deleting; `true` to resume.",
   ].join("\n");
+
+  describe(ctx: PromptContextSnapshot, render: RenderContext): string {
+    return [
+      "Update an existing cron job. Pass only the fields you want to change.",
+      "Set `enabled: false` to pause without deleting; `true` to resume.",
+      "",
+      buildCronGuidance(ctx, render),
+    ].join("\n");
+  }
+
+  override get definition() {
+    const base = super.definition;
+    if (!this.promptContextStore) return base;
+    const snap = this.promptContextStore.get();
+    return {
+      ...base,
+      input_schema: {
+        ...this.inputSchema,
+        properties: {
+          ...this.inputSchema.properties,
+          delivery: dynamicDeliverySchema(snap),
+        },
+      },
+    };
+  }
+
   readonly inputSchema = {
     type: "object" as const,
     properties: {
@@ -416,12 +487,14 @@ export class ListDeliveryKindsTool extends BaseTool<ListKindsInput> {
   readonly name = "list_delivery_kinds";
   readonly description = [
     "List the delivery handler kinds the gateway can route a cron job's output to.",
-    "Returns the built-ins (silent, dashboard, discord) plus anything plugins have",
-    "registered (slack, webhook, …). Call this before creating a cron job whose",
-    "delivery is anything other than silent/dashboard, so the kind you pass actually",
-    "matches a registered handler. If the user asks for, say, slack and 'slack' is",
-    "not in the list, the slack plugin is not loaded — tell them rather than fail",
-    "silently at fire time.",
+    "Returns the built-ins (silent, dashboard) plus anything plugins have registered.",
+    "Each entry includes a description and (where the plugin supplied one) an",
+    "extrasSchema sketching the additional fields the handler expects on `delivery`.",
+    "Call this before creating a cron job whose delivery is anything other than",
+    "silent/dashboard, so the kind you pass actually matches a registered handler.",
+    "If the user asks for a destination whose kind isn't in the list, the",
+    "corresponding plugin isn't loaded — tell them rather than fail silently at",
+    "fire time.",
   ].join("\n");
   readonly inputSchema = {
     type: "object" as const,

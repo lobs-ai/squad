@@ -6,6 +6,7 @@ import {
   BUILTIN_GROUPS,
   ToolGroupRegistry,
   DescribeToolGroupTool,
+  PromptContextStore,
   registerTaskTools,
   registerAskUserTool,
   registerSpawnSubagentTool,
@@ -16,6 +17,12 @@ import {
   registerSquadDoctorTool,
   registerPluginManagementTools,
   registerEnvTools,
+} from "@squad/tools";
+import type {
+  ChannelInfo,
+  PromptContextDeliveryKind,
+  PluginInfo,
+  PromptFragment,
 } from "@squad/tools";
 import { JsonConfigBackend } from "./config-backend.js";
 import { RestartManager } from "./restart/manager.js";
@@ -368,6 +375,17 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     config.policy.approvals.timeout_seconds,
   );
   const toolRegistry = opts.toolRegistry ?? new ToolRegistry().registerAll([...BUILTIN_TOOLS]);
+
+  // ── Prompt context store ──────────────────────────────────────────────
+  // Live snapshot of "what's loaded" (channels, delivery handlers, plugins,
+  // skills, toolsets, plugin-supplied fragments). Tools render their
+  // descriptions against this; the runner threads per-turn render context
+  // through PromptContextStore.runWithRender. Mutated below as plugins
+  // load, channels connect, and delivery handlers register — every mutation
+  // bumps `version` so cached tool definitions get rebuilt.
+  const promptContextStore = new PromptContextStore();
+  toolRegistry.setPromptContextStore(promptContextStore);
+
   const subagentRegistry = new SubagentRegistry();
   const subagentDefStore = new SubagentDefStore(db);
   // Hydrate user-created subagents from sqlite. Plugin-registered subagents
@@ -781,8 +799,45 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   const toolsetsList: ToolsetDescriptor[] = [];
 
   const channels = new ChannelRegistry({
-    onChannelChanged: (rec) => broadcast.publish("channels.changed", { channel: rec }),
+    onChannelChanged: (rec) => {
+      broadcast.publish("channels.changed", { channel: rec });
+      refreshPromptContextChannels();
+    },
   });
+
+  // ── PromptContext mutators ────────────────────────────────────────────
+  // Push the current state of channels / delivery handlers / plugins /
+  // skills / toolsets into the live PromptContextStore. Each call bumps
+  // the store's version, which makes tools re-render their descriptions
+  // on the next definition read — no restart required.
+  const refreshPromptContextChannels = () => {
+    const list: ChannelInfo[] = channels.list().map((c) => ({
+      id: c.id,
+      kind: c.kind,
+      label: c.label,
+      connected: c.connected,
+      capabilities: c.capabilities,
+    }));
+    promptContextStore.setChannels(list);
+  };
+  const refreshPromptContextDelivery = () => {
+    const kinds: PromptContextDeliveryKind[] = deliveryRegistry.list().map((k) => ({
+      kind: k.kind,
+      builtIn: k.builtIn,
+      ...(k.description !== undefined ? { description: k.description } : {}),
+    }));
+    promptContextStore.setDeliveryKinds(kinds);
+  };
+  const refreshPromptContextPlugins = () => {
+    const list: PluginInfo[] = plugins.records().map((r) => ({
+      id: r.id,
+      name: r.name,
+      version: r.version,
+      kinds: r.kinds,
+      enabled: r.enabled,
+    }));
+    promptContextStore.setPlugins(list);
+  };
   const approvals = new ApprovalStore({
     onPending: (a) => {
       broadcast.publish(`approvals.pending/${a.sessionId}`, { approval: a });
@@ -804,9 +859,14 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     { dataDir: config.server.data_dir },
   );
   const deliveryRegistry = new DeliveryRegistry(broadcast, logger);
+  deliveryRegistry.onChange = () => refreshPromptContextDelivery();
   const commandRegistry = new CommandRegistry();
   commandRegistry.registerBuiltins();
 
+  // ── Plugin-supplied prompt fragments ─────────────────────────────────
+  // Tracked per-plugin so unloads can drop them in O(1). Each registration
+  // adds a `pluginId` to the fragment record so the store's
+  // removeFragmentsForPlugin works.
   const pluginRoutes = new PluginRouteRegistry(logger);
   const plugins = new PluginHost({
     toolRegistry,
@@ -821,13 +881,28 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     channels: channelHandles,
     commands: commandsList,
     toolsets: toolsetsList,
-    registerDelivery: (kind, handler) => {
-      deliveryRegistry.register(kind, async (ctx) => handler(ctx));
+    registerDelivery: (kind, handler, meta) => {
+      deliveryRegistry.register(kind, async (ctx) => handler(ctx), meta);
+    },
+    registerPromptFragment: (pluginId, fragment) => {
+      const next: PromptFragment = {
+        slot: fragment.slot,
+        content: fragment.content,
+        pluginId,
+        ...(fragment.when ? { when: fragment.when } : {}),
+      };
+      promptContextStore.addFragments([next]);
+    },
+    unregisterPromptFragmentsForPlugin: (pluginId) => {
+      promptContextStore.removeFragmentsForPlugin(pluginId);
     },
     registerHttpRoute: (method, path, handler) => {
       pluginRoutes.register(method, path, handler);
     },
-    onPluginChanged: (rec) => broadcast.publish("plugins.changed", { plugin: rec }),
+    onPluginChanged: (rec) => {
+      broadcast.publish("plugins.changed", { plugin: rec });
+      refreshPromptContextPlugins();
+    },
   });
 
   // Plugin / MCP load failures are surfaced to the doctor so the agent can
@@ -853,6 +928,24 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   for (const ch of channelHandles) channels.add(ch);
   for (const r of routinesList) routineStore.adoptFromPlugin(r);
   for (const cmd of commandsList) commandRegistry.register(cmd);
+
+  // Seed the prompt-context snapshot with the post-boot state. Each setter
+  // mutates the store and notifies listeners (so any prerendered tool
+  // descriptions invalidate). Order matters: channels first so the
+  // delivery refresh sees them.
+  refreshPromptContextChannels();
+  refreshPromptContextDelivery();
+  refreshPromptContextPlugins();
+  promptContextStore.setSkills(
+    skillsList.map((s) => ({
+      name: s.name,
+      ...(s.description !== undefined ? { description: s.description } : {}),
+    })),
+  );
+  promptContextStore.setToolsets(
+    toolsetsList.map((t) => ({ name: t.name, description: t.description })),
+  );
+
   for (const ts of toolsetsList) {
     try {
       toolsetRegistry.register(ts);
@@ -1179,6 +1272,23 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     ...(configBackend ? { configBackend } : {}),
     ...(opts.configPath ? { configPath: opts.configPath } : {}),
     liveConfigSnapshot: () => liveConfig.current as unknown as Record<string, unknown>,
+    promptContextStore,
+    renderContextFor: (sessionId: string) => {
+      const binding = channels.bindingForSession(sessionId);
+      if (!binding) {
+        const sess = sessions.tryGet(sessionId);
+        if (sess?.parentSessionId) return { surface: "subagent" };
+        return { surface: "dashboard" };
+      }
+      const channelRecord = channels.recordFor(binding.channelId);
+      if (!channelRecord) return { surface: "dashboard" };
+      return {
+        surface: "channel",
+        channelKind: channelRecord.kind,
+        channelId: channelRecord.id,
+        ...(channelRecord.capabilities ? { capabilities: channelRecord.capabilities } : {}),
+      };
+    },
     routineRunner: async (record) => {
       logger.info({ routineId: record.id }, "routine run_now");
       return cronRunner(record);

@@ -1,6 +1,12 @@
 import { runAgent, Session, compactMessages } from "@squad/runner";
 import type { AgentSpec, AgentResult } from "@squad/runner";
-import { ToolRegistry, type ToolGroupRegistry, formatGroupIndexForPrompt } from "@squad/tools";
+import {
+  ToolRegistry,
+  type ToolGroupRegistry,
+  type PromptContextStore,
+  type RenderContext,
+  formatGroupIndexForPrompt,
+} from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
 import type { ContentBlock, MessageRecord } from "@squad/protocol";
 import type { SessionStore } from "./db/sessions.js";
@@ -111,6 +117,20 @@ export interface RunDeps {
    * am I running" briefing for the agent. Tests can omit.
    */
   runtimeEnvSection?: string;
+  /**
+   * Live PromptContext store. When set, runs.ts wraps the runAgent call in
+   * `store.runWithRender(render, …)` so tool descriptions render against
+   * the per-turn RenderContext (channel kind, surface, capabilities). Tests
+   * can omit; tools then fall back to their static descriptions.
+   */
+  promptContextStore?: PromptContextStore;
+  /**
+   * Map a sessionId to a RenderContext. Wired by the gateway from the
+   * channel registry — when the session is bound to a channel, returns
+   * `{ surface: "channel", channelKind, … }`; otherwise dashboard / cli /
+   * subagent / cron-isolated as appropriate.
+   */
+  renderContextFor?: (sessionId: string) => RenderContext;
 }
 
 /**
@@ -291,6 +311,7 @@ export async function runChatTurn(
       });
     }
 
+    const startupWarnings = deps.promptContextStore?.get().startupWarnings;
     const systemPrompt =
       options.systemPrompt ??
       buildSquadSystemPrompt({
@@ -301,6 +322,7 @@ export async function runChatTurn(
         ...(toolGroupsIndex ? { toolGroupsIndex } : {}),
         ...(contextFilesSection ? { contextFilesSection } : {}),
         ...(deps.runtimeEnvSection ? { runtimeEnvSection: deps.runtimeEnvSection } : {}),
+        ...(startupWarnings && startupWarnings.length > 0 ? { startupWarnings } : {}),
       });
 
     // toolUseId → tool_calls row id, so tool_result can find the row begin()
@@ -371,7 +393,12 @@ export async function runChatTurn(
       },
     };
 
-    result = await runAgent(spec);
+    if (deps.promptContextStore && deps.renderContextFor) {
+      const render = deps.renderContextFor(options.sessionId);
+      result = await deps.promptContextStore.runWithRender(render, () => runAgent(spec));
+    } else {
+      result = await runAgent(spec);
+    }
   } catch (err) {
     // Persist whatever made it onto Session._ref() before the throw so the
     // dashboard's transcript reflects the partial turn instead of going

@@ -1,6 +1,13 @@
 import { BaseTool, type ToolContext } from "../base-tool.js";
 import type { ToolExecutorResult } from "../types.js";
+import type {
+  PromptContextSnapshot,
+  RenderContext,
+} from "../prompt-context.js";
 import type { SubagentBackend } from "./backend.js";
+
+/** Fragment slot: plugin-registered alternative subagent runtimes. */
+export const SUBAGENT_RUNTIME_SLOT = "subagent.runtime-availability";
 
 interface SpawnSubagentInput extends Record<string, unknown> {
   /** Registered subagent name. Omit for an ad-hoc spawn. */
@@ -47,6 +54,28 @@ export class SpawnSubagentTool extends BaseTool<SpawnSubagentInput> {
     "Subagents share the parent's task list. Put enough detail in the prompt",
     "(and any related task row) for the subagent to pick the work up cold.",
   ].join("\n");
+
+  describe(ctx: PromptContextSnapshot, render: RenderContext): string {
+    const frags = ctx.fragments
+      .filter((f) => f.slot === SUBAGENT_RUNTIME_SLOT)
+      .filter((f) => {
+        if (!f.when) return true;
+        try {
+          return f.when(render, ctx);
+        } catch {
+          return false;
+        }
+      })
+      .map((f) => f.content);
+    if (frags.length === 0) return this.description;
+    return [
+      this.description,
+      "",
+      "Alternative subagent runtimes (set `runtime` on the spawn — see plugin docs):",
+      ...frags.map((f) => "  - " + f),
+    ].join("\n");
+  }
+
   readonly inputSchema = {
     type: "object" as const,
     properties: {

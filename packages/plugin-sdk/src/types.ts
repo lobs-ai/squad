@@ -1,4 +1,9 @@
-import type { BaseTool, ToolGroup } from "@squad/tools";
+import type {
+  BaseTool,
+  ToolGroup,
+  PromptContextSnapshot,
+  RenderContext,
+} from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
 import type { PluginUiContribution, SubagentDefinition } from "@squad/protocol";
 import type { ZodTypeAny } from "zod";
@@ -77,18 +82,17 @@ export interface RoutineDescriptor {
     timeoutSec?: number;
   };
   /**
-   * Where to send the routine's output. Built-in kinds (`silent`,
-   * `dashboard`, `discord`) are typed precisely; arbitrary `{ kind, ... }`
-   * objects are accepted so plugin-registered handlers (slack, webhook,
-   * email, …) can be targeted without changing the protocol. The string
-   * shorthand `"silent"` / `"dashboard"` is also accepted.
+   * Where to send the routine's output. Built-in kinds are `silent` and
+   * `dashboard`; arbitrary `{ kind, ... }` objects are accepted so plugin-
+   * registered handlers (discord, slack, webhook, email, …) can be targeted
+   * without changing the protocol. The string shorthand `"silent"` /
+   * `"dashboard"` is also accepted.
    */
   delivery?:
     | "silent"
     | "dashboard"
     | { kind: "silent" }
     | { kind: "dashboard" }
-    | { kind: "discord"; channelId: string; guildId?: string }
     | { kind: string; [extra: string]: unknown };
 }
 
@@ -212,8 +216,8 @@ export interface ToolsetDescriptor {
  * Delivery handler registered by a channel plugin (or any extension). The
  * gateway routes routine fires whose `delivery.kind` matches `kind` to this
  * handler. Built-in `silent` and `dashboard` kinds are handled by the
- * gateway itself; plugins typically register `discord`, `slack`, or future
- * webhook variants.
+ * gateway itself; channel plugins register their own kinds (e.g. `discord`,
+ * `slack`) along with optional metadata describing the extras schema.
  */
 export interface DeliveryHandlerInput {
   routineId: string;
@@ -229,6 +233,41 @@ export interface DeliveryHandlerInput {
 export type PluginDeliveryHandler = (
   ctx: DeliveryHandlerInput,
 ) => Promise<{ ok: boolean; error?: string }>;
+
+/**
+ * Predicate run at render time to gate a fragment on the per-turn render
+ * context. Fragments without a predicate are always active.
+ */
+export type PluginPromptFragmentPredicate = (
+  render: RenderContext,
+  ctx: PromptContextSnapshot,
+) => boolean;
+
+/**
+ * Conditional prompt extension a plugin contributes via
+ * `api.promptFragments.register`. The `slot` is a well-known string the
+ * relevant tool (`cron`, `ask_user`, `web_fetch`, …) renders; the `content`
+ * is plain text inlined into that slot. Use `when` to gate the fragment on
+ * the current render context (channel, surface, capabilities) so e.g.
+ * Discord-only hints never appear on dashboard or CLI turns.
+ */
+export interface PluginPromptFragment {
+  slot: string;
+  content: string;
+  when?: PluginPromptFragmentPredicate;
+}
+
+/**
+ * Optional metadata supplied to `api.delivery.register` so that the agent
+ * can discover the handler via `list_delivery_kinds`. `description` is a
+ * one-liner the LLM sees; `extrasSchema` is a JSON-Schema-shaped sketch of
+ * the additional fields the handler expects on the routine's `delivery`
+ * object beyond `kind`. Both are optional.
+ */
+export interface PluginDeliveryMeta {
+  description?: string;
+  extrasSchema?: Record<string, unknown>;
+}
 
 /**
  * HTTP route registration for plugins. The handler runs against the same
@@ -326,10 +365,30 @@ export interface GatewayAPI {
   toolsets: { register(def: ToolsetDescriptor): void };
   /**
    * Routine delivery fan-out. Channels register a handler for the kind
-   * they own (`discord`, `slack`, …). The built-in `silent` and `dashboard`
-   * kinds are handled by the gateway and cannot be overridden.
+   * they own (e.g. `discord`, `slack`). The built-in `silent` and
+   * `dashboard` kinds are handled by the gateway and cannot be overridden.
+   * Pass optional metadata so `list_delivery_kinds` can describe the
+   * handler to the agent.
    */
-  delivery: { register(kind: string, handler: PluginDeliveryHandler): void };
+  delivery: {
+    register(
+      kind: string,
+      handler: PluginDeliveryHandler,
+      meta?: PluginDeliveryMeta,
+    ): void;
+  };
+  /**
+   * Conditional prompt fragments contributed by the plugin. Each fragment
+   * targets a named slot (e.g. `cron.delivery-handlers`,
+   * `ask_user.channel-capabilities`); the tool that owns the slot inlines
+   * the fragment into its description. The optional `when` predicate gates
+   * the fragment on the per-turn render context, so e.g. a Discord-specific
+   * hint never appears on dashboard or CLI surfaces. Fragments are tied to
+   * the registering plugin and removed when the plugin is unloaded.
+   */
+  promptFragments: {
+    register(fragment: PluginPromptFragment): void;
+  };
   /**
    * HTTP routes contributed by the plugin. The gateway mounts each route on
    * its primary HTTP listener so plugins can implement OAuth callbacks,

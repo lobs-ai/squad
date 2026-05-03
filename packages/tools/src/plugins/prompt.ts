@@ -5,8 +5,9 @@
  */
 export const PLUGIN_MANAGEMENT_GUIDANCE = [
   "Plugin management — install, configure, and remove first-party plugins",
-  "(Discord, Google Drive, Gmail, …) on this gateway. Use these tools",
-  "whenever the user asks to add a new integration or fix a broken one.",
+  "on this gateway. Use these tools whenever the user asks to add a new",
+  "integration or fix a broken one. Call `plugin_list` to see what's in the",
+  "catalog if you don't know which id to use.",
   "",
   "**Hard rule: never claim a state change before the tool returns.** Do not",
   "say \"stored\", \"installed\", \"saved\", or \"done\" until the corresponding",

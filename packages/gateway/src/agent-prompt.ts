@@ -333,6 +333,13 @@ export interface BuildSquadPromptInput {
    * without asking the user.
    */
   runtimeEnvSection?: string;
+  /**
+   * Plugin- or runtime-supplied warnings the agent must surface before
+   * acting (e.g. "Discord bot lacks Send permission in guild Foo"). When
+   * present, rendered as a block near the top of the system prompt so the
+   * agent can pre-empt the failure. Empty/undefined → section skipped.
+   */
+  startupWarnings?: string[];
 }
 
 /**
@@ -356,6 +363,7 @@ export function buildSquadSystemPrompt(input: BuildSquadPromptInput): string {
     toolGroupsIndex,
     contextFilesSection,
     runtimeEnvSection,
+    startupWarnings,
   } = input;
   const sections: string[] = [];
 
@@ -411,6 +419,12 @@ machine, use \`find_files\` for \`docs/agent/INDEX.md\`.`);
 
   if (runtimeEnvSection && runtimeEnvSection.trim().length > 0) {
     sections.push(runtimeEnvSection);
+  }
+
+  if (startupWarnings && startupWarnings.length > 0) {
+    const warnLines = ["## Startup warnings", ""];
+    for (const w of startupWarnings) warnLines.push(`- ${w}`);
+    sections.push(warnLines.join("\n"));
   }
 
   if (toolGroupsIndex) sections.push(toolGroupsIndex);

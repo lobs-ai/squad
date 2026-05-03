@@ -25,8 +25,8 @@ export { PLUGIN_MANAGEMENT_GUIDANCE } from "./prompt.js";
 /**
  * Default tool group — every session can install/uninstall/configure
  * plugins. Plugin management isn't lazy because the user is just as likely
- * to ask in a normal session ("hey set up Discord for me") as in a
- * dedicated setup chat.
+ * to ask in a normal session ("hey set up <integration>") as in a dedicated
+ * setup chat.
  */
 export const pluginManagementGroup: ToolGroup = {
   name: "plugin-management",

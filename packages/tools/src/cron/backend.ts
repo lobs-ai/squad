@@ -39,17 +39,14 @@ export interface ExecutionInput {
 }
 
 /**
- * Where a cron job's output should be sent. Built-in kinds are `silent`,
- * `dashboard`, and `discord`; any other string targets a plugin-registered
- * handler (e.g. `"slack"`). Plugin handlers are responsible for validating
- * their own extra fields (passed through verbatim via `extras`).
+ * Where a cron job's output should be sent. Built-in kinds are `silent` and
+ * `dashboard`; any other string targets a plugin-registered handler (e.g.
+ * `"slack"`, or `"discord"` from the channel-discord plugin). Plugin
+ * handlers validate their own extra fields, passed through verbatim via
+ * `extras`.
  */
 export interface DeliveryInput {
   kind: string;
-  /** Required when kind === "discord". */
-  channelId?: string;
-  /** Optional discord guild id. */
-  guildId?: string;
   /** Arbitrary extra fields forwarded to plugin-registered handlers. */
   extras?: Record<string, unknown>;
 }
@@ -85,7 +82,7 @@ export interface DeliveryKindInfo {
   kind: string;
   /** True for kinds the gateway always provides (silent, dashboard). */
   builtIn: boolean;
-  /** Optional human-readable description ("posts to a Discord channel"). */
+  /** Optional human-readable description ("posts to a channel"). */
   description?: string;
   /**
    * Optional JSON-Schema-shaped sketch of additional fields the handler

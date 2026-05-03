@@ -1,7 +1,11 @@
 import { BaseTool, type ToolContext } from "../base-tool.js";
 import type { ToolExecutorResult } from "../types.js";
+import type {
+  PromptContextSnapshot,
+  RenderContext,
+} from "../prompt-context.js";
 import type { AskInput, QuestionBackend } from "./backend.js";
-import { ASK_GUIDANCE } from "./prompt.js";
+import { ASK_GUIDANCE, buildAskGuidance } from "./prompt.js";
 
 function sessionIdFrom(ctx: ToolContext): string {
   const sid = (ctx.meta?.sessionId as string | undefined) ?? undefined;
@@ -24,10 +28,21 @@ export class AskUserTool extends BaseTool<AskUserInput> {
   readonly description = [
     "Ask the user 1–4 structured multiple-choice questions. Returns once the",
     "user answers, cancels, or the question times out. Each channel renders",
-    "questions natively (Discord buttons, dashboard cards, CLI select).",
+    "questions natively (channel-specific buttons, dashboard cards, CLI select).",
     "",
     ASK_GUIDANCE,
   ].join("\n");
+
+  describe(ctx: PromptContextSnapshot, render: RenderContext): string {
+    return [
+      "Ask the user 1–4 structured multiple-choice questions. Returns once the",
+      "user answers, cancels, or the question times out. Each channel renders",
+      "questions natively (channel-specific buttons, dashboard cards, CLI select).",
+      "",
+      buildAskGuidance(ctx, render),
+    ].join("\n");
+  }
+
   readonly inputSchema = {
     type: "object" as const,
     properties: {

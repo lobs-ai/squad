@@ -6,6 +6,7 @@ import type {
   PluginDescriptor,
   PluginManifest,
   PluginPermission,
+  PluginPromptFragment,
   RoutineDescriptor,
   SkillDescriptor,
   ApprovalPolicy,
@@ -13,6 +14,7 @@ import type {
   SlashCommandDescriptor,
   ToolsetDescriptor,
   PluginDeliveryHandler,
+  PluginDeliveryMeta,
   PluginHttpHandler,
   HttpMethod,
 } from "@squad/plugin-sdk";
@@ -68,7 +70,11 @@ export interface PluginHostDeps {
    * Delivery handlers, keyed by `delivery.kind`. The gateway forwards this
    * to its DeliveryRegistry on register.
    */
-  registerDelivery: (kind: string, handler: PluginDeliveryHandler) => void;
+  registerDelivery: (
+    kind: string,
+    handler: PluginDeliveryHandler,
+    meta?: PluginDeliveryMeta,
+  ) => void;
   /**
    * Optional HTTP route registry. The gateway hands each plugin-registered
    * route to its server's request dispatcher; absent in tests / ephemeral
@@ -79,6 +85,20 @@ export interface PluginHostDeps {
     path: string,
     handler: PluginHttpHandler,
   ) => void;
+  /**
+   * Plugin-contributed prompt fragments. Each registration is keyed by the
+   * registering plugin id so the gateway can drop them when the plugin is
+   * unloaded.
+   */
+  registerPromptFragment?: (
+    pluginId: string,
+    fragment: PluginPromptFragment,
+  ) => void;
+  /**
+   * Drop every fragment owned by a plugin id. Called by `unload()` so a
+   * removed plugin's hints stop appearing in tool descriptions.
+   */
+  unregisterPromptFragmentsForPlugin?: (pluginId: string) => void;
   /**
    * Optional notifier called whenever a plugin's record changes (loaded,
    * enabled/disabled, configured, reloaded). The gateway wires this to
@@ -227,7 +247,12 @@ export class PluginHost {
 
     // ── register(api) ─────────────────────────────────────────────────────
     const uiContributions: PluginUiContribution[] = [];
-    const api = this.apiFor(effectiveConfig, uiContributions, manifest?.permissions);
+    const api = this.apiFor(
+      effectiveConfig,
+      uiContributions,
+      manifest?.permissions,
+      descriptor.id,
+    );
     let cleanup: void | (() => void | Promise<void>);
     try {
       cleanup = await descriptor.register(api);
@@ -364,6 +389,7 @@ export class PluginHost {
         this.deps.logger.error({ err, id }, "plugin cleanup threw");
       }
     }
+    this.deps.unregisterPromptFragmentsForPlugin?.(id);
     this.loaded.delete(id);
     this.deps.logger.info({ id, source: entry.source }, "plugin unloaded");
   }
@@ -460,6 +486,7 @@ export class PluginHost {
     config: Record<string, unknown>,
     uiBuf: PluginUiContribution[],
     permissions?: PluginPermission[],
+    pluginId?: string,
   ): GatewayAPI {
     const allow = (ns: PluginPermission): boolean => {
       // No declared permissions → unrestricted access (back-compat).
@@ -539,9 +566,20 @@ export class PluginHost {
         },
       },
       delivery: {
-        register: (kind: string, handler: PluginDeliveryHandler) => {
+        register: (
+          kind: string,
+          handler: PluginDeliveryHandler,
+          meta?: PluginDeliveryMeta,
+        ) => {
           if (!allow("delivery")) denied("delivery");
-          this.deps.registerDelivery(kind, handler);
+          this.deps.registerDelivery(kind, handler, meta);
+        },
+      },
+      promptFragments: {
+        register: (fragment: PluginPromptFragment) => {
+          // No declared permission gate — fragments are pure metadata.
+          if (!this.deps.registerPromptFragment) return;
+          this.deps.registerPromptFragment(pluginId ?? "unknown", fragment);
         },
       },
       http: {

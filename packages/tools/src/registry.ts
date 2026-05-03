@@ -23,6 +23,7 @@
 
 import type { ToolDefinition, ToolEntry } from "./types.js";
 import type { BaseTool } from "./base-tool.js";
+import type { PromptContextStore } from "./prompt-context.js";
 
 function isBaseTool(t: BaseTool | ToolEntry): t is BaseTool {
   return typeof (t as BaseTool).run === "function";
@@ -30,6 +31,9 @@ function isBaseTool(t: BaseTool | ToolEntry): t is BaseTool {
 
 export class ToolRegistry {
   private readonly _tools = new Map<string, ToolEntry>();
+  /** Tracks every BaseTool instance so we can hand them a PromptContextStore. */
+  private readonly _baseTools: Set<BaseTool> = new Set();
+  private _promptContextStore: PromptContextStore | null = null;
 
   /**
    * Register a single tool.
@@ -37,9 +41,25 @@ export class ToolRegistry {
    * Returns `this` for chaining.
    */
   register(tool: BaseTool | ToolEntry): this {
-    const entry = isBaseTool(tool) ? tool.toEntry() : tool;
-    this._tools.set(entry.definition.name, entry);
+    if (isBaseTool(tool)) {
+      this._baseTools.add(tool);
+      if (this._promptContextStore) tool.setPromptContextStore(this._promptContextStore);
+      const entry = tool.toEntry();
+      this._tools.set(entry.definition.name, entry);
+    } else {
+      this._tools.set(tool.definition.name, tool);
+    }
     return this;
+  }
+
+  /**
+   * Attach a {@link PromptContextStore} so every BaseTool registered here can
+   * render dynamic descriptions. Tools that registered before this call are
+   * back-filled. Idempotent.
+   */
+  setPromptContextStore(store: PromptContextStore): void {
+    this._promptContextStore = store;
+    for (const tool of this._baseTools) tool.setPromptContextStore(store);
   }
 
   /**

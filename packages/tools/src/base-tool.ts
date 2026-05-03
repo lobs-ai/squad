@@ -9,6 +9,13 @@
  * `inputSchema`, and `run()`. The `definition` and `toEntry()` members
  * are derived automatically.
  *
+ * Tools can opt into dynamic descriptions by implementing
+ * {@link BaseTool.describe} and assigning a {@link PromptContextStore} via
+ * {@link BaseTool.setPromptContextStore}. When both are set, `definition`
+ * renders fresh on every read — the gateway's per-turn RenderContext flows
+ * through AsyncLocalStorage so the description reflects the current channel
+ * and which plugins are loaded.
+ *
  * @example
  * ```ts
  * class MyTool extends BaseTool {
@@ -28,7 +35,13 @@
  * ```
  */
 
-import type { ToolDefinition, ToolExecutorResult } from "./types.js";
+import type { ToolDefinition, ToolEntry, ToolExecutorResult } from "./types.js";
+import type {
+  PromptContextSnapshot,
+  PromptContextStore,
+  RenderContext,
+} from "./prompt-context.js";
+import { currentRender } from "./prompt-context.js";
 
 /** Context passed to every tool invocation. */
 export interface ToolContext {
@@ -82,7 +95,11 @@ export abstract class BaseTool<
 > {
   /** Tool name — must be unique within a registry. */
   abstract readonly name: string;
-  /** Human-readable description shown to the LLM. */
+  /**
+   * Human-readable description shown to the LLM. Used as the static fallback
+   * when {@link describe} is not implemented. Subclasses with dynamic prompts
+   * usually set this to a short summary and override `describe`.
+   */
   abstract readonly description: string;
   /** JSON Schema for the tool's input parameters. */
   abstract readonly inputSchema: ToolInputSchema;
@@ -95,27 +112,71 @@ export abstract class BaseTool<
    */
   readonly tags?: readonly string[];
 
+  /**
+   * Live PromptContext store. Set by callers (via constructor injection or
+   * {@link setPromptContextStore}) to enable dynamic descriptions. When unset,
+   * `definition` falls back to the static `description` field.
+   */
+  protected promptContextStore?: PromptContextStore;
+
+  /**
+   * Optional dynamic description. Implemented by subclasses that vary their
+   * prompt with `PromptContext` (loaded plugins) or `RenderContext` (where
+   * this turn is rendering). Returning `null` falls back to `description`.
+   */
+  describe?(ctx: PromptContextSnapshot, render: RenderContext): string | null;
+
   /** Execute the tool. Errors should be thrown — the registry catches them. */
   abstract run(input: TInput, context: ToolContext): Promise<ToolExecutorResult>;
+
+  /**
+   * Inject the live prompt-context store. The gateway calls this for every
+   * tool registered into its ToolRegistry after building the store.
+   */
+  setPromptContextStore(store: PromptContextStore): void {
+    this.promptContextStore = store;
+  }
+
+  /**
+   * Render the description against the live PromptContext + per-turn
+   * RenderContext. Falls back to the static `description` when no store is
+   * attached or `describe` is not implemented or returns null.
+   */
+  protected renderDescription(): string {
+    if (this.describe && this.promptContextStore) {
+      const out = this.describe(this.promptContextStore.get(), currentRender());
+      if (out !== null) return out;
+    }
+    return this.description;
+  }
 
   /** Full `ToolDefinition` derived from name / description / inputSchema / tags. */
   get definition(): ToolDefinition {
     const def: ToolDefinition = {
       name: this.name,
-      description: this.description,
+      description: this.renderDescription(),
       input_schema: this.inputSchema,
     };
     if (this.tags) def.tags = this.tags;
     return def;
   }
 
-  /** Convert to a `ToolEntry` for use with `ToolRegistry` or legacy registries. */
-  toEntry() {
+  /**
+   * Convert to a `ToolEntry` for use with `ToolRegistry` or legacy registries.
+   *
+   * The `definition` slot is a getter so the registry sees a fresh
+   * description on every read — required for live re-rendering on plugin
+   * load/unload and per-turn RenderContext changes.
+   */
+  toEntry(): ToolEntry {
+    const self = this;
     return {
-      definition: this.definition,
+      get definition() {
+        return self.definition;
+      },
       executor: (params: Record<string, unknown>, cwd: string, meta?: Record<string, unknown>) => {
         const secrets = meta?.secrets as Record<string, string> | undefined;
-        return this.run(params as TInput, { cwd, meta, secrets });
+        return self.run(params as TInput, { cwd, meta, secrets });
       },
     };
   }

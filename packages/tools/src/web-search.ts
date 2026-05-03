@@ -47,11 +47,38 @@ export interface WebSearchToolOptions {
 
 // ── Class-based API ───────────────────────────────────────────────────────────
 
+/** Fragment slot: rate / quota notes from metered web_search backends. */
+export const WEB_SEARCH_RATE_SLOT = "web_search.rate-and-quota";
+
 export class WebSearchTool extends BaseTool {
   readonly name = "web_search";
   readonly description = webSearchToolDefinition.description;
   readonly inputSchema = webSearchToolDefinition.input_schema as import("./base-tool.js").ToolInputSchema;
   readonly tags = ["web", "search", "readonly"] as const;
+
+  describe(
+    ctx: import("./prompt-context.js").PromptContextSnapshot,
+    render: import("./prompt-context.js").RenderContext,
+  ): string {
+    const frags = ctx.fragments
+      .filter((f) => f.slot === WEB_SEARCH_RATE_SLOT)
+      .filter((f) => {
+        if (!f.when) return true;
+        try {
+          return f.when(render, ctx);
+        } catch {
+          return false;
+        }
+      })
+      .map((f) => f.content);
+    if (frags.length === 0) return webSearchToolDefinition.description;
+    return [
+      webSearchToolDefinition.description,
+      "",
+      "Backend cost / rate notes:",
+      ...frags.map((f) => "  - " + f),
+    ].join("\n");
+  }
 
   private readonly _browser: BrowserService;
 

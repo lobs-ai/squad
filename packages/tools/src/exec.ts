@@ -233,11 +233,38 @@ export interface ExecToolOptions {
   secrets?: Record<string, string>;
 }
 
+/** Fragment slot: env-var / cwd warnings contributed by plugins. */
+export const EXEC_ENV_WARNINGS_SLOT = "exec.environment-warnings";
+
 export class ExecTool extends BaseTool {
   readonly name = "exec";
   readonly tags = ["exec", "shell"] as const;
   readonly description = execToolDefinition.description;
   readonly inputSchema = execToolDefinition.input_schema as import("./base-tool.js").ToolInputSchema;
+
+  describe(
+    ctx: import("./prompt-context.js").PromptContextSnapshot,
+    render: import("./prompt-context.js").RenderContext,
+  ): string {
+    const frags = ctx.fragments
+      .filter((f) => f.slot === EXEC_ENV_WARNINGS_SLOT)
+      .filter((f) => {
+        if (!f.when) return true;
+        try {
+          return f.when(render, ctx);
+        } catch {
+          return false;
+        }
+      })
+      .map((f) => f.content);
+    if (frags.length === 0) return execToolDefinition.description;
+    return [
+      execToolDefinition.description,
+      "",
+      "Environment warnings (loaded plugins):",
+      ...frags.map((f) => "  - " + f),
+    ].join("\n");
+  }
 
   private readonly _staticSecrets: Record<string, string>;
 
