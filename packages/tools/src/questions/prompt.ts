@@ -2,25 +2,7 @@ import type {
   PromptContextSnapshot,
   RenderContext,
 } from "../prompt-context.js";
-
-export const ASK_SLOTS = {
-  /**
-   * Render-conditional. The bound channel teaches `ask_user` what its
-   * native rendering is (button caps, label limits, preview support).
-   */
-  CHANNEL_CAPABILITIES: "ask_user.channel-capabilities",
-  /**
-   * Render-conditional. The bound channel asserts "questions delivered here
-   * stay here" so the agent doesn't bounce them to the dashboard.
-   */
-  ESCALATION_TARGET: "ask_user.escalation-target",
-  /**
-   * Render-conditional. How `option.preview` renders in the bound channel
-   * (code-block highlighting? plain text? not at all?). Lets the agent
-   * pre-format previews for a channel that won't render markdown.
-   */
-  PREVIEW_RENDERING: "ask_user.preview-rendering",
-} as const;
+import { PROMPT_SLOTS, type PromptSlot } from "../prompt-slots.js";
 
 const STATIC = [
   "Use ask_user to clarify ambiguity, gather a preference, or offer a decision",
@@ -47,19 +29,19 @@ export function buildAskGuidance(
 ): string {
   const lines: string[] = [...STATIC];
 
-  const caps = filterFragments(ctx, ASK_SLOTS.CHANNEL_CAPABILITIES, render);
+  const caps = filterFragments(ctx, PROMPT_SLOTS.ASK_USER_CHANNEL_CAPABILITIES, render);
   if (caps.length > 0) {
     lines.push("", "Channel rendering (this turn):");
     for (const f of caps) lines.push("  - " + f);
   }
 
-  const esc = filterFragments(ctx, ASK_SLOTS.ESCALATION_TARGET, render);
+  const esc = filterFragments(ctx, PROMPT_SLOTS.ASK_USER_ESCALATION_TARGET, render);
   if (esc.length > 0) {
     lines.push("", "Where the question goes:");
     for (const f of esc) lines.push("  - " + f);
   }
 
-  const preview = filterFragments(ctx, ASK_SLOTS.PREVIEW_RENDERING, render);
+  const preview = filterFragments(ctx, PROMPT_SLOTS.ASK_USER_PREVIEW_RENDERING, render);
   if (preview.length > 0) {
     lines.push("", "option.preview rendering here:");
     for (const f of preview) lines.push("  - " + f);
@@ -70,7 +52,7 @@ export function buildAskGuidance(
 
 function filterFragments(
   ctx: PromptContextSnapshot,
-  slot: string,
+  slot: PromptSlot,
   render: RenderContext,
 ): string[] {
   return ctx.fragments

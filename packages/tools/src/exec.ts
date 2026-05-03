@@ -12,6 +12,7 @@ import { resolve } from "node:path";
 import type { ToolDefinition, ToolExecutorResult } from "./types.js";
 import { capOutput } from "./output-cap.js";
 import { BaseTool, type ToolContext } from "./base-tool.js";
+import { PROMPT_SLOTS } from "./prompt-slots.js";
 
 // ── Tool Definition ──────────────────────────────────────────────────────────
 
@@ -233,9 +234,6 @@ export interface ExecToolOptions {
   secrets?: Record<string, string>;
 }
 
-/** Fragment slot: env-var / cwd warnings contributed by plugins. */
-export const EXEC_ENV_WARNINGS_SLOT = "exec.environment-warnings";
-
 export class ExecTool extends BaseTool {
   readonly name = "exec";
   readonly tags = ["exec", "shell"] as const;
@@ -247,7 +245,7 @@ export class ExecTool extends BaseTool {
     render: import("./prompt-context.js").RenderContext,
   ): string {
     const frags = ctx.fragments
-      .filter((f) => f.slot === EXEC_ENV_WARNINGS_SLOT)
+      .filter((f) => f.slot === PROMPT_SLOTS.EXEC_ENVIRONMENT_WARNINGS)
       .filter((f) => {
         if (!f.when) return true;
         try {

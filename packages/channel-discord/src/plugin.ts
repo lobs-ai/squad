@@ -1,4 +1,4 @@
-import { definePlugin } from "@squad/plugin-sdk";
+import { definePlugin, PROMPT_SLOTS } from "@squad/plugin-sdk";
 import { CarbonDiscordBackend } from "./backend.js";
 import { DiscordChannel } from "./channel.js";
 import { discordConfigSchema } from "./config.js";
@@ -95,51 +95,43 @@ export default definePlugin({
       render.surface === "channel" && render.channelKind === "discord";
 
     api.promptFragments.register({
-      slot: "cron.delivery-handlers",
+      slot: PROMPT_SLOTS.CRON_DELIVERY_HANDLERS,
       content:
         'discord — post into a guild channel. Required: channelId (snowflake). ' +
         'Example: { kind: "discord", channelId: "1234567890123456" }',
     });
     api.promptFragments.register({
-      slot: "delivery.silent-gate-applicability",
+      slot: PROMPT_SLOTS.DELIVERY_SILENT_GATE,
       content: "discord delivery honors [SILENT] — first-line wake gate suppresses the post.",
     });
     api.promptFragments.register({
-      slot: "cron.delivery-default",
+      slot: PROMPT_SLOTS.CRON_DELIVERY_DEFAULT,
       content: "post the result back to this Discord channel unless told otherwise",
       when: (render) => isDiscordTurn(render),
     });
     api.promptFragments.register({
-      slot: "ask_user.channel-capabilities",
+      slot: PROMPT_SLOTS.ASK_USER_CHANNEL_CAPABILITIES,
       content:
         "Discord buttons cap at 4 options; option labels truncate at 80 chars. " +
         "preview text renders in a markdown code block — use ASCII layouts, not images.",
       when: (render) => isDiscordTurn(render),
     });
     api.promptFragments.register({
-      slot: "ask_user.escalation-target",
+      slot: PROMPT_SLOTS.ASK_USER_ESCALATION_TARGET,
       content:
         "ask_user delivered here renders inline in the same Discord thread. " +
         "Don't redirect to the dashboard — the user is reading Discord.",
       when: (render) => isDiscordTurn(render),
     });
     api.promptFragments.register({
-      slot: "ask_user.preview-rendering",
+      slot: PROMPT_SLOTS.ASK_USER_PREVIEW_RENDERING,
       content:
         "Discord renders option.preview as a fenced code block — works for diffs, " +
         "config snippets, ASCII tables. Avoid wide tables (>80 cols wrap badly).",
       when: (render) => isDiscordTurn(render),
     });
     api.promptFragments.register({
-      slot: "tasks.notification-side-effects",
-      content:
-        "Each create_task / update_task call updates a Discord embed in the bound channel. " +
-        "Batch task creation in one turn (multiple tool calls back-to-back) instead of " +
-        "spreading them across turns to avoid edit-storm noise.",
-      when: (render) => isDiscordTurn(render),
-    });
-    api.promptFragments.register({
-      slot: "exec.environment-warnings",
+      slot: PROMPT_SLOTS.EXEC_ENVIRONMENT_WARNINGS,
       content:
         "DISCORD_BOT_TOKEN is in process.env. Do not run `env` / `printenv` / `set` " +
         "and post the output to a channel — strip secrets first or scope the command.",

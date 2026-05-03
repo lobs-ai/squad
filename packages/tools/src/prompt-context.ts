@@ -14,6 +14,7 @@
  * read it without an explicit threading parameter.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { PromptSlot } from "./prompt-slots.js";
 
 // ── Channel + delivery + plugin types ────────────────────────────────────────
 
@@ -109,7 +110,7 @@ export type FragmentPredicate = (
  * fragment is always active.
  */
 export interface PromptFragment {
-  slot: string;
+  slot: PromptSlot;
   content: string;
   /** Plugin id that owns this fragment — used by removeFragmentsForPlugin. */
   pluginId?: string;
@@ -218,7 +219,7 @@ export class PromptContextStore {
    * against the current render context. Render context defaults to
    * AsyncLocalStorage's current value; pass explicitly for tests.
    */
-  fragmentsFor(slot: string, render: RenderContext = currentRender()): string[] {
+  fragmentsFor(slot: PromptSlot, render: RenderContext = currentRender()): string[] {
     return this.snapshot.fragments
       .filter((f) => f.slot === slot)
       .filter((f) => !f.when || safePredicate(f.when, render, this.snapshot))

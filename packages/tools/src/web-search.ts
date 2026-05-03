@@ -11,6 +11,7 @@
 import { BrowserService, browserService as defaultService } from "./browser-service.js";
 import type { ToolDefinition, ToolExecutorResult } from "./types.js";
 import { BaseTool, type ToolContext } from "./base-tool.js";
+import { PROMPT_SLOTS } from "./prompt-slots.js";
 
 // ── Tool Definition ───────────────────────────────────────────────────────────
 
@@ -47,9 +48,6 @@ export interface WebSearchToolOptions {
 
 // ── Class-based API ───────────────────────────────────────────────────────────
 
-/** Fragment slot: rate / quota notes from metered web_search backends. */
-export const WEB_SEARCH_RATE_SLOT = "web_search.rate-and-quota";
-
 export class WebSearchTool extends BaseTool {
   readonly name = "web_search";
   readonly description = webSearchToolDefinition.description;
@@ -61,7 +59,7 @@ export class WebSearchTool extends BaseTool {
     render: import("./prompt-context.js").RenderContext,
   ): string {
     const frags = ctx.fragments
-      .filter((f) => f.slot === WEB_SEARCH_RATE_SLOT)
+      .filter((f) => f.slot === PROMPT_SLOTS.WEB_SEARCH_RATE_AND_QUOTA)
       .filter((f) => {
         if (!f.when) return true;
         try {

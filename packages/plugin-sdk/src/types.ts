@@ -2,6 +2,7 @@ import type {
   BaseTool,
   ToolGroup,
   PromptContextSnapshot,
+  PromptSlot,
   RenderContext,
 } from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
@@ -252,7 +253,13 @@ export type PluginPromptFragmentPredicate = (
  * Discord-only hints never appear on dashboard or CLI turns.
  */
 export interface PluginPromptFragment {
-  slot: string;
+  /**
+   * Canonical slot id. Use the {@link PROMPT_SLOTS} constants (re-exported
+   * from `@squad/plugin-sdk`) instead of typing the string literally — typos
+   * become compile errors and IDE autocomplete surfaces every available
+   * slot with its doc comment.
+   */
+  slot: PromptSlot;
   content: string;
   when?: PluginPromptFragmentPredicate;
 }

@@ -1,39 +1,7 @@
 import { BaseTool, type ToolContext } from "../base-tool.js";
 import type { ToolExecutorResult } from "../types.js";
-import type {
-  PromptContextSnapshot,
-  RenderContext,
-} from "../prompt-context.js";
 import type { TaskBackend, TaskStatus } from "./backend.js";
 import { TASK_GUIDANCE } from "./prompt.js";
-
-/** Fragment slot: channels warn the agent about per-call notification cost. */
-export const TASKS_NOTIFICATION_SLOT = "tasks.notification-side-effects";
-
-function appendTaskFragments(
-  baseDescription: string,
-  ctx: PromptContextSnapshot,
-  render: RenderContext,
-): string {
-  const frags = ctx.fragments
-    .filter((f) => f.slot === TASKS_NOTIFICATION_SLOT)
-    .filter((f) => {
-      if (!f.when) return true;
-      try {
-        return f.when(render, ctx);
-      } catch {
-        return false;
-      }
-    })
-    .map((f) => f.content);
-  if (frags.length === 0) return baseDescription;
-  return [
-    baseDescription,
-    "",
-    "Notification side effects in this surface:",
-    ...frags.map((f) => "  - " + f),
-  ].join("\n");
-}
 
 function sessionIdFrom(ctx: ToolContext): string {
   const sid = (ctx.meta?.sessionId as string | undefined) ?? undefined;
@@ -65,10 +33,6 @@ export class CreateTaskTool extends BaseTool<CreateInput> {
     "",
     TASK_GUIDANCE,
   ].join("\n");
-
-  describe(ctx: PromptContextSnapshot, render: RenderContext): string {
-    return appendTaskFragments(this.description, ctx, render);
-  }
 
   readonly inputSchema = {
     type: "object" as const,
@@ -129,10 +93,6 @@ export class UpdateTaskTool extends BaseTool<UpdateInput> {
     "",
     TASK_GUIDANCE,
   ].join("\n");
-
-  describe(ctx: PromptContextSnapshot, render: RenderContext): string {
-    return appendTaskFragments(this.description, ctx, render);
-  }
 
   readonly inputSchema = {
     type: "object" as const,

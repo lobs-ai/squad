@@ -5,9 +5,7 @@ import type {
   RenderContext,
 } from "../prompt-context.js";
 import type { SubagentBackend } from "./backend.js";
-
-/** Fragment slot: plugin-registered alternative subagent runtimes. */
-export const SUBAGENT_RUNTIME_SLOT = "subagent.runtime-availability";
+import { PROMPT_SLOTS } from "../prompt-slots.js";
 
 interface SpawnSubagentInput extends Record<string, unknown> {
   /** Registered subagent name. Omit for an ad-hoc spawn. */
@@ -57,7 +55,7 @@ export class SpawnSubagentTool extends BaseTool<SpawnSubagentInput> {
 
   describe(ctx: PromptContextSnapshot, render: RenderContext): string {
     const frags = ctx.fragments
-      .filter((f) => f.slot === SUBAGENT_RUNTIME_SLOT)
+      .filter((f) => f.slot === PROMPT_SLOTS.SUBAGENT_RUNTIME_AVAILABILITY)
       .filter((f) => {
         if (!f.when) return true;
         try {

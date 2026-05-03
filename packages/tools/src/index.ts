@@ -2,6 +2,7 @@ export * from "./types.js";
 export * from "./base-tool.js";
 export * from "./registry.js";
 export * from "./prompt-context.js";
+export * from "./prompt-slots.js";
 export * from "./groups.js";
 export * from "./tasks/index.js";
 export * from "./questions/index.js";

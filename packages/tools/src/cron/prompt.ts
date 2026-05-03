@@ -3,31 +3,7 @@ import type {
   PromptContextStore,
   RenderContext,
 } from "../prompt-context.js";
-
-/**
- * Slot names this tool renders. Plugins register fragments under these keys
- * via `api.promptFragments.register({ slot, content, when? })`.
- */
-export const CRON_SLOTS = {
-  /**
-   * One line per registered delivery handler describing its required
-   * extras and a working example payload. Discord/Slack/webhook-style
-   * plugins each contribute their own.
-   */
-  DELIVERY_HANDLERS: "cron.delivery-handlers",
-  /**
-   * Render-context-conditional. Tells the agent which delivery target to
-   * default to when the user says "here" — typically populated by the
-   * channel that owns the current turn.
-   */
-  DELIVERY_DEFAULT: "cron.delivery-default",
-  /** Render-context-conditional. Suggested `tz:` value for cron schedules. */
-  TIMEZONE_DEFAULT: "cron.timezone-default",
-  /** Static. Costly skills register here so the agent picks reasonable cadences. */
-  SKILL_AVAILABILITY: "cron.payload-prompt.skill-availability",
-  /** Static. Each plugin asserts whether its handler honors `[SILENT]`. */
-  SILENT_GATE: "delivery.silent-gate-applicability",
-} as const;
+import { PROMPT_SLOTS, type PromptSlot } from "../prompt-slots.js";
 
 const STATIC_HEADER = [
   "Cron jobs let you schedule recurring or one-off work — agent prompts, scripts, or script-then-prompt chains.",
@@ -91,7 +67,7 @@ export function buildCronGuidance(
   lines.push("  - silent     → run logged, nothing sent anywhere.");
   lines.push("  - dashboard  → open the resulting session in the chat UI (default).");
 
-  const handlerFragments = filterFragments(ctx, CRON_SLOTS.DELIVERY_HANDLERS, render);
+  const handlerFragments = filterFragments(ctx, PROMPT_SLOTS.CRON_DELIVERY_HANDLERS, render);
   if (handlerFragments.length > 0) {
     for (const f of handlerFragments) {
       lines.push("  - " + f.replace(/\n/g, "\n    "));
@@ -103,7 +79,7 @@ export function buildCronGuidance(
     );
   }
 
-  const deliveryDefault = filterFragments(ctx, CRON_SLOTS.DELIVERY_DEFAULT, render);
+  const deliveryDefault = filterFragments(ctx, PROMPT_SLOTS.CRON_DELIVERY_DEFAULT, render);
   if (deliveryDefault.length > 0) {
     lines.push("");
     for (const f of deliveryDefault) lines.push("  Default: " + f);
@@ -117,21 +93,21 @@ export function buildCronGuidance(
   );
 
   // ── Timezone hint (render-conditional) ───────────────────────────────────
-  const tz = filterFragments(ctx, CRON_SLOTS.TIMEZONE_DEFAULT, render);
+  const tz = filterFragments(ctx, PROMPT_SLOTS.CRON_TIMEZONE_DEFAULT, render);
   if (tz.length > 0) {
     lines.push("", "Timezone:");
     for (const f of tz) lines.push("  " + f);
   }
 
   // ── Costly skills (static) ────────────────────────────────────────────────
-  const skills = filterFragments(ctx, CRON_SLOTS.SKILL_AVAILABILITY, render);
+  const skills = filterFragments(ctx, PROMPT_SLOTS.CRON_SKILL_AVAILABILITY, render);
   if (skills.length > 0) {
     lines.push("", "Skill scheduling notes:");
     for (const f of skills) lines.push("  - " + f);
   }
 
   // ── Silent gate applicability ────────────────────────────────────────────
-  const silent = filterFragments(ctx, CRON_SLOTS.SILENT_GATE, render);
+  const silent = filterFragments(ctx, PROMPT_SLOTS.DELIVERY_SILENT_GATE, render);
   if (silent.length > 0) {
     lines.push("", "[SILENT] gate behavior:");
     for (const f of silent) lines.push("  - " + f);
@@ -164,7 +140,7 @@ export function buildDeliverySchemaDescription(ctx: PromptContextSnapshot): stri
 
 function filterFragments(
   ctx: PromptContextSnapshot,
-  slot: string,
+  slot: PromptSlot,
   render: RenderContext,
 ): string[] {
   return ctx.fragments

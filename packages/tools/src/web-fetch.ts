@@ -17,9 +17,7 @@ import type {
   PromptContextSnapshot,
   RenderContext,
 } from "./prompt-context.js";
-
-/** Fragment slot: each plugin lists Google-style auth-walled domains and the right tool. */
-export const WEB_FETCH_AUTH_WALLED_SLOT = "web_fetch.auth-walled-domains";
+import { PROMPT_SLOTS } from "./prompt-slots.js";
 
 // ── Tool Definition ───────────────────────────────────────────────────────────
 
@@ -60,7 +58,7 @@ export class WebFetchTool extends BaseTool {
 
   describe(ctx: PromptContextSnapshot, render: RenderContext): string {
     const frags = ctx.fragments
-      .filter((f) => f.slot === WEB_FETCH_AUTH_WALLED_SLOT)
+      .filter((f) => f.slot === PROMPT_SLOTS.WEB_FETCH_AUTH_WALLED_DOMAINS)
       .filter((f) => !f.when || safeWhen(f.when, render, ctx))
       .map((f) => f.content);
     if (frags.length === 0) return webFetchToolDefinition.description;
