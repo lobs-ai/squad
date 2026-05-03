@@ -30,6 +30,17 @@ import {
   runWizard as runKeyWizard,
   testKey,
 } from "./commands/key.js";
+import {
+  listPlugins,
+  enablePlugin,
+  disablePlugin,
+  installPlugin,
+  uninstallPlugin,
+  describePlugin,
+  setupPlugin,
+} from "./commands/plugins.js";
+import { runTail } from "./commands/tail.js";
+import type { LogLevel } from "@squad/protocol";
 import { printCompactHeader, currentVersion } from "./ui/banner.js";
 import { C, color, fg } from "./ui/colors.js";
 import { roleColor } from "./ui/skin.js";
@@ -51,7 +62,8 @@ function helpText(): string {
     `    ${K("stop")}                        ${D("docker compose stop every registered squad")}`,
     `    ${K("restart")}                     ${D("full stop + start cycle for every registered squad")}`,
     `    ${K("status")}                      ${D("current squad's gateway liveness + session")}`,
-    `    ${K("logs")}    ${D("[-f]")}                 ${D("tail current squad's logs")}`,
+    `    ${K("logs")}    ${D("[-f]")}                 ${D("tail current squad's docker logs")}`,
+    `    ${K("tail")}    ${D("[-f] [--level X] [--source Y] [-n N] [--grep q]")}  ${D("live in-process gateway logs")}`,
     `    ${K("terminal")} ${D("[name] [-- cmd ...]")} ${D("interactive shell in the squad container")}`,
     `    ${K("update")}  ${D("[--check] [--force]")}  ${D("git pull squad source + rebuild + relink")}`,
     "",
@@ -83,6 +95,13 @@ function helpText(): string {
     `    ${K("pair browser")} ${D("<code>")}            ${D("approve a code shown in the dashboard's pair screen")}`,
     `    ${K("pair browser list")}             ${D("show pending/approved browser pairings")}`,
     `    ${K("pair browser cancel")} ${D("<code>")}     ${D("revoke a pairing (and its token)")}`,
+    "",
+    `  ${H("Plugins")} ${D("— preinstalled extensions you can install")}`,
+    `    ${K("plugins")} ${D("[ls]")}                  ${D("show preinstalled plugin catalog + on/off state")}`,
+    `    ${K("plugins describe")} ${D("<id>")}         ${D("show the configure form for a plugin")}`,
+    `    ${K("plugins setup")} ${D("<id>")}            ${D("open a chat where the agent walks you through setup")}`,
+    `    ${K("plugins install")} ${D("<id> [--yes]")}  ${D("prompt for required config + secrets, write config.json, load plugin")}`,
+    `    ${K("plugins uninstall")} ${D("<id>")}        ${D("remove from config + auth.tokens + secrets, unload")}`,
     "",
     `  ${H("SSH keys")} ${D("— docker/data/ssh/; agents git-push with these")}`,
     `    ${K("key wizard")}                  ${D("interactive generate + paste-to-GitHub")}`,
@@ -157,6 +176,29 @@ async function main(): Promise<void> {
     case "logs":
       await gatewayLogs(argv);
       return;
+    case "tail": {
+      const follow = hasFlag(argv, "-f") || hasFlag(argv, "--follow");
+      const levelRaw = popFlag(argv, "--level") ?? "debug";
+      const source = popFlag(argv, "--source");
+      const query = popFlag(argv, "--grep") ?? popFlag(argv, "-q");
+      const limitRaw = popFlag(argv, "-n") ?? popFlag(argv, "--limit") ?? "200";
+      const validLevels = ["trace", "debug", "info", "warn", "error", "fatal"];
+      if (!validLevels.includes(levelRaw)) {
+        throw new Error(`invalid --level: ${levelRaw} (one of ${validLevels.join(", ")})`);
+      }
+      const limit = Number(limitRaw);
+      if (!Number.isFinite(limit) || limit <= 0) {
+        throw new Error(`invalid -n: ${limitRaw}`);
+      }
+      await runTail({
+        follow,
+        level: levelRaw as LogLevel,
+        ...(source ? { source } : {}),
+        ...(query ? { query } : {}),
+        limit: Math.min(limit, 2000),
+      });
+      return;
+    }
     case "update":
     case "upgrade":
       await runUpdate(argv);
@@ -288,6 +330,43 @@ async function main(): Promise<void> {
       const userId = argv.shift();
       runUnpair(channel, userId);
       return;
+    }
+
+    case "plugins":
+    case "plugin": {
+      const sub = argv.shift() ?? "ls";
+      const yes = hasFlag(argv, "--yes") || hasFlag(argv, "-y");
+      switch (sub) {
+        case "ls":
+        case "list":
+          await listPlugins();
+          return;
+        case "describe":
+        case "info":
+          await describePlugin(argv.shift());
+          return;
+        case "setup":
+          await setupPlugin(argv.shift());
+          return;
+        case "install":
+          await installPlugin(argv.shift(), yes ? { yes: true } : {});
+          return;
+        case "uninstall":
+        case "remove":
+        case "rm":
+          await uninstallPlugin(argv.shift());
+          return;
+        case "enable":
+        case "on":
+          await enablePlugin(argv.shift());
+          return;
+        case "disable":
+        case "off":
+          await disablePlugin(argv.shift());
+          return;
+        default:
+          throw new Error(`unknown: plugins ${sub}`);
+      }
     }
 
     case "key": {

@@ -120,6 +120,7 @@ export function createMcpServer(opts: McpServerOptions, input: Readable, output:
           },
         });
       } catch (err) {
+        opts.logger.warn({ err, tool: name }, "mcp server: tools/call failed");
         writeFrame({
           jsonrpc: "2.0",
           id,

@@ -12,11 +12,31 @@ const REG: Registry = {
 };
 
 describe("generateCompose", () => {
-  it("emits one service per squad plus searxng", () => {
+  it("emits one service per squad plus searxng + postgres + redis", () => {
     const out = generateCompose(REG);
     expect(out).toContain("squad-alpha:");
     expect(out).toContain("squad-beta:");
     expect(out).toContain("searxng:");
+    expect(out).toMatch(/^\s+postgres:/m);
+    expect(out).toMatch(/^\s+redis:/m);
+  });
+
+  it("sets the compose project name to 'squad' so containers group together in Docker Desktop", () => {
+    const out = generateCompose(REG);
+    expect(out).toMatch(/^name:\s+squad$/m);
+  });
+
+  it("declares named volumes for postgres + redis data", () => {
+    const out = generateCompose(REG);
+    expect(out).toMatch(/^volumes:[\s\S]*squad_pgdata:/m);
+    expect(out).toMatch(/^volumes:[\s\S]*squad_redisdata:/m);
+  });
+
+  it("each squad depends on postgres and redis so memcore is up before boot", () => {
+    const out = generateCompose(REG);
+    const alphaBlock = out.split("squad-alpha:")[1]!.split("squad-beta:")[0]!;
+    expect(alphaBlock).toMatch(/depends_on:[\s\S]*postgres:[\s\S]*condition: service_healthy/);
+    expect(alphaBlock).toMatch(/depends_on:[\s\S]*redis:[\s\S]*condition: service_healthy/);
   });
 
   it("maps each squad's host port to container 8080", () => {

@@ -178,9 +178,21 @@ export async function runAgent(spec: AgentSpec): Promise<AgentResult> {
     };
   };
 
+  // Cancellation: polled at the same checkpoints as `timedOut`. Latched on
+  // first observation so a flapping callback can't yank the loop back.
+  let cancelled = false;
+  const checkCancelled = (): boolean => {
+    if (cancelled) return true;
+    if (spec.shouldCancel?.()) {
+      cancelled = true;
+      return true;
+    }
+    return false;
+  };
+
   try {
     // ── Main loop ─────────────────────────────────────────────────────────
-    while (turns < maxTurns && !timedOut) {
+    while (turns < maxTurns && !timedOut && !checkCancelled()) {
       turns++;
 
       // ── Per-turn timer ──────────────────────────────────────────────────
@@ -279,8 +291,9 @@ export async function runAgent(spec: AgentSpec): Promise<AgentResult> {
         return finish(false, "", "llm_error", error.message);
       }
 
-      // Timeout may have fired while awaiting the LLM call
+      // Timeout or external cancel may have fired while awaiting the LLM call
       if (timedOut) break;
+      if (checkCancelled()) break;
 
       // ── Usage accounting ────────────────────────────────────────────────
       totalUsage = {
@@ -519,12 +532,14 @@ export async function runAgent(spec: AgentSpec): Promise<AgentResult> {
       if (turnHandle) clearTimeout(turnHandle);
     } // end main loop
 
-    // ── maxTurns / timeout ─────────────────────────────────────────────────
-    const reason = timedOut ? "timeout" : "max_turns";
+    // ── maxTurns / timeout / cancelled ─────────────────────────────────────
+    const reason = cancelled ? "cancelled" : timedOut ? "timeout" : "max_turns";
     const errorMsg =
-      reason === "timeout"
-        ? formatTimeoutError(timedOutKind, timeoutCfg)
-        : `Max turns (${maxTurns}) exceeded`;
+      reason === "cancelled"
+        ? "Run cancelled"
+        : reason === "timeout"
+          ? formatTimeoutError(timedOutKind, timeoutCfg)
+          : `Max turns (${maxTurns}) exceeded`;
 
     await hooks.emit("after_agent_end", {
       agentType: agent,

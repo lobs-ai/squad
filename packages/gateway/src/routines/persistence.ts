@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, openSync, closeSync, appendFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { RoutineRunLog } from "@squad/protocol";
+import { logger as rootLogger } from "../logger.js";
+
+const log = rootLogger.child({ component: "routines.persistence" });
 
 /**
  * File layout under <data_dir>/cron/:
@@ -46,7 +49,8 @@ export function readJsonOrEmpty<T>(path: string, fallback: T): T {
     const raw = readFileSync(path, "utf8");
     if (!raw.trim()) return fallback;
     return JSON.parse(raw) as T;
-  } catch {
+  } catch (err) {
+    log.error({ err, path }, "routines: failed to read/parse JSON — using fallback");
     return fallback;
   }
 }
@@ -70,13 +74,13 @@ export function tryAcquireTickLock(path: string): null | (() => void) {
     released = true;
     try {
       closeSync(fd);
-    } catch {
-      /* ignore */
+    } catch (err) {
+      log.debug({ err, path }, "routines: tick lock close failed");
     }
     try {
       unlinkSync(path);
-    } catch {
-      /* ignore — lock file already cleaned up */
+    } catch (err) {
+      log.debug({ err, path }, "routines: tick lock unlink failed (already cleaned up?)");
     }
   };
 }
@@ -104,8 +108,8 @@ export function appendRunLog(
     if (lines.length <= keep) return;
     const tail = lines.slice(-keep).join("\n") + "\n";
     writeJsonAtomicRaw(path, tail);
-  } catch {
-    /* ignore prune errors */
+  } catch (err) {
+    log.warn({ err, jobId, path }, "routines: run log prune failed");
   }
 }
 
@@ -125,8 +129,8 @@ export function readRunLog(
       const obj = JSON.parse(line) as RoutineRunLog;
       if (opts.status && obj.status !== opts.status) continue;
       out.push(obj);
-    } catch {
-      /* skip malformed line */
+    } catch (err) {
+      log.warn({ err, jobId, lineSample: line.slice(0, 120) }, "routines: skipping malformed run log line");
     }
   }
   return out.slice(-opts.limit).reverse();
@@ -140,8 +144,9 @@ export function pruneOrphanedRunLogs(runsDir: string, knownJobIds: Set<string>):
     if (!knownJobIds.has(id)) {
       try {
         unlinkSync(join(runsDir, f));
-      } catch {
-        /* ignore */
+        log.info({ jobId: id, file: f }, "routines: pruned orphaned run log");
+      } catch (err) {
+        log.warn({ err, jobId: id, file: f }, "routines: orphaned run log unlink failed");
       }
     }
   }

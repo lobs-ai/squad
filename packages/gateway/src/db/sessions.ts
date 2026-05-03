@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseHandle } from "./index.js";
 import type { SessionRecord, SessionStatus, DeliveryMode } from "@squad/protocol";
+import { logger as rootLogger } from "../logger.js";
+
+const log = rootLogger.child({ component: "db.sessions" });
 
 interface SessionRow {
   id: string;
@@ -58,9 +61,11 @@ function rowToRecord(row: SessionRow): SessionRecord {
     if (Array.isArray(parsed)) {
       fallbacks = parsed.filter((x): x is string => typeof x === "string");
     }
-  } catch {
-    // Corrupted row — fall back to empty. The record is still usable; the
-    // agent loop will just run the primary with no fallback chain.
+  } catch (err) {
+    log.warn(
+      { err, sessionId: row.id, raw: row.fallbacks_json?.slice(0, 80) },
+      "session row has corrupt fallbacks_json — using empty fallback chain",
+    );
   }
   return {
     id: row.id,
@@ -133,8 +138,11 @@ export class SessionStore {
     for (const l of this.changeListeners) {
       try {
         l(kind, session);
-      } catch {
-        // Listener errors must not interrupt persistence.
+      } catch (err) {
+        log.error(
+          { err, kind, sessionId: session.id },
+          "session change listener threw — continuing (persistence already committed)",
+        );
       }
     }
   }

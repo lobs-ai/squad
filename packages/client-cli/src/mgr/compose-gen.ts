@@ -25,10 +25,22 @@ export function generateCompose(reg: Registry): string {
     services.push(renderSquadService(squad, reg.build_context));
   }
   services.push(renderSearxngService(reg.shared.searxng_port));
+  services.push(renderPostgresService());
+  services.push(renderRedisService());
 
+  // Explicit project name so every container in this file groups under
+  // "squad" in Docker Desktop, regardless of the directory the compose file
+  // is invoked from.
   return `${HEADER}
+name: squad
+
 services:
-${services.join("\n")}`;
+${services.join("\n")}
+
+volumes:
+  squad_pgdata:
+  squad_redisdata:
+`;
 }
 
 function renderSquadService(squad: Squad, buildContext: string): string {
@@ -67,6 +79,10 @@ ${extensionsMount}    # Lets the container reach services bound to the host's lo
     depends_on:
       searxng:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health"]
       interval: 30s
@@ -76,6 +92,52 @@ ${extensionsMount}    # Lets the container reach services bound to the host's lo
     labels:
       - lobs.squad.name=${squad.name}
       - lobs.squad.port=${squad.port}
+    restart: unless-stopped
+`;
+}
+
+function renderPostgresService(): string {
+  // pgvector image so MemCore's vector ops work out of the box. No host port
+  // exposure: squad services reach it via the in-network hostname `postgres`.
+  // Bind 127.0.0.1:5433 so a host-side psql / migration tool still works
+  // alongside any system Postgres on 5432.
+  return `  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: squad-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: memcore
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - squad_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d memcore"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    labels:
+      - lobs.squad.shared=postgres
+    restart: unless-stopped
+`;
+}
+
+function renderRedisService(): string {
+  return `  redis:
+    image: redis:7-alpine
+    container_name: squad-redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - squad_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    labels:
+      - lobs.squad.shared=redis
     restart: unless-stopped
 `;
 }

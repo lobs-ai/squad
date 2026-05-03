@@ -12,6 +12,7 @@ import { BrowserProtocolClient } from "../protocol-client.js";
 import type {
   ApprovalRecord,
   Execution,
+  LogEntry,
   MessageRecord,
   PairingView,
   Payload,
@@ -217,6 +218,13 @@ export interface GatewayState {
   refreshRoutines: () => Promise<void>;
   refreshPairings: () => Promise<void>;
   sendChat: (text: string) => Promise<void>;
+  /**
+   * Ask the gateway to cancel the active run for the current session. The
+   * agent loop honors the request cooperatively at the next safe checkpoint
+   * (between LLM turns / after in-flight tool calls). Returns true when a
+   * run was found to cancel, false when the session is already idle.
+   */
+  cancelChat: () => Promise<boolean>;
   startSession: (opts: { title?: string; model?: string; fallbacks?: string[] }) => Promise<void>;
   renameSession: (sessionId: string, title: string) => Promise<void>;
   setSessionModel: (sessionId: string, model: string, fallbacks?: string[]) => Promise<void>;
@@ -265,6 +273,12 @@ export interface GatewayState {
     id: string,
     opts?: { limit?: number; status?: "ok" | "error" | "skipped" },
   ) => Promise<RoutineRunLog[]>;
+  /**
+   * Count of error/fatal log entries the user hasn't acknowledged. The Logs
+   * view calls `markLogsRead()` on mount to clear it.
+   */
+  unreadLogErrors: number;
+  markLogsRead: () => void;
 }
 
 export type CreateRoutineInput =
@@ -430,6 +444,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
   const [awaitingResponse, setAwaitingResponse] = useState<boolean>(false);
   const [chatError, setChatError] = useState<{ message: string; at: string } | null>(null);
   const [subagentTree, setSubagentTree] = useState<SubagentTreeNode | null>(null);
+  const [unreadLogErrors, setUnreadLogErrors] = useState<number>(0);
   const subscribedRef = useRef<Set<string>>(new Set());
 
   const refreshSessions = useCallback(async () => {
@@ -672,6 +687,13 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
         refreshPairings(),
         refreshFullConfig(),
       ]);
+      // Seed the unread badge from the buffer's tail of error/fatal entries
+      // so the user sees a count immediately on first load.
+      const seed = await tryRequest(
+        () => client.request("logs.tail", { level: "error", limit: 200 }),
+        { entries: [] as LogEntry[], sources: [] as string[] },
+      );
+      if (!cancelled) setUnreadLogErrors(seed.entries.length);
     })();
     return () => {
       cancelled = true;
@@ -805,6 +827,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
       "routines.*/*",
       "routines.*",
       "peers.*",
+      "logs.entry",
     ];
     const fresh = wantedTopics.filter((t) => !subscribedRef.current.has(t));
     if (fresh.length > 0) {
@@ -946,6 +969,13 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
         void refreshRoutines();
       } else if (topic === "pair.requested" || topic === "pair.approved" || topic === "pair.cancelled") {
         void refreshPairings();
+      } else if (topic === "logs.entry") {
+        // Bump the unread badge when a fresh error/fatal lands. The Logs
+        // view clears the counter on mount via markLogsRead().
+        const entry = (data as { entry: LogEntry }).entry;
+        if (entry.level === "error" || entry.level === "fatal") {
+          setUnreadLogErrors((n) => n + 1);
+        }
       }
     });
     return off;
@@ -986,6 +1016,12 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     },
     [client, activeSession],
   );
+
+  const cancelChat = useCallback(async (): Promise<boolean> => {
+    if (!activeSession) return false;
+    const r = await client.request("chat.cancel", { sessionId: activeSession.id });
+    return r.cancelled;
+  }, [client, activeSession]);
 
   const startSession = useCallback(
     async (opts: { title?: string; model?: string; fallbacks?: string[] }) => {
@@ -1214,6 +1250,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     refreshRoutines,
     refreshPairings,
     sendChat,
+    cancelChat,
     startSession,
     renameSession,
     setSessionModel,
@@ -1233,6 +1270,8 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     deleteRoutine,
     runRoutine,
     fetchRoutineRuns,
+    unreadLogErrors,
+    markLogsRead: () => setUnreadLogErrors(0),
   };
 
   return <GatewayContext.Provider value={value}>{children}</GatewayContext.Provider>;

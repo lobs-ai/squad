@@ -1,6 +1,7 @@
 import type { BaseTool, ToolGroup } from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
 import type { PluginUiContribution, SubagentDefinition } from "@squad/protocol";
+import type { ZodTypeAny } from "zod";
 
 export type PluginKind = "tool" | "provider" | "channel" | "skill" | "routine" | "subagent";
 
@@ -16,6 +17,20 @@ export interface PluginDescriptor {
   name: string;
   version: string;
   kinds: PluginKind[];
+  /**
+   * Optional Zod schema describing the plugin's `config` shape. When present,
+   * the gateway:
+   *   - validates the user-provided config in `plugins.install` before calling
+   *     `register(api)`,
+   *   - exposes a JSON-friendly field list via `plugins.describe` so the
+   *     dashboard / CLI can render a configure form,
+   *   - auto-generates values for any field tagged with `secret(true)`
+   *     (see `pluginSecretField`) before calling `register`.
+   *
+   * Plugins without a schema keep working unchanged — install just hands
+   * `config` straight to `register`.
+   */
+  configSchema?: ZodTypeAny;
   register(api: GatewayAPI): void | (() => void | Promise<void>) | Promise<void | (() => void | Promise<void>)>;
 }
 

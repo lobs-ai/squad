@@ -14,6 +14,7 @@
  */
 
 import type {
+  Embedder,
   FindSimilarArgs,
   ListMemoriesArgs as MemCoreListArgs,
   MemCore,
@@ -56,11 +57,41 @@ export interface MemoryServiceOptions {
   containerTag?: string;
   /** Eager-block char budget. Defaults to EAGER_BLOCK_BUDGET. */
   eagerBudget?: number;
+  /**
+   * Optional reference to the embedder MemCore was constructed with. When
+   * present, `retrievalForTurn` reads the embedder's `maxInputChars` and
+   * runs chunked retrieval for queries that exceed it. Without it the
+   * service falls back to a conservative 2000-char cap that fits every
+   * mainstream embedder's context window.
+   */
+  embedder?: Embedder;
 }
+
+/**
+ * Floor used when the embedder doesn't report a limit. Picked to fit the
+ * smallest context window we expect to see in the wild (mxbai-embed-large,
+ * bge-large-en — both 512 tokens ≈ 2000 chars with margin).
+ */
+const FALLBACK_EMBEDDER_LIMIT_CHARS = 2000;
+
+/**
+ * Soft floor on chunk size. Below this the marginal benefit of an extra
+ * chunk gets eaten by overlap. If a model's reported limit is smaller than
+ * this we just use the model's number — it's a hint, not a guarantee.
+ */
+const MIN_CHUNK_CHARS = 400;
+
+/**
+ * Overlap between adjacent chunks, expressed as a fraction of chunk size.
+ * 20% is the standard RAG starting point — keeps phrases that straddle
+ * boundaries from being lost.
+ */
+const CHUNK_OVERLAP_RATIO = 0.2;
 
 export class MemoryService {
   private readonly containerTag: string;
   private readonly eagerBudget: number;
+  private readonly embedder?: Embedder;
   private readonly eagerCache = new Map<string, PromptMemoryEntry[]>();
 
   constructor(
@@ -70,6 +101,7 @@ export class MemoryService {
   ) {
     this.containerTag = opts.containerTag ?? "squad";
     this.eagerBudget = opts.eagerBudget ?? EAGER_BLOCK_BUDGET;
+    if (opts.embedder !== undefined) this.embedder = opts.embedder;
   }
 
   // ── Write path ────────────────────────────────────────────────────────
@@ -275,25 +307,74 @@ export class MemoryService {
   /**
    * Per-turn retrieval: semantic search over project + reference entries
    * scoped to this tree. Empty for too-short queries.
+   *
+   * For queries that fit the embedder's max input length, this is one
+   * `embed` + one search — same cost as before. For queries that exceed
+   * the limit (long pasted contexts, multi-message windows, the
+   * setup-with-agent briefing), the query is split into overlapping
+   * windows; each window runs its own search; results merge by id with
+   * max-score wins. That keeps signal from the *whole* query alive
+   * instead of throwing away everything past the embedder's window.
    */
   async retrievalForTurn(
     query: string,
     opts: { scopeKey?: string | null; limit?: number } = {},
   ): Promise<PromptMemoryHit[]> {
     if (!query || query.trim().length < 4) return [];
-    const hits = await this.search({
-      query,
-      types: ["project", "reference"],
-      ...(opts.scopeKey !== undefined ? { scopeKey: opts.scopeKey } : {}),
-      limit: opts.limit ?? 4,
-    });
-    return hits.map((h) => ({
-      id: h.entry.id,
-      type: h.entry.type,
-      name: h.entry.name,
-      description: h.entry.description,
-      snippet: h.snippet,
-    }));
+    const limit = opts.limit ?? 4;
+    const maxChars = this.embedder?.maxInputChars ?? FALLBACK_EMBEDDER_LIMIT_CHARS;
+    const chunks = chunkQuery(query, maxChars);
+
+    // Single-chunk fast path — same shape as the old code, no extra work.
+    if (chunks.length === 1) {
+      const hits = await this.search({
+        query: chunks[0]!,
+        types: ["project", "reference"],
+        ...(opts.scopeKey !== undefined ? { scopeKey: opts.scopeKey } : {}),
+        limit,
+      });
+      return hits.map(toPromptHit);
+    }
+
+    // Multi-chunk: each chunk asks for `limit` hits so we have headroom
+    // for de-duplication. Run in parallel — embedders handle concurrent
+    // requests fine and serial would multiply latency by chunk count.
+    const perChunk = await Promise.all(
+      chunks.map((chunk) =>
+        this.search({
+          query: chunk,
+          types: ["project", "reference"],
+          ...(opts.scopeKey !== undefined ? { scopeKey: opts.scopeKey } : {}),
+          limit,
+        }).catch((err) => {
+          // One chunk's failure doesn't kill the whole retrieval — log
+          // and treat that chunk as empty. Keeps a flaky embedder from
+          // ruining a turn that other chunks could have salvaged.
+          this.logger.warn(
+            { err, chunkLen: chunk.length },
+            "memory chunked retrieval: one chunk failed — continuing",
+          );
+          return [] as MemorySearchHit[];
+        }),
+      ),
+    );
+
+    // Merge: for each memory id seen in any chunk's results, keep the
+    // highest score. Ranking by max is conservative — an entry that
+    // strongly matched one part of the query beats an entry that weakly
+    // matched several. This is the right call for retrieval where
+    // precision matters more than thematic coverage.
+    const bestById = new Map<string, MemorySearchHit>();
+    for (const chunkHits of perChunk) {
+      for (const hit of chunkHits) {
+        const prior = bestById.get(hit.entry.id);
+        if (!prior || hit.score > prior.score) bestById.set(hit.entry.id, hit);
+      }
+    }
+    const merged = [...bestById.values()]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
+    return merged.map(toPromptHit);
   }
 
   // ── Internals ─────────────────────────────────────────────────────────
@@ -386,6 +467,63 @@ function toPromptEntry(entry: MemoryEntry): PromptMemoryEntry {
     description: entry.description,
     body: entry.body,
   };
+}
+
+function toPromptHit(h: MemorySearchHit): PromptMemoryHit {
+  return {
+    id: h.entry.id,
+    type: h.entry.type,
+    name: h.entry.name,
+    description: h.entry.description,
+    snippet: h.snippet,
+  };
+}
+
+/**
+ * Split `query` into overlapping windows that each fit within `maxChars`.
+ *
+ * Tries to split at paragraph / sentence / word boundaries so phrases
+ * aren't sliced mid-word — embedders are sensitive to broken tokens at
+ * the edge of an input. Falls through to character cuts only when there
+ * are no boundaries inside the window.
+ *
+ * Returns a single-element array when the query already fits, so callers
+ * can use `chunks.length === 1` as the fast-path check.
+ */
+export function chunkQuery(query: string, maxChars: number): string[] {
+  if (query.length <= maxChars) return [query];
+  const chunkSize = Math.max(MIN_CHUNK_CHARS, Math.floor(maxChars));
+  const overlap = Math.floor(chunkSize * CHUNK_OVERLAP_RATIO);
+  const stride = Math.max(1, chunkSize - overlap);
+
+  const chunks: string[] = [];
+  let start = 0;
+  while (start < query.length) {
+    const idealEnd = Math.min(start + chunkSize, query.length);
+    let end = idealEnd;
+    if (end < query.length) {
+      // Search backwards from `end` for the best break point. Preferences:
+      // double-newline → newline → sentence punct → space. Cap the search
+      // window so we don't degrade to O(N^2) on adversarial inputs.
+      const searchFloor = Math.max(start + Math.floor(chunkSize / 2), end - 200);
+      const slice = query.slice(searchFloor, end);
+      const candidates = [
+        slice.lastIndexOf("\n\n"),
+        slice.lastIndexOf("\n"),
+        slice.lastIndexOf(". "),
+        slice.lastIndexOf("? "),
+        slice.lastIndexOf("! "),
+        slice.lastIndexOf(" "),
+      ].filter((i) => i >= 0);
+      if (candidates.length > 0) {
+        end = searchFloor + Math.max(...candidates) + 1;
+      }
+    }
+    chunks.push(query.slice(start, end));
+    if (end >= query.length) break;
+    start = Math.max(start + 1, end - overlap);
+  }
+  return chunks;
 }
 
 export type { FindSimilarArgs };

@@ -56,7 +56,11 @@ export function installApprovalHook(deps: ApprovalHookDeps): () => void {
       ? (() => {
           try {
             return deps.sessions.rootId(sessionId);
-          } catch {
+          } catch (err) {
+            deps.logger.warn(
+              { err, sessionId, toolName },
+              "approvals: rootId lookup failed — using current sessionId",
+            );
             return sessionId;
           }
         })()

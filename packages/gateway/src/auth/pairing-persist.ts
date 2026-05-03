@@ -9,6 +9,9 @@ import {
   existsSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import { logger as rootLogger } from "../logger.js";
+
+const log = rootLogger.child({ component: "auth.pairing-persist" });
 
 export interface PersistedPairing {
   code: string;
@@ -45,14 +48,19 @@ export class JsonFilePairingPersistence implements PairingPersistence {
     let raw: string;
     try {
       raw = readFileSync(this.path, "utf-8");
-    } catch {
+    } catch (err) {
+      log.warn({ err, path: this.path }, "pairings: read failed — treating as empty");
       return [];
     }
     if (raw.trim().length === 0) return [];
     try {
       const parsed = JSON.parse(raw) as { pairings?: PersistedPairing[] };
       return Array.isArray(parsed.pairings) ? parsed.pairings : [];
-    } catch {
+    } catch (err) {
+      log.error(
+        { err, path: this.path, bytes: raw.length },
+        "pairings: JSON parse failed — registry will load empty",
+      );
       return [];
     }
   }

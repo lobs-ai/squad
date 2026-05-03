@@ -1,0 +1,43 @@
+# Dependencies — re-installed inside the image
+node_modules
+**/node_modules
+
+# Build output — rebuilt inside the image
+**/dist
+**/build
+**/*.tsbuildinfo
+
+# Test / coverage artifacts
+coverage
+**/coverage
+.vitest
+
+# VCS + editor
+.git
+.gitignore
+.idea
+.vscode
+*.swp
+*.swo
+
+# Local state + secrets (never bake into the image)
+data
+.env
+.env.*
+!.env.example
+
+# Per-squad runtime state lives outside the repo, but guard anyway
+docker/data
+
+# Logs
+*.log
+pnpm-debug.log*
+npm-debug.log*
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Misc
+.aider*
+extensions

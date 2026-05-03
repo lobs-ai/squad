@@ -20,11 +20,12 @@ const TABS: Array<{ id: ViewId; label: string; icon: IconName }> = [
   { id: "sessions", label: "Sessions", icon: "session" },
   { id: "routines", label: "Cron", icon: "spark" },
   { id: "plugins", label: "Plugins", icon: "plugin" },
+  { id: "logs", label: "Logs", icon: "logs" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];
 
 export function TopNav({ view, setView, onCmdK, onNewChat, onOpenManager, onPickPeer }: Props): JSX.Element {
-  const { squad, peers, pendingQuestions, pendingApprovals, plugins } = useGateway();
+  const { squad, peers, pendingQuestions, pendingApprovals, plugins, unreadLogErrors } = useGateway();
   const pending = pendingQuestions.length + pendingApprovals.length;
 
   // Plugin-contributed nav tabs come from `uiContributions` of slot
@@ -58,6 +59,18 @@ export function TopNav({ view, setView, onCmdK, onNewChat, onOpenManager, onPick
             {t.id === "overview" && pending > 0 && (
               <span className="tag accent" style={{ marginLeft: 4 }}>
                 {pending}
+              </span>
+            )}
+            {t.id === "logs" && unreadLogErrors > 0 && (
+              <span
+                className="tag"
+                style={{
+                  marginLeft: 4,
+                  background: "var(--err)",
+                  color: "var(--bg)",
+                }}
+              >
+                {unreadLogErrors > 99 ? "99+" : unreadLogErrors}
               </span>
             )}
           </div>

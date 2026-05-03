@@ -15,7 +15,7 @@ import type {
   EditThreadOptions,
   PostWebhookOptions,
 } from "./tools/index.js";
-import type { BotHandle } from "./bot.js";
+import type { BotHandle, BotLogger } from "./bot.js";
 import { chunkMessage } from "./formatting.js";
 
 /**
@@ -115,7 +115,10 @@ const CHANNEL_TYPE_MAP: Record<DiscordChannelType, number> = {
  * resolver, so the same backend instance keeps working across reconnects.
  */
 export class CarbonDiscordBackend implements DiscordBackend {
-  constructor(private readonly resolveBot: BotResolver) {}
+  constructor(
+    private readonly resolveBot: BotResolver,
+    private readonly logger?: BotLogger,
+  ) {}
 
   private get rest(): BotHandle["client"]["rest"] {
     return this.resolveBot().client.rest;
@@ -318,7 +321,13 @@ export class CarbonDiscordBackend implements DiscordBackend {
   async listThreads(channelId: string): Promise<DiscordThreadSummary[]> {
     const active = (await this.rest
       .get(`/channels/${channelId}/threads/active`)
-      .catch(() => ({ threads: [] }))) as ApiThreadList;
+      .catch((err: unknown) => {
+        this.logger?.warn(
+          { err, channelId },
+          "discord backend: listThreads failed — returning empty list",
+        );
+        return { threads: [] };
+      })) as ApiThreadList;
     return (active.threads ?? []).map(toThreadSummary);
   }
 

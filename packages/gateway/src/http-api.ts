@@ -58,7 +58,8 @@ export function createHttpApiHandler(deps: HttpApiDeps): HttpApiHandler {
       let body: Record<string, unknown>;
       try {
         body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-      } catch {
+      } catch (err) {
+        deps.logger.warn({ err, path, bytes: raw.length }, "http api: invalid JSON body");
         sendJson(res, 400, { error: { message: "invalid JSON body" } });
         return;
       }
@@ -156,8 +157,11 @@ export function createHttpApiHandler(deps: HttpApiDeps): HttpApiHandler {
         // Archive the phantom session so it doesn't pollute session.list.
         try {
           deps.sessions.setStatus(session.id, "ended");
-        } catch {
-          /* ignore */
+        } catch (err) {
+          deps.logger.warn(
+            { err, sessionId: session.id },
+            "http api: failed to archive phantom session",
+          );
         }
       }
     },

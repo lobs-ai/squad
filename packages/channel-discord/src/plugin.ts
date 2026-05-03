@@ -59,7 +59,7 @@ export default definePlugin({
       const bot = channel.getBot();
       if (!bot) throw new Error("discord channel not connected yet");
       return bot;
-    });
+    }, botLogger);
     registerDiscordTools(api.tools, backend);
     api.delivery.register("discord", async (ctx) => {
       const delivery = ctx.delivery as { kind: "discord"; channelId: string; guildId?: string };

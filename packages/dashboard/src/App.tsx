@@ -16,6 +16,7 @@ import { CommandPalette } from "./views/CommandPalette.js";
 import { Gate } from "./views/Gate.js";
 import { Routines } from "./views/Routines.js";
 import { SearchView } from "./views/Search.js";
+import { Logs } from "./views/Logs.js";
 import type { ViewId } from "./views/views.js";
 import "./styles/tokens.css";
 import "./styles/styles.css";
@@ -170,6 +171,7 @@ function Shell(): JSX.Element {
           s: "sessions",
           p: "plugins",
           m: "manager",
+          l: "logs",
         };
         const target = map[e.key.toLowerCase()];
         if (target) {
@@ -214,9 +216,10 @@ function Shell(): JSX.Element {
           {view === "chat" && <Chat />}
           {view === "tasks" && <Tasks onOpenSession={onOpenSession} />}
           {view === "sessions" && <Sessions onOpenSession={onOpenSession} />}
-          {view === "plugins" && <Plugins />}
+          {view === "plugins" && <Plugins onOpenSession={onOpenSession} />}
           {view === "routines" && <Routines />}
           {view === "search" && <SearchView onOpenSession={onOpenSession} />}
+          {view === "logs" && <Logs />}
           {view === "manager" && (
             <Manager
               onPickPeer={(peer) => {

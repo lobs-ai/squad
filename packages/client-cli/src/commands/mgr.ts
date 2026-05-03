@@ -183,6 +183,15 @@ function renderDefaultEnv(): string {
     "# --- dashboard / WS auth ---",
     `SQUAD_DASHBOARD_TOKEN=${generateToken()}`,
     "",
+    "# --- MemCore (memory backend, required) ---",
+    "# Points at the postgres + redis services in this squad's compose project",
+    "# (squad-postgres / squad-redis). The memcore SDK reads DATABASE_URL /",
+    "# REDIS_URL directly; MEMCORE_DATABASE_URL is the gateway fallback and is",
+    "# kept in sync.",
+    "MEMCORE_DATABASE_URL=postgresql://postgres:postgres@postgres:5432/memcore",
+    "DATABASE_URL=postgresql://postgres:postgres@postgres:5432/memcore",
+    "REDIS_URL=redis://redis:6379/0",
+    "",
     "# --- LLM provider keys (uncomment + fill what you use) ---",
     "# ANTHROPIC_API_KEY=",
     "# OPENAI_API_KEY=",
@@ -375,19 +384,38 @@ async function cmdStart(args: string[]): Promise<void> {
   regenCompose(reg);
   syncMemcore(reg.build_context);
 
+  // Compose builds automatically when an image is missing; --rebuild forces a
+  // fresh build for users picking up source changes. Build and up are run as
+  // separate compose calls so a build that succeeds always lands on `up` —
+  // combining them via `up --build` can swallow the launch step if the build
+  // output is noisy or the user misreads progress.
+  const rebuild = hasFlag(args, "--rebuild") || hasFlag(args, "--build");
+
+  let services: string[];
   if (hasFlag(args, "--all")) {
-    const services = reg.squads.map((s) => `squad-${s.name}`);
+    services = reg.squads.map((s) => `squad-${s.name}`);
     if (services.length === 0) throw new Error("no squads registered");
     services.push("searxng");
-    const code = await runComposeAsync(["up", "-d", "--build", ...services]);
-    process.exitCode = code;
-    return;
+  } else {
+    const name = args.shift();
+    if (!name) throw new Error("usage: squad mgr start <name>|--all [--rebuild]");
+    requireSquad(reg, name);
+    services = [`squad-${name}`];
   }
 
-  const name = args.shift();
-  if (!name) throw new Error("usage: squad mgr start <name>|--all");
-  requireSquad(reg, name);
-  const code = await runComposeAsync(["up", "-d", "--build", `squad-${name}`]);
+  if (rebuild) {
+    // searxng is a pulled image with no build context — skip it for build.
+    const buildable = services.filter((s) => s !== "searxng");
+    if (buildable.length > 0) {
+      const buildCode = await runComposeAsync(["build", ...buildable]);
+      if (buildCode !== 0) {
+        process.exitCode = buildCode;
+        return;
+      }
+    }
+  }
+
+  const code = await runComposeAsync(["up", "-d", ...services]);
   process.exitCode = code;
 }
 
@@ -520,7 +548,7 @@ function helpText(): string {
     `    ${K("create")} ${D("<name> [--port N] [--from <name>]")}  ${D("scaffold ~/.squad/squads/<name>/, register, regen compose")}`,
     `    ${K("rm")}     ${D("<name> [--purge]")}                    ${D("stop, unregister; --purge wipes state dir")}`,
     `    ${K("ls")}                                       ${D("list squads + running status (via docker labels)")}`,
-    `    ${K("start")}  ${D("<name>|--all")}                        ${D("docker compose up -d")}`,
+    `    ${K("start")}  ${D("<name>|--all [--rebuild]")}            ${D("docker compose up -d (--rebuild forces image rebuild)")}`,
     `    ${K("stop")}   ${D("<name>|--all")}                        ${D("docker compose stop / down")}`,
     `    ${K("restart")} ${D("<name>|--all")}                       ${D("in-place restart; --all does full stop + up --build")}`,
     `    ${K("logs")}   ${D("<name> [-f]")}                         ${D("docker compose logs")}`,

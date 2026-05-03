@@ -10,6 +10,9 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import type { ApprovalRule } from "@squad/protocol";
+import { logger as rootLogger } from "../logger.js";
+
+const log = rootLogger.child({ component: "approvals.rules-persist" });
 
 export interface ApprovalRulePersistence {
   load(): ApprovalRule[];
@@ -31,14 +34,19 @@ export class JsonFileApprovalRulePersistence implements ApprovalRulePersistence 
     let raw: string;
     try {
       raw = readFileSync(this.path, "utf-8");
-    } catch {
+    } catch (err) {
+      log.warn({ err, path: this.path }, "approval rules: read failed — treating as empty");
       return [];
     }
     if (raw.trim().length === 0) return [];
     try {
       const parsed = JSON.parse(raw) as { rules?: ApprovalRule[] };
       return Array.isArray(parsed.rules) ? parsed.rules : [];
-    } catch {
+    } catch (err) {
+      log.error(
+        { err, path: this.path, bytes: raw.length },
+        "approval rules: JSON parse failed — registry will load empty",
+      );
       return [];
     }
   }

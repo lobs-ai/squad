@@ -57,6 +57,7 @@ export function Chat(): JSX.Element {
     sessionApprovals,
     setActiveSessionId,
     sendChat,
+    cancelChat,
     startSession,
     renameSession,
     setSessionModel,
@@ -74,6 +75,7 @@ export function Chat(): JSX.Element {
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [pickingModel, setPickingModel] = useState(false);
+  const [stopping, setStopping] = useState(false);
   // Persisted across reloads so the user's preference sticks. Defaults to "on"
   // — same as the CLI, which always shows tool calls inline.
   const [showToolsRaw, setShowToolsRaw] = usePersistedState("squad-chat-show-tools", "1");
@@ -168,6 +170,18 @@ export function Chat(): JSX.Element {
   };
 
   const treeNode = subagentTree;
+
+  const isRunning =
+    activeSession.status === "running" || awaitingResponse || !!streaming;
+  const stop = async (): Promise<void> => {
+    if (stopping) return;
+    setStopping(true);
+    try {
+      await cancelChat();
+    } finally {
+      setStopping(false);
+    }
+  };
 
   return (
     <div
@@ -310,6 +324,16 @@ export function Chat(): JSX.Element {
           <span className="spacer" />
           <span className="hint">started {fmtAgo(activeSession.createdAt)}</span>
           <div className="row gap-1">
+            {isRunning && (
+              <button
+                className="btn sm danger"
+                onClick={() => void stop()}
+                disabled={stopping}
+                title="Stop the current agent run (cooperative — finishes any in-flight tool call first)"
+              >
+                <Icon name="x" size={11} /> {stopping ? "stopping…" : "stop"}
+              </button>
+            )}
             <button
               className="btn sm"
               onClick={() => void startSession({})}
@@ -375,10 +399,12 @@ export function Chat(): JSX.Element {
               <div className="mono" style={{ color: "var(--fg-muted)", whiteSpace: "pre-wrap" }}>
                 {chatError.message}
               </div>
-              <div className="hint" style={{ marginTop: 6 }}>
-                check that <span className="kbd">{activeSession.model}</span> is reachable. for custom providers,
-                make sure the api key + endpoint are configured in the gateway.
-              </div>
+              {looksLikeModelReachabilityError(chatError.message) && (
+                <div className="hint" style={{ marginTop: 6 }}>
+                  check that <span className="kbd">{activeSession.model}</span> is reachable. for custom providers,
+                  make sure the api key + endpoint are configured in the gateway.
+                </div>
+              )}
             </div>
           )}
           {rows.length === 0 && !chatError && (
@@ -1136,6 +1162,28 @@ function TypingIndicator(): JSX.Element {
       </div>
     </div>
   );
+}
+
+/**
+ * Heuristic: only show the "check that <model> is reachable" hint when the
+ * error actually looks model-related. Embedder failures, memory subsystem
+ * errors, plugin load issues, etc. all surface through chat.error too —
+ * showing the same "check the model" hint for those misleads the user
+ * into chasing the wrong fix.
+ */
+function looksLikeModelReachabilityError(message: string): boolean {
+  const m = message.toLowerCase();
+  // Anything that mentions the model, the LLM provider names, or
+  // transport-level signals.
+  if (m.includes("model")) return true;
+  if (m.includes("provider")) return true;
+  if (m.includes("api key")) return true;
+  if (m.includes("unauthorized") || m.includes("401")) return true;
+  if (m.includes("rate limit") || m.includes("429")) return true;
+  if (m.includes("timeout") || m.includes("etimedout")) return true;
+  if (m.includes("econnrefused") || m.includes("econnreset")) return true;
+  if (m.includes("fetch failed") || m.includes("network")) return true;
+  return false;
 }
 
 function formatToolTarget(input: unknown): string | null {

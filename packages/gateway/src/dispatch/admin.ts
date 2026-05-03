@@ -4,6 +4,9 @@ import { augmentWithExtras, listAvailableModels } from "@squad/llm";
 import type { PeerSource } from "../peers/source.js";
 import type { PairingStore } from "../auth/pairing.js";
 import type { ConfigBackend, ToolRegistry } from "@squad/tools";
+import { logger as rootLogger } from "../logger.js";
+
+const log = rootLogger.child({ component: "dispatch.admin" });
 
 export interface AdminDeps {
   sessions: SessionStore;
@@ -165,8 +168,11 @@ export function registerAdminMethods(dispatcher: Dispatcher, deps: AdminDeps): v
           agentName: live.branding?.agent_name || deps.branding.agentName,
           userName: live.branding?.user_name || deps.branding.userName,
         };
-      } catch {
-        // Disk read failed — keep the boot snapshot rather than 500ing.
+      } catch (err) {
+        log.warn(
+          { err },
+          "admin.identity: live branding read failed — using boot snapshot",
+        );
       }
     }
     return {

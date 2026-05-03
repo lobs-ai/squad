@@ -1,4 +1,7 @@
 import type { ApprovalPredicate } from "@squad/protocol";
+import { logger as rootLogger } from "../logger.js";
+
+const log = rootLogger.child({ component: "approvals.predicate" });
 
 /**
  * Context the predicate evaluates against. Mirrors the gateway's
@@ -25,7 +28,11 @@ export function evaluateApprovalPredicate(
 ): boolean {
   try {
     return evalNode(predicate, ctx);
-  } catch {
+  } catch (err) {
+    log.warn(
+      { err, op: predicate.op, toolName: ctx.toolName },
+      "approval predicate threw — treating as no-match",
+    );
     return false;
   }
 }

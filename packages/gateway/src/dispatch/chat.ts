@@ -42,6 +42,11 @@ export interface ChatDeps {
   clientOverride?: LLMClient;
   /** Trace registry — wired by boot, optional in tests. */
   traceRegistry?: import("../traces.js").TraceSessionRegistry;
+  /**
+   * Pre-rendered runtime-environment section. Forwarded to runChatTurn so
+   * every turn's system prompt includes a "where am I running" briefing.
+   */
+  runtimeEnvSection?: string;
 }
 
 export function registerChatMethods(dispatcher: Dispatcher, deps: ChatDeps): void {
@@ -82,6 +87,7 @@ export function registerChatMethods(dispatcher: Dispatcher, deps: ChatDeps): voi
           },
           onRunStart: (ctx) => deps.coordinator.register(ctx.runId, ctx.sessionId, ctx.session),
           onRunEnd: (ctx) => deps.coordinator.finish(ctx.runId, ctx.sessionId),
+          shouldCancel: () => deps.coordinator.isCancelled(runId),
           ...(deps.clientOverride !== undefined ? { clientOverride: deps.clientOverride } : {}),
         },
         deps,
@@ -166,6 +172,18 @@ export function registerChatMethods(dispatcher: Dispatcher, deps: ChatDeps): voi
     );
     return { messages };
   });
+
+  dispatcher.register("chat.cancel", async (params) => {
+    const session = deps.sessions.tryGet(params.sessionId);
+    if (!session) {
+      throw new ProtocolError(ErrorCode.not_found, `session ${params.sessionId} not found`);
+    }
+    const runId = deps.coordinator.cancel(params.sessionId);
+    if (runId === null) {
+      return { cancelled: false };
+    }
+    return { cancelled: true, runId };
+  });
 }
 
 /**
@@ -178,19 +196,35 @@ export function registerChatMethods(dispatcher: Dispatcher, deps: ChatDeps): voi
  */
 function maybeAutoTitle(deps: ChatDeps, sessionId: string, content: ContentBlock[]): void {
   const titler = deps.titleGenerator;
-  if (!titler) return;
+  if (!titler) {
+    deps.logger.debug({ sessionId }, "auto-title: skipped — no title generator wired");
+    return;
+  }
   const session = deps.sessions.tryGet(sessionId);
   if (!session) return;
   if (!titler.needsTitle(session.title)) return;
   // Subagent transcripts get titled by their parent's reply; don't burn an
   // LLM call on every spawn.
-  if (session.parentSessionId) return;
+  if (session.parentSessionId) {
+    deps.logger.debug(
+      { sessionId, parentSessionId: session.parentSessionId },
+      "auto-title: skipped — subagent session, parent will title",
+    );
+    return;
+  }
   const text = content
     .filter((b): b is { type: "text"; text: string } => b.type === "text")
     .map((b) => b.text)
     .join("\n")
     .trim();
-  if (!text) return;
+  if (!text) {
+    deps.logger.debug(
+      { sessionId },
+      "auto-title: skipped — first user message has no text content",
+    );
+    return;
+  }
+  deps.logger.debug({ sessionId, seedChars: text.length }, "auto-title: dispatching");
   void titler.generateIfNeeded(sessionId, text).catch((err) => {
     deps.logger.warn({ err, sessionId }, "auto-title fire-and-forget failed");
   });

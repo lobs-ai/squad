@@ -10,6 +10,12 @@ export interface ActiveRun {
   runId: string;
   session: Session;
   sessionId: string;
+  /**
+   * Set true by `cancel(sessionId)` to ask the agent loop to bail at the
+   * next safe checkpoint. Read by `isCancelled(runId)`, which the run
+   * passes to the runner as `shouldCancel`.
+   */
+  cancelled: boolean;
 }
 
 export interface EnqueueDecision {
@@ -93,9 +99,55 @@ export class RunCoordinator {
     this.starter = starter;
   }
 
+  /**
+   * Public entry point for callers that want to fire a turn outside the
+   * normal `chat.send` path — e.g. `plugins.start_setup_chat`, which seeds
+   * the session with a briefing message and wants the agent to immediately
+   * start processing it. Throws when the chat dispatcher hasn't wired
+   * `setStarter` yet (which only happens during boot before the gateway
+   * server is fully constructed).
+   */
+  async start(
+    sessionId: string,
+    content: ContentBlock[],
+    opts: { persistUserMessage: boolean },
+  ): Promise<void> {
+    if (!this.starter) {
+      throw new Error(
+        "RunCoordinator.start called before chat dispatcher wired its starter",
+      );
+    }
+    await this.starter(sessionId, content, opts);
+  }
+
   /** Called by runChatTurn when a run begins. */
   register(runId: string, sessionId: string, session: Session): void {
-    this.active.set(runId, { runId, sessionId, session });
+    this.active.set(runId, { runId, sessionId, session, cancelled: false });
+  }
+
+  /**
+   * Read by the runner each turn (via the `shouldCancel` hook wired in
+   * `runChatTurn`). Returns true once `cancel()` has flagged the run.
+   */
+  isCancelled(runId: string): boolean {
+    return this.active.get(runId)?.cancelled === true;
+  }
+
+  /**
+   * Mark the active run for `sessionId` as cancelled. Returns the runId
+   * that was flagged, or null if no run is currently active for that
+   * session. The runner picks the flag up cooperatively at the next
+   * checkpoint (between LLM turns, after tool calls).
+   */
+  cancel(sessionId: string): string | null {
+    const active = this.findActiveForSession(sessionId);
+    if (!active) return null;
+    active.cancelled = true;
+    this.logger.info(
+      { sessionId, runId: active.runId },
+      "run cancellation requested",
+    );
+    return active.runId;
   }
 
   /** Called by runChatTurn when a run completes (success or failure). */

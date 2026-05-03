@@ -272,10 +272,17 @@ export class CronExecutor {
       child.stderr.on("data", append);
 
       const killer = setTimeout(() => {
+        this.deps.logger.warn(
+          { routineId: rec.id, timeoutMs: effectiveTimeout, command, pid: child.pid },
+          "routine script timed out — sending SIGKILL",
+        );
         try {
           child.kill("SIGKILL");
-        } catch {
-          /* ignore */
+        } catch (err) {
+          this.deps.logger.debug(
+            { err, routineId: rec.id },
+            "routine script: SIGKILL failed (already exited?)",
+          );
         }
       }, effectiveTimeout);
 

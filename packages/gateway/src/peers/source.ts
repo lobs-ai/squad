@@ -2,6 +2,9 @@ import { existsSync, readFileSync, watch, type FSWatcher } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { PeerRecord } from "@squad/protocol";
+import { logger as rootLogger } from "../logger.js";
+
+const log = rootLogger.child({ component: "peers.source" });
 
 export interface PeerSourceOptions {
   /**
@@ -59,8 +62,8 @@ export class PeerSource {
         const next = this.refresh();
         onChange(next);
       });
-    } catch {
-      // Watching is opportunistic; if the platform refuses, we serve stale.
+    } catch (err) {
+      log.warn({ err, path }, "peers: fs.watch unavailable — peer list will be served stale");
     }
   }
 
@@ -92,7 +95,8 @@ export class PeerSource {
     let raw: RegistryFile;
     try {
       raw = JSON.parse(readFileSync(path, "utf-8")) as RegistryFile;
-    } catch {
+    } catch (err) {
+      log.warn({ err, path }, "peers: registry read/parse failed — returning self only");
       return [selfPeer];
     }
     const out: PeerRecord[] = [];

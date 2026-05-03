@@ -326,6 +326,13 @@ export interface BuildSquadPromptInput {
    * runner via `renderContextFilesSection`. Empty/undefined → section skipped.
    */
   contextFilesSection?: string;
+  /**
+   * Pre-rendered runtime-environment section (docker vs native, data dir,
+   * workspace, etc.). Built by the runner via `renderRuntimeEnvironmentSection`.
+   * Lets the agent answer "where am I running" / "where do secrets go"
+   * without asking the user.
+   */
+  runtimeEnvSection?: string;
 }
 
 /**
@@ -348,6 +355,7 @@ export function buildSquadSystemPrompt(input: BuildSquadPromptInput): string {
     memoryRetrieval,
     toolGroupsIndex,
     contextFilesSection,
+    runtimeEnvSection,
   } = input;
   const sections: string[] = [];
 
@@ -400,6 +408,10 @@ agent-facing index that points to the right page for the question. **Do not
 grep your own source code to figure out how Squad works** — that's what
 those docs are for. If you don't know where the Squad checkout is on this
 machine, use \`find_files\` for \`docs/agent/INDEX.md\`.`);
+
+  if (runtimeEnvSection && runtimeEnvSection.trim().length > 0) {
+    sections.push(runtimeEnvSection);
+  }
 
   if (toolGroupsIndex) sections.push(toolGroupsIndex);
 

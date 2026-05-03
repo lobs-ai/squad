@@ -10,7 +10,7 @@ interface Props {
 }
 
 export function Sidebar({ setView, onNewChat }: Props): JSX.Element {
-  const { sessions, plugins, tasks, routines, activeSessionId, setActiveSessionId } = useGateway();
+  const { sessions, plugins, tasks, routines, activeSessionId, setActiveSessionId, unreadLogErrors } = useGateway();
 
   const runningChildrenByParent = new Map<string, SessionRecord[]>();
   for (const s of sessions) {
@@ -125,6 +125,18 @@ export function Sidebar({ setView, onNewChat }: Props): JSX.Element {
         <Icon name="spark" size={12} />
         <span className="lbl">cron</span>
         <span className="meta">{routines.length}</span>
+      </div>
+      <div className="side-item" onClick={() => setView("logs")}>
+        <Icon name="logs" size={12} />
+        <span className="lbl">logs</span>
+        {unreadLogErrors > 0 && (
+          <span
+            className="meta"
+            style={{ background: "var(--err)", color: "var(--bg)" }}
+          >
+            {unreadLogErrors > 99 ? "99+" : unreadLogErrors}
+          </span>
+        )}
       </div>
     </div>
   );

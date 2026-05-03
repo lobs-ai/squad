@@ -17,17 +17,15 @@ export type InboundHandler = (payload: {
 }) => Promise<void>;
 
 export interface OutboundSink {
-  /** Start (or continue) a streamed message. Returns a handle that can be edited. */
-  stream(text: string): Promise<OutboundHandle>;
   /** Send a final one-shot message. */
   send(text: string): Promise<void>;
-  /** Fire-and-forget typing indicator for ~10s. */
-  startTyping(): void;
-}
-
-export interface OutboundHandle {
-  edit(text: string): Promise<void>;
-  finish(text: string): Promise<void>;
+  /**
+   * Start a typing indicator that auto-refreshes every ~8s (Discord clears
+   * typing after 10s on its own). Returns a stop function — sending a message
+   * also implicitly clears typing on Discord's side, so call this on error
+   * paths too even if a `send` is about to follow.
+   */
+  startTyping(): () => void;
 }
 
 /** Minimal pino-shaped logger; optional — falls back to no-op. */
@@ -162,7 +160,13 @@ export async function startBot(options: BotOptions): Promise<BotHandle> {
       } catch (err) {
         const text = err instanceof Error ? err.message : String(err);
         log.error({ err: text, authorId, channelId }, "discord onInbound threw");
-        await sink.send(`⚠️ ${text}`).catch(() => undefined);
+        await sink.send(`⚠️ ${text}`).catch((sendErr: unknown) => {
+          log.warn(
+            { err: sendErr, authorId, channelId },
+            "discord: failed to send error notice to user",
+          );
+          return undefined;
+        });
       }
     }
   }
@@ -305,11 +309,9 @@ async function sendMessage(
 }
 
 /**
- * Outbound sink that uses Carbon's REST client directly. We post the first
- * chunk eagerly to get a message id for later edits; subsequent chunks are
- * appended as new messages. The streaming pattern intentionally stays
- * identical to the discord.js implementation the CLI contract was built
- * around.
+ * Outbound sink that uses Carbon's REST client directly. We don't post any
+ * placeholder — typing indicators cover the in-flight period and the final
+ * assistant message is sent in one shot via `send`.
  */
 function makeOutboundSink(
   client: Client,
@@ -318,55 +320,20 @@ function makeOutboundSink(
   log: BotLogger,
 ): OutboundSink {
   return {
-    async stream(text: string): Promise<OutboundHandle> {
-      const [first, ...rest] = chunkMessage(text || "...", limit);
-      const firstResponse = (await client.rest.post(
-        `/channels/${channelId}/messages`,
-        { body: { content: first ?? "..." } },
-      )) as MessagePostResponse;
-      let headId = firstResponse.id;
-      for (const extra of rest) {
-        const response = (await client.rest.post(
-          `/channels/${channelId}/messages`,
-          { body: { content: extra } },
-        )) as MessagePostResponse;
-        headId = response.id;
-      }
-      return {
-        async edit(newText: string): Promise<void> {
-          const chunks = chunkMessage(newText || "...", limit);
-          await client.rest.patch(
-            `/channels/${channelId}/messages/${headId}`,
-            { body: { content: chunks[0] ?? "..." } },
-          );
-          for (const extra of chunks.slice(1)) {
-            const response = (await client.rest.post(
-              `/channels/${channelId}/messages`,
-              { body: { content: extra } },
-            )) as MessagePostResponse;
-            headId = response.id;
-          }
-        },
-        async finish(finalText: string): Promise<void> {
-          const chunks = chunkMessage(finalText || "...", limit);
-          await client.rest.patch(
-            `/channels/${channelId}/messages/${headId}`,
-            { body: { content: chunks[0] ?? "..." } },
-          );
-        },
-      };
-    },
     async send(text: string): Promise<void> {
       await sendMessage(client, channelId, text, limit);
     },
-    startTyping(): void {
-      // Discord auto-clears typing after 10s or on the next message send —
-      // fire and forget; errors don't matter.
-      void client.rest
-        .post(`/channels/${channelId}/typing`, { body: {} })
-        .catch((err: unknown) => {
-          log.warn({ err: String(err) }, "startTyping failed");
-        });
+    startTyping(): () => void {
+      const ping = () => {
+        void client.rest
+          .post(`/channels/${channelId}/typing`, { body: {} })
+          .catch((err: unknown) => {
+            log.warn({ err: String(err) }, "startTyping failed");
+          });
+      };
+      ping();
+      const interval = setInterval(ping, 8_000);
+      return () => clearInterval(interval);
     },
   };
 }

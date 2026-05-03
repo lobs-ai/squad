@@ -5,7 +5,7 @@
 # changed, env file edits, image rebuild needed.
 #
 # Usage:
-#   scripts/restart.sh
+#   scripts/restart.sh [--rebuild|--build]   # extra flags forwarded to `mgr start`
 
 set -euo pipefail
 
@@ -20,4 +20,4 @@ fi
 
 cli="$(ensure_mgr_cli)"
 $cli mgr stop --all
-exec $cli mgr start --all
+exec $cli mgr start --all "$@"

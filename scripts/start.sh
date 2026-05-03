@@ -4,7 +4,7 @@
 # onboarding wizard first to create one.
 #
 # Usage:
-#   scripts/start.sh
+#   scripts/start.sh [--rebuild|--build]   # extra flags forwarded to `mgr start`
 
 set -euo pipefail
 
@@ -18,4 +18,4 @@ if ! mgr_registered; then
 fi
 
 cli="$(ensure_mgr_cli)"
-exec $cli mgr start --all
+exec $cli mgr start --all "$@"

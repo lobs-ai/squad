@@ -17,12 +17,24 @@ import type {
   HttpMethod,
 } from "@squad/plugin-sdk";
 import type { SubagentRuntimeRegistry } from "../subagents/runtime.js";
-import { parsePluginManifest, satisfiesRequires } from "@squad/plugin-sdk";
+import {
+  MissingConfigError,
+  PluginLoadError,
+  parsePluginManifest,
+  satisfiesRequires,
+} from "@squad/plugin-sdk";
 import type { ToolRegistry, ToolGroupRegistry, ToolGroup, BaseTool } from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
-import type { PluginRecord, PluginUiContribution, SubagentDefinition } from "@squad/protocol";
+import type {
+  PluginErrorDetails,
+  PluginRecord,
+  PluginUiContribution,
+  SubagentDefinition,
+} from "@squad/protocol";
 import type { SubagentRegistry } from "../subagents/registry.js";
-import type { Logger } from "../logger.js";
+import { logger as rootLogger, type Logger } from "../logger.js";
+
+const moduleLog = rootLogger.child({ component: "plugins.host" });
 
 type AnyTool = BaseTool<Record<string, unknown>>;
 
@@ -87,8 +99,31 @@ export interface LoadedPlugin {
   cleanup: (() => void | Promise<void>) | undefined;
 }
 
+/**
+ * A plugin entry whose load failed. Tracked separately from `loaded` so the
+ * dashboard can surface a row with status="failed" + the error message,
+ * instead of the plugin silently disappearing.
+ *
+ * `id` is best-effort — when the failure was an `import_failed`, we don't
+ * have a descriptor and synthesize an id from the source path.
+ */
+export interface FailedPlugin {
+  /** Synthesized from descriptor or source — stable enough for keying UI rows. */
+  id: string;
+  source: string;
+  config: Record<string, unknown>;
+  error: PluginErrorDetails;
+  installedAt: string;
+}
+
 export class PluginHost {
   private readonly loaded: Map<string, LoadedPlugin> = new Map();
+  /**
+   * Plugins that tried to load and threw. Keyed by descriptor id when known,
+   * otherwise by source path. Surfaced in `records()` so the UI shows the
+   * failure instead of the plugin silently vanishing.
+   */
+  private readonly failed: Map<string, FailedPlugin> = new Map();
   /** Per-call cache-busting stamp used by reload(). Cleared after each load. */
   private reloadStamp: number | null = null;
 
@@ -139,25 +174,110 @@ export class PluginHost {
     const specifier = this.reloadStamp
       ? `${baseSpecifier}${baseSpecifier.includes("?") ? "&" : "?"}t=${this.reloadStamp}`
       : baseSpecifier;
-    const mod = (await import(specifier)) as { default?: PluginDescriptor };
+
+    // ── Import ────────────────────────────────────────────────────────────
+    // The dynamic import itself can throw (bad path, syntax error, missing
+    // dep). Wrap so the dispatcher can render a structured "failed" row
+    // instead of leaking a raw stack trace.
+    let mod: { default?: PluginDescriptor };
+    try {
+      mod = (await import(specifier)) as { default?: PluginDescriptor };
+    } catch (cause) {
+      const err = new PluginLoadError({
+        code: "import_failed",
+        pluginSource: entryPath,
+        message: `failed to import plugin at ${entryPath}: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+        cause,
+      });
+      this.recordFailure(err, config);
+      throw err;
+    }
     const descriptor = mod.default;
     if (!descriptor || typeof descriptor.register !== "function") {
-      throw new Error(`plugin at ${entryPath} has no valid default export`);
+      const err = new PluginLoadError({
+        code: "import_failed",
+        pluginSource: entryPath,
+        message: `plugin at ${entryPath} has no valid default export`,
+      });
+      this.recordFailure(err, config);
+      throw err;
     }
+
+    // ── Validate config against the plugin's schema (when present) ───────
+    let effectiveConfig = config;
+    if (descriptor.configSchema) {
+      const parsed = (descriptor.configSchema as { safeParse: (v: unknown) => { success: boolean; data?: unknown; error?: { issues: Array<{ path: (string | number)[]; message: string }> } } }).safeParse(config);
+      if (!parsed.success) {
+        const first = parsed.error?.issues[0];
+        const fieldName = first?.path.length ? String(first.path[0]) : "(unknown)";
+        const err = new PluginLoadError({
+          code: "missing_config",
+          pluginSource: entryPath,
+          pluginId: descriptor.id,
+          message: `plugin "${descriptor.id}" config invalid: ${first?.message ?? "validation failed"}`,
+          details: { field: fieldName, issues: parsed.error?.issues ?? [] },
+        });
+        this.recordFailure(err, config, descriptor.id);
+        throw err;
+      }
+      effectiveConfig = parsed.data as Record<string, unknown>;
+    }
+
+    // ── register(api) ─────────────────────────────────────────────────────
     const uiContributions: PluginUiContribution[] = [];
-    const api = this.apiFor(config, uiContributions, manifest?.permissions);
-    const cleanup = await descriptor.register(api);
+    const api = this.apiFor(effectiveConfig, uiContributions, manifest?.permissions);
+    let cleanup: void | (() => void | Promise<void>);
+    try {
+      cleanup = await descriptor.register(api);
+    } catch (cause) {
+      // MissingConfigError → preserve the structured fields so the UI can
+      // open a configure form pre-pointed at the offending key.
+      if (cause instanceof MissingConfigError) {
+        const err = new PluginLoadError({
+          code: "missing_config",
+          pluginSource: entryPath,
+          pluginId: descriptor.id,
+          message: cause.message,
+          cause,
+          details: {
+            field: cause.field,
+            ...(cause.envVar !== undefined ? { envVar: cause.envVar } : {}),
+            ...(cause.hint !== undefined ? { hint: cause.hint } : {}),
+          },
+        });
+        this.recordFailure(err, effectiveConfig, descriptor.id);
+        throw err;
+      }
+      const err = new PluginLoadError({
+        code: "register_failed",
+        pluginSource: entryPath,
+        pluginId: descriptor.id,
+        message: `plugin "${descriptor.id}" register() threw: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+        cause,
+      });
+      this.recordFailure(err, effectiveConfig, descriptor.id);
+      throw err;
+    }
+
     const entry: LoadedPlugin = {
       descriptor,
       source: entryPath,
       ...(manifest ? { manifest } : {}),
-      config,
+      config: effectiveConfig,
       enabled: true,
       installedAt: new Date().toISOString(),
       uiContributions,
       cleanup: typeof cleanup === "function" ? cleanup : undefined,
     };
     this.loaded.set(descriptor.id, entry);
+    // Successful load supersedes any prior failure — drop the failed entry
+    // so the dashboard stops showing a stale error banner.
+    this.failed.delete(descriptor.id);
+    this.failed.delete(entryPath);
     this.deps.logger.info(
       {
         id: descriptor.id,
@@ -168,6 +288,70 @@ export class PluginHost {
     );
     this.deps.onPluginChanged?.(this.toRecord(entry));
     return entry;
+  }
+
+  /**
+   * Stash a load failure so it shows up in `records()` with status="failed".
+   * Idempotent — replaces any earlier failure under the same key.
+   */
+  private recordFailure(
+    err: PluginLoadError,
+    config: Record<string, unknown>,
+    explicitId?: string,
+  ): void {
+    const id = explicitId ?? err.pluginId ?? err.pluginSource;
+    const details: PluginErrorDetails = {
+      code: err.code,
+      message: err.message,
+      ...(typeof err.details["field"] === "string"
+        ? { field: err.details["field"] as string }
+        : {}),
+      ...(typeof err.details["envVar"] === "string"
+        ? { envVar: err.details["envVar"] as string }
+        : {}),
+      ...(typeof err.details["hint"] === "string"
+        ? { hint: err.details["hint"] as string }
+        : {}),
+    };
+    const failed: FailedPlugin = {
+      id,
+      source: err.pluginSource,
+      config,
+      error: details,
+      installedAt: new Date().toISOString(),
+    };
+    this.failed.set(id, failed);
+    this.deps.logger.error(
+      { id, source: err.pluginSource, code: err.code, message: err.message },
+      "plugin load failed — gateway continuing",
+    );
+    this.deps.onPluginChanged?.(this.failedToRecord(failed));
+  }
+
+  /** Catalog / dispatch view of failed entries. */
+  failedRecords(): PluginRecord[] {
+    return Array.from(this.failed.values()).map((f) => this.failedToRecord(f));
+  }
+
+  /** Drop a failed entry — used after `plugins.uninstall` rolls back. */
+  clearFailure(idOrSource: string): void {
+    this.failed.delete(idOrSource);
+  }
+
+  private failedToRecord(f: FailedPlugin): PluginRecord {
+    return {
+      id: f.id,
+      name: f.id,
+      version: "0.0.0",
+      kinds: [],
+      enabled: false,
+      ...(Object.keys(f.config).length > 0 ? { config: f.config } : {}),
+      source: f.source,
+      installedAt: f.installedAt,
+      uiContributions: [],
+      status: "failed",
+      error: f.error,
+    };
   }
 
   async unload(id: string): Promise<void> {
@@ -181,6 +365,7 @@ export class PluginHost {
       }
     }
     this.loaded.delete(id);
+    this.deps.logger.info({ id, source: entry.source }, "plugin unloaded");
   }
 
   /**
@@ -193,6 +378,7 @@ export class PluginHost {
     if (!entry) return null;
     entry.enabled = enabled;
     const rec = this.toRecord(entry);
+    this.deps.logger.info({ id, enabled }, "plugin enabled flag changed");
     this.deps.onPluginChanged?.(rec);
     return rec;
   }
@@ -202,6 +388,7 @@ export class PluginHost {
     if (!entry) return null;
     entry.config = config;
     const rec = this.toRecord(entry);
+    this.deps.logger.info({ id, fields: Object.keys(config) }, "plugin config updated");
     this.deps.onPluginChanged?.(rec);
     return rec;
   }
@@ -232,12 +419,26 @@ export class PluginHost {
   }
 
   records(): PluginRecord[] {
-    return Array.from(this.loaded.values()).map((e) => this.toRecord(e));
+    const loaded = Array.from(this.loaded.values()).map((e) => this.toRecord(e));
+    // Failed records are appended so the UI can render an error banner per
+    // row. Dedup by id + source: if the same source somehow loaded *and*
+    // appears in failed (shouldn't happen, but be safe), prefer loaded.
+    const loadedKeys = new Set<string>();
+    for (const r of loaded) {
+      loadedKeys.add(r.id);
+      loadedKeys.add(r.source);
+    }
+    const failed = Array.from(this.failed.values())
+      .filter((f) => !loadedKeys.has(f.id) && !loadedKeys.has(f.source))
+      .map((f) => this.failedToRecord(f));
+    return [...loaded, ...failed];
   }
 
   recordFor(id: string): PluginRecord | null {
     const entry = this.loaded.get(id);
-    return entry ? this.toRecord(entry) : null;
+    if (entry) return this.toRecord(entry);
+    const fail = this.failed.get(id);
+    return fail ? this.failedToRecord(fail) : null;
   }
 
   private toRecord(entry: LoadedPlugin): PluginRecord {
@@ -251,6 +452,7 @@ export class PluginHost {
       source: entry.source,
       installedAt: entry.installedAt,
       uiContributions: [...entry.uiContributions],
+      status: entry.enabled ? "loaded" : "disabled",
     };
   }
 
@@ -384,7 +586,8 @@ function loadManifestNear(entryAbs: string): PluginManifest | null {
     try {
       const raw = JSON.parse(readFileSync(c, "utf8"));
       return parsePluginManifest(raw);
-    } catch {
+    } catch (err) {
+      moduleLog.warn({ err, path: c }, "plugin manifest exists but failed to parse");
       return null;
     }
   }

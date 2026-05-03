@@ -96,8 +96,11 @@ export async function recoverInFlightRuns(deps: RecoveryDeps): Promise<RecoveryR
       deps.logger.error({ err, sessionId }, "session recovery failed — leaving idle");
       try {
         deps.sessions.setStatus(sessionId, "idle");
-      } catch {
-        // ignore — best effort
+      } catch (statusErr) {
+        deps.logger.warn(
+          { err: statusErr, sessionId },
+          "recovery: failed to mark session idle after error",
+        );
       }
       result.skipped++;
     }

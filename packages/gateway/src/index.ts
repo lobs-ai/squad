@@ -14,11 +14,13 @@ import {
   registerCronTools,
   registerRestartTool,
   registerSquadDoctorTool,
+  registerPluginManagementTools,
+  registerEnvTools,
 } from "@squad/tools";
 import { JsonConfigBackend } from "./config-backend.js";
 import { RestartManager } from "./restart/manager.js";
 import { recoverInFlightRuns } from "./restart/recovery.js";
-import { logger } from "./logger.js";
+import { logger, logBuffer } from "./logger.js";
 import { resolveTokenSecrets, configSchema, type Config } from "./config.js";
 import { Authenticator } from "./auth.js";
 import { Broadcast } from "./broadcast.js";
@@ -37,6 +39,14 @@ import { SubagentDefStore } from "./db/subagent-defs.js";
 import { DeliveryQueue } from "./delivery/queue.js";
 import { RunCoordinator } from "./delivery/coordinator.js";
 import { PluginHost } from "./plugins/host.js";
+import { SecretStore } from "./secrets/store.js";
+import { envBackendFor } from "./secrets/env-backend.js";
+import { buildPluginSetupSessionFactory } from "./plugins/setup-session.js";
+import { buildPluginManagementBackend } from "./plugins/management-backend.js";
+import {
+  captureRuntimeEnvironment,
+  renderRuntimeEnvironmentSection,
+} from "./runtime-env.js";
 import { PluginRouteRegistry } from "./plugins/http-routes.js";
 import { RoutineScheduler } from "./routines/scheduler.js";
 import { RoutineStore } from "./routines/store.js";
@@ -88,7 +98,7 @@ import { createBuiltinChecks } from "./doctor/checks.js";
 import { doctorBackendFor } from "./doctor/backend.js";
 import type { MemCore } from "memcore";
 
-export { logger } from "./logger.js";
+export { logger, logBuffer } from "./logger.js";
 export { loadConfig, type Config } from "./config.js";
 export { JsonConfigBackend } from "./config-backend.js";
 export { createGatewayServer } from "./server.js";
@@ -284,8 +294,33 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   };
   const config = liveConfig.current;
 
+  logger.info(
+    {
+      squadName: config.server.squad_name,
+      port: config.server.port,
+      host: config.server.host,
+      dataDir: config.server.data_dir,
+      configPath: opts.configPath ?? null,
+    },
+    "gateway boot starting",
+  );
+
   const dbPath = join(config.server.data_dir, "squad.db");
   const db = openDb({ path: dbPath });
+
+  // Secret store: file-backed values plugins read via process.env. Merging
+  // happens *before* the plugin host loads anything so each plugin's
+  // `register(api)` sees the full env. Operator-set env vars win — we
+  // never shadow what the deployment owner exported deliberately.
+  const secretStore = new SecretStore(join(config.server.data_dir, "secrets.json"));
+  const merged = secretStore.mergeIntoProcessEnv();
+  if (merged.applied.length > 0)
+    logger.info({ applied: merged.applied }, "secret store merged into process.env");
+  if (merged.skipped.length > 0)
+    logger.info(
+      { skipped: merged.skipped },
+      "secret store entries shadowed by existing env vars",
+    );
 
   // Resolve the agent's persistent home directory and ensure it exists.
   // Empty config value means "derive from data_dir" so test fixtures that
@@ -304,6 +339,10 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   const messages = new MessageStore(db);
   const toolCalls = new ToolCallStore(db);
   const broadcast = new Broadcast();
+  // Wire the live log stream onto the broadcast bus so `logs.entry`
+  // subscribers (dashboard Logs view, `squad tail -f`) get every entry the
+  // pino multistream captures from here on out.
+  logBuffer.attachBroadcast(broadcast);
   // Bridge SessionStore mutations onto the broadcast bus so dashboards/CLI
   // clients see new and modified sessions live without polling session.list.
   sessions.onChange((kind, session) => {
@@ -471,6 +510,9 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   // The override branch never builds an embedder, so default to "openai" —
   // the doctor check is meaningful only on real boots.
   let embedderKind: import("./memory/embedder-resolver.js").EmbedderKind = "openai";
+  // Hoisted so it can flow into MemoryService (for chunked retrieval) AND
+  // into MemCore. Undefined when `memcoreOverride` is set (test path).
+  let memcoreEmbedder: import("memcore").Embedder | undefined;
   if (opts.memcoreOverride) {
     memcoreInstance = opts.memcoreOverride;
   } else {
@@ -497,7 +539,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
       memcoreMod,
       logger,
     });
-    const memcoreEmbedder = resolvedEmbedder.embedder;
+    memcoreEmbedder = resolvedEmbedder.embedder;
     embedderKind = resolvedEmbedder.kind;
     // Resolve per-stage model: explicit override → processing_model → primary.
     // Empty string at any layer falls through; `claude-haiku-4-5` is the
@@ -535,6 +577,11 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   const containerTag = memcoreCfg.container_tag || config.server.squad_name;
   const memoryService = new MemoryService(memcoreInstance, logger, {
     containerTag,
+    // Hand the embedder reference so retrievalForTurn can read its
+    // maxInputChars and chunk long queries instead of truncating them.
+    // Tests using the StubMemCore path leave this undefined and fall back
+    // to a 2000-char floor that fits every mainstream embedder.
+    ...(memcoreEmbedder ? { embedder: memcoreEmbedder } : {}),
   });
   registerMemoryTools(toolRegistry, memoryBackendFor(memoryService));
   subagentPool.setMemory(memoryService);
@@ -1018,6 +1065,13 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   registerSquadDoctorTool(toolRegistry, doctorBackendFor(doctor));
   logger.info({ checks: doctor.list().length }, "squad doctor ready");
 
+  // Generic env tools: agent-facing wrappers around the SecretStore so any
+  // session can persist environment variables without writing `.env` by
+  // hand. Distinct from `plugin_install`'s `secrets` map (which is the
+  // preferred path for plugin-declared fields) — `set_env` covers the long
+  // tail of "I have an API key for X, save it" requests.
+  registerEnvTools(toolRegistry, envBackendFor(secretStore));
+
   // Auto-titler: kicks in once after the first user message of a session.
   // Always instantiated so the `chat.auto_title` toggle takes effect live —
   // the generator itself bails out when `enabled()` returns false.
@@ -1027,7 +1081,10 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     defaultModel: config.llm.primary.model,
     enabled: () => liveConfig.current.chat.auto_title,
     configuredModel: () => liveConfig.current.chat.title_model || null,
-    fallbackModel: () => liveConfig.current.chat.title_fallback_model || null,
+    // Reuse the same client chat does — rotation, fallback chain, and
+    // resolved credentials all already work there. Only an explicit
+    // `chat.title_model` override builds its own dedicated client.
+    ...(sharedClient !== undefined ? { sharedClient } : {}),
     resolveConfig: () =>
       resolveProviderConfig(
         liveConfig.current.llm.providers as Record<
@@ -1035,6 +1092,33 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
           import("./llm-config.js").ProviderConfig
         >,
       ),
+  });
+
+  // Snapshot the host environment once at boot so every chat turn can tell
+  // the agent where it's running. Cheap, doesn't change at runtime.
+  const runtimeEnv = captureRuntimeEnvironment({
+    dataDir: config.server.data_dir,
+    workspaceDir,
+    squadName: config.server.squad_name,
+  });
+  const runtimeEnvSection = renderRuntimeEnvironmentSection(runtimeEnv);
+  logger.info(
+    {
+      containerKind: runtimeEnv.containerKind,
+      os: runtimeEnv.os,
+      envFilePath: runtimeEnv.envFilePath,
+    },
+    "runtime environment captured for system-prompt injection",
+  );
+
+  // Setup-chat factory: just creates the session + renders the seed.
+  // The dashboard (or CLI) is responsible for sending the seed via
+  // `chat.send` over its own connection once it has navigated to the
+  // chat view — that avoids any subscription race where the agent's
+  // streamed reply lands before the UI is listening.
+  const pluginSetupSessionFactory = buildPluginSetupSessionFactory({
+    sessions,
+    defaultModel: config.llm.primary.model,
   });
 
   const handle = createGatewayServer({
@@ -1062,6 +1146,9 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     version: VERSION,
     plugins,
     pluginRoutes,
+    secretStore,
+    pluginSetupSessionFactory,
+    runtimeEnvSection,
     approvals,
     approvalRules,
     channels,
@@ -1072,6 +1159,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     commands: commandRegistry,
     toolsets: toolsetRegistry,
     traceRegistry,
+    logBuffer,
     httpApi: createHttpApiHandler({
       authenticator,
       sessions,
@@ -1097,6 +1185,28 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     },
     ...(opts.clientOverride !== undefined ? { clientOverride: opts.clientOverride } : {}),
   });
+
+  // Wire the agent-facing plugin management tools. They route through the
+  // dispatcher (which holds all the install/uninstall/secret/auth-token
+  // logic) using a synthetic in-process grant. The tools are part of the
+  // default tool group so every session can use them — installing or fixing
+  // a plugin shouldn't require unlocking a special toolset first.
+  const pluginManagementGrant = authenticator.addRuntimeToken({
+    label: "plugin-management-tools",
+    secret: `pm-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    scopes: ["*"],
+  });
+  registerPluginManagementTools(
+    toolRegistry,
+    buildPluginManagementBackend({
+      dispatcher: handle.dispatcher,
+      systemContext: {
+        grant: pluginManagementGrant,
+        authenticator,
+        subscriberId: "plugin-management-tools",
+      },
+    }),
+  );
 
   const startChannels = async (): Promise<void> => {
     for (const ch of channelHandles) {
@@ -1134,12 +1244,14 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   }
 
   const close = async (): Promise<void> => {
+    logger.info({ uptimeMs: Date.now() - startedAt }, "gateway closing");
     routines.stop();
     peers.stop();
     if (sessionIngestion) await sessionIngestion.stop();
     for (const ch of channelHandles) {
       try {
         await ch.stop();
+        logger.info({ channel: ch.id }, "channel stopped");
       } catch (err) {
         logger.error({ err, channel: ch.id }, "channel failed to stop");
       }
@@ -1152,8 +1264,18 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
       logger.error({ err }, "memcore failed to close");
     }
     db.close();
+    logger.info({}, "gateway closed");
   };
   closeRef.current = close;
+
+  logger.info(
+    {
+      bootMs: Date.now() - startedAt,
+      plugins: plugins?.records().length ?? 0,
+      channels: channels?.list().length ?? 0,
+    },
+    "gateway boot complete — ready to listen",
+  );
 
   return {
     handle,

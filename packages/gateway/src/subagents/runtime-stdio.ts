@@ -4,6 +4,9 @@ import type {
   SubagentRuntimeRunInput,
   SubagentRuntimeRunResult,
 } from "./runtime.js";
+import { logger as rootLogger } from "../logger.js";
+
+const log = rootLogger.child({ component: "subagents.runtime-stdio" });
 
 /**
  * Generic stdio runtime: spawns `command` with `args`, writes the prompt
@@ -51,10 +54,11 @@ export function stdioRuntime(id: string, opts: StdioRuntimeOptions): SubagentRun
       });
 
       const onAbort = (): void => {
+        log.info({ runtimeId: id, pid: child.pid }, "subagent runtime aborted (SIGTERM)");
         try {
           child.kill("SIGTERM");
-        } catch {
-          /* ignore */
+        } catch (err) {
+          log.debug({ err, runtimeId: id }, "subagent runtime: kill on abort failed (already exited?)");
         }
       };
       input.signal.addEventListener("abort", onAbort);
@@ -96,10 +100,14 @@ export function stdioRuntime(id: string, opts: StdioRuntimeOptions): SubagentRun
 
       const result = await new Promise<SubagentRuntimeRunResult>((resolve) => {
         const timer = setTimeout(() => {
+          log.warn(
+            { runtimeId: id, timeoutMs, pid: child.pid },
+            "subagent runtime timed out — sending SIGTERM",
+          );
           try {
             child.kill("SIGTERM");
-          } catch {
-            /* ignore */
+          } catch (err) {
+            log.debug({ err, runtimeId: id }, "subagent runtime: kill on timeout failed");
           }
           resolve({
             output: collected,

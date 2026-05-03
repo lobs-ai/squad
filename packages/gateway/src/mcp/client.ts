@@ -106,16 +106,23 @@ export class McpClient extends EventEmitter {
     this.child = null;
     try {
       child.stdin?.end();
-    } catch {
-      /* noop */
+    } catch (err) {
+      this.opts.logger.debug(
+        { err, serverId: this.opts.serverId },
+        "mcp stop: stdin.end() failed",
+      );
     }
     child.kill("SIGTERM");
+    this.opts.logger.info({ serverId: this.opts.serverId }, "mcp server stopping (SIGTERM)");
     // Hard-kill if it hangs around for >2s.
     setTimeout(() => {
       try {
         child.kill("SIGKILL");
-      } catch {
-        /* noop */
+      } catch (err) {
+        this.opts.logger.debug(
+          { err, serverId: this.opts.serverId },
+          "mcp stop: SIGKILL failed (process likely already exited)",
+        );
       }
     }, 2_000).unref();
   }
@@ -227,8 +234,11 @@ export class McpClient extends EventEmitter {
     const payload = JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n";
     try {
       this.child.stdin!.write(payload);
-    } catch {
-      /* swallow — notifications are fire-and-forget */
+    } catch (err) {
+      this.opts.logger.debug(
+        { err, serverId: this.opts.serverId, method },
+        "mcp notify failed (fire-and-forget)",
+      );
     }
   }
 }

@@ -87,20 +87,13 @@ const chatConfigSchema = z
     delivery: deliveryObjectSchema,
     /**
      * Model id used to auto-name new sessions from their first user message.
-     * Empty string (the default) inherits the session's primary model — i.e.
-     * "main". Override globally to point title generation at a cheaper model
-     * without changing the chat model. Per-session overrides set via
-     * `session.setTitleModel` win over this.
+     * Empty string (the default) reuses the gateway's shared chat client —
+     * if chat works, titling works, no extra config needed. Set explicitly
+     * to point title generation at a cheaper model; in that case we build a
+     * dedicated client and `llm.providers` must have credentials for it.
+     * Per-session overrides set via `session.setTitleModel` win over this.
      */
     title_model: z.string().default(""),
-    /**
-     * Backup model used when `title_model` (or, if unset, the session's own
-     * model) fails — e.g. a typo'd or retired chat model that the provider
-     * 400s on. Empty string falls back to `llm.primary.model`. Set this to a
-     * known-good cheap model so a bad chat model doesn't leave every session
-     * untitled.
-     */
-    title_fallback_model: z.string().default(""),
     /**
      * Master switch for the auto-title behaviour. Off-by-default would force
      * every new install to opt in to a feature most people want, so we keep

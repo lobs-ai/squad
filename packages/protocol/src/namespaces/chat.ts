@@ -63,9 +63,21 @@ export const chatHistoryParams = z.object({
 });
 export const chatHistoryResult = z.object({ messages: z.array(messageRecordSchema) });
 
+// chat.cancel — request that the active run for `sessionId` stop at the next
+// safe checkpoint (between LLM turns / tool batches). The agent loop honors
+// the signal cooperatively; in-flight tool calls finish first.
+export const chatCancelParams = z.object({
+  sessionId: z.string(),
+});
+export const chatCancelResult = z.object({
+  cancelled: z.boolean(),
+  runId: z.string().optional(),
+});
+
 export const chatMethods = {
   "chat.send": { params: chatSendParams, result: chatSendResult },
   "chat.history": { params: chatHistoryParams, result: chatHistoryResult },
+  "chat.cancel": { params: chatCancelParams, result: chatCancelResult },
 } as const;
 
 // ── Events ────────────────────────────────────────────────────────────────────

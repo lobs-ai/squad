@@ -190,6 +190,14 @@ export interface AgentSpec {
    * When omitted, the loop manages a private message array.
    */
   session?: Session;
+
+  /**
+   * Cooperative cancellation. Polled by the agent loop between LLM turns
+   * and after each LLM call returns. When it first returns true the loop
+   * exits with stopReason "cancelled". In-flight tool calls aren't
+   * interrupted — they finish, then the loop bails before the next turn.
+   */
+  shouldCancel?: () => boolean;
 }
 
 // ── Tool Executor ─────────────────────────────────────────────────────────────

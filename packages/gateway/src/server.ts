@@ -45,6 +45,8 @@ import type { CommandRegistry } from "./commands/registry.js";
 import type { ToolsetRegistry } from "./toolsets/registry.js";
 import { registerCommandMethods } from "./dispatch/commands.js";
 import { registerToolsetMethods } from "./dispatch/toolsets.js";
+import { registerLogMethods } from "./dispatch/logs.js";
+import type { LogBuffer } from "./logs/buffer.js";
 import type { HttpApiHandler } from "./http-api.js";
 import type { PluginRouteRegistry } from "./plugins/http-routes.js";
 import { dispatchPluginRoute } from "./plugins/http-routes.js";
@@ -134,6 +136,26 @@ export interface GatewayDeps {
   traceRegistry?: import("./traces.js").TraceSessionRegistry;
   /** Plugin-contributed HTTP routes; consulted between built-ins and statics. */
   pluginRoutes?: PluginRouteRegistry;
+  /**
+   * In-memory ring buffer of pino log lines. When present, exposes
+   * `logs.tail` and (via boot wiring) live `logs.entry` events.
+   */
+  logBuffer?: LogBuffer;
+  /**
+   * Secret store backing `plugins.install` external secrets. When absent
+   * (test fixtures), install rejects calls that attempt to set secrets.
+   */
+  secretStore?: import("./secrets/store.js").SecretStore;
+  /**
+   * Factory for `plugins.start_setup_chat`. Built by boot from sessions +
+   * messages + broadcast; tests can omit it (the RPC then errors).
+   */
+  pluginSetupSessionFactory?: import("./plugins/setup-session.js").PluginSetupSessionFactory;
+  /**
+   * Pre-rendered runtime-environment section. Forwarded to chat.send so
+   * every turn carries a "where am I running" briefing.
+   */
+  runtimeEnvSection?: string;
 }
 
 export interface GatewayHandle {
@@ -399,6 +421,7 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
     ...(deps.clientOverride !== undefined ? { clientOverride: deps.clientOverride } : {}),
     ...(deps.titleGenerator ? { titleGenerator: deps.titleGenerator } : {}),
     ...(deps.traceRegistry ? { traceRegistry: deps.traceRegistry } : {}),
+    ...(deps.runtimeEnvSection ? { runtimeEnvSection: deps.runtimeEnvSection } : {}),
   });
   registerTaskMethods(d, deps.tasks, deps.broadcast);
   registerQuestionMethods(d, deps.questions);
@@ -417,7 +440,16 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
       ...(deps.approvalRules ? { rules: deps.approvalRules } : {}),
     });
   }
-  if (deps.plugins) registerPluginMethods(d, deps.plugins);
+  if (deps.plugins) {
+    registerPluginMethods(d, {
+      host: deps.plugins,
+      ...(deps.configBackend ? { configBackend: deps.configBackend } : {}),
+      ...(deps.secretStore ? { secretStore: deps.secretStore } : {}),
+      ...(deps.pluginSetupSessionFactory
+        ? { setupSessionFactory: deps.pluginSetupSessionFactory }
+        : {}),
+    });
+  }
   if (deps.channels) registerChannelMethods(d, deps.channels);
   if (deps.routineStore && deps.routineRunner) {
     registerRoutineMethods(d, {
@@ -428,6 +460,7 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
   }
   if (deps.commands) registerCommandMethods(d, deps.commands);
   if (deps.toolsets) registerToolsetMethods(d, deps.toolsets);
+  if (deps.logBuffer) registerLogMethods(d, deps.logBuffer);
 
   // Identity + peers need a PeerSource. When boot() doesn't pass one (test
   // harness), synthesize a minimal in-process source so admin.peers still
