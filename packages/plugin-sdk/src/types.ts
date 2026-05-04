@@ -336,6 +336,27 @@ export interface SubagentRuntimeRegistration {
   }>;
 }
 
+/**
+ * Live gateway runtime info exposed to plugins. Populated once at boot from
+ * the gateway's own listen config — NOT from `process.env.SQUAD_BASE_URL`,
+ * which can drift if a previous run's value got stuck in the secret store.
+ * Plugins building OAuth callback URLs / connect links should read from here
+ * so they always reflect the port the gateway is actually listening on.
+ */
+export interface PluginRuntimeInfo {
+  /** Listen host as configured (`server.host`). May be `0.0.0.0`. */
+  serverHost: string;
+  /** Listen port as configured (`server.port`). */
+  serverPort: number;
+  /**
+   * Browser-pasteable base URL for the gateway. Operator overrides win
+   * (deliberate `SQUAD_BASE_URL` set in the parent shell, reverse-proxy
+   * deploys), with a fallback derived from the live listen host:port.
+   * Never trailing-slashed.
+   */
+  publicBaseUrl: string;
+}
+
 export interface GatewayAPI {
   tools: { register(tool: AnyTool): void };
   /**
@@ -418,6 +439,12 @@ export interface GatewayAPI {
   ui: { contribute(contribution: PluginUiContribution): void };
   logger: { info: (msg: string, meta?: unknown) => void; warn: (msg: string, meta?: unknown) => void; error: (msg: string, meta?: unknown) => void };
   config: Record<string, unknown>;
+  /**
+   * Live gateway runtime info — listen host/port and a browser-pasteable
+   * base URL. Prefer reading these over `process.env.SQUAD_BASE_URL`, which
+   * is best-effort and can be shadowed by stale secret-store entries.
+   */
+  runtime: PluginRuntimeInfo;
 }
 
 /**

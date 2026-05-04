@@ -316,6 +316,15 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   const dbPath = join(config.server.data_dir, "squad.db");
   const db = openDb({ path: dbPath });
 
+  // Snapshot env vars set by the parent shell BEFORE the secret-store merge
+  // happens, so we can later distinguish "operator deliberately exported X"
+  // from "X is just a leftover the secret store remembered". Used for
+  // SQUAD_BASE_URL: a stale stored value should not shadow the live listen
+  // port, but a parent-shell export (reverse-proxy deploys) must.
+  const parentShellEnv = new Set(Object.keys(process.env).filter(
+    (k) => typeof process.env[k] === "string" && process.env[k]!.trim().length > 0,
+  ));
+
   // Secret store: file-backed values plugins read via process.env. Merging
   // happens *before* the plugin host loads anything so each plugin's
   // `register(api)` sees the full env. Operator-set env vars win — we
@@ -330,13 +339,24 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
       "secret store entries shadowed by existing env vars",
     );
 
-  // Publish the gateway's actual base URL so plugins (e.g. OAuth callback
-  // URLs in plugin-google-auth) can compute redirects without hardcoding a
-  // port. Operator/secret-store-set values win — never shadow a deliberate
-  // override (e.g. behind a reverse proxy with a different public host).
-  if (!process.env.SQUAD_BASE_URL || process.env.SQUAD_BASE_URL.trim() === "") {
-    process.env.SQUAD_BASE_URL = gatewayBaseUrl(config.server.host, config.server.port);
-  }
+  // Resolve the gateway's public base URL once on every boot. Order:
+  //   1. Parent-shell-exported SQUAD_BASE_URL (genuine operator override —
+  //      reverse-proxy / containerized deploys with a different public host).
+  //   2. Live listen host:port — the source of truth in dev / bare-metal.
+  // We deliberately ignore `SQUAD_BASE_URL` if it only got into process.env
+  // via the secret-store merge above: an old `set_env` from a prior boot on
+  // a different port should not shadow the current listen port. Plugins
+  // (e.g. plugin-google-auth) read this through `api.runtime.publicBaseUrl`
+  // so they always reflect what's actually listening right now.
+  const operatorBaseUrl = parentShellEnv.has("SQUAD_BASE_URL")
+    ? process.env.SQUAD_BASE_URL?.trim().replace(/\/$/, "") || null
+    : null;
+  const livePublicBaseUrl =
+    operatorBaseUrl ?? gatewayBaseUrl(config.server.host, config.server.port);
+  // Mirror it into `process.env` for any legacy code path that still reads
+  // the env var directly. Always overwrite — the resolved value is correct
+  // even if a stale secret-store entry was merged in above.
+  process.env.SQUAD_BASE_URL = livePublicBaseUrl;
 
   // Resolve the agent's persistent home directory and ensure it exists.
   // Empty config value means "derive from data_dir" so test fixtures that
@@ -915,6 +935,11 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
       broadcast.publish("plugins.changed", { plugin: rec });
       refreshPromptContextPlugins();
     },
+    runtime: () => ({
+      serverHost: config.server.host,
+      serverPort: config.server.port,
+      publicBaseUrl: livePublicBaseUrl,
+    }),
   });
 
   // Plugin / MCP load failures are surfaced to the doctor so the agent can

@@ -2,6 +2,12 @@
 
 Guidance for AI coding agents working in this repo.
 
+## Terminology — read this first
+
+When the user says "subagents", "tools", "tasks", "ask-user", "questions", "channels", "plugins", "skills", "routines", "the gateway", "the protocol", "the dashboard", "the runner", "agents", or "the agent loop", they are **always** talking about Squad — the product being built in this repo. They are not talking about your tools, your subagents, your task list, your skills, or anything in the Claude Code harness you happen to be running under.
+
+The names overlap because Squad is itself an agent platform with primitives that mirror what the harness exposes to you. Resolve every such reference against the code in this repo (`packages/gateway`, `packages/tools`, `packages/protocol`, etc.), not against your own runtime. If a request seems to be about your environment rather than the codebase, that is almost certainly a misread — re-anchor on Squad before responding.
+
 ## What this project is
 
 Squad is a self-hostable agent platform that competes on **usability** and **subagents**. The four load-bearing primitives:

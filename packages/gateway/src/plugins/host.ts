@@ -17,6 +17,7 @@ import type {
   PluginDeliveryMeta,
   PluginHttpHandler,
   HttpMethod,
+  PluginRuntimeInfo,
 } from "@squad/plugin-sdk";
 import type { SubagentRuntimeRegistry } from "../subagents/runtime.js";
 import {
@@ -112,6 +113,16 @@ export interface PluginHostDeps {
    * publish `plugins.changed` so dashboards live-update.
    */
   onPluginChanged?: (record: PluginRecord) => void;
+  /**
+   * Live gateway runtime info forwarded to every plugin via `api.runtime`.
+   * The gateway computes this once at boot from the actual server config so
+   * plugins can build callback URLs / connect links that reflect the port
+   * the gateway is listening on right now — not whatever stale value lives
+   * in `process.env.SQUAD_BASE_URL`. Read via the getter on every access so
+   * a future hot-rebind of `publicBaseUrl` is picked up without re-loading
+   * each plugin.
+   */
+  runtime: () => PluginRuntimeInfo;
 }
 
 export interface LoadedPlugin {
@@ -554,6 +565,7 @@ export class PluginHost {
       }
       (kind === "tool" ? owned.toolNames : owned.toolGroupNames).add(name);
     };
+    const getRuntime = this.deps.runtime;
     return {
       tools: {
         register: (tool: AnyTool) => {
@@ -663,6 +675,9 @@ export class PluginHost {
         error: (msg, meta) => this.deps.logger.error({ ...(meta as object) }, msg),
       },
       config,
+      get runtime(): PluginRuntimeInfo {
+        return getRuntime();
+      },
     };
   }
 }

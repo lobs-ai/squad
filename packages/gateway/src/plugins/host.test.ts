@@ -34,6 +34,11 @@ function makeDeps(extras: Partial<PluginHostDeps> = {}): PluginHostDeps {
     toolsets: [],
     registerDelivery: () => {},
     registerHttpRoute: () => {},
+    runtime: () => ({
+      serverHost: "127.0.0.1",
+      serverPort: 0,
+      publicBaseUrl: "http://127.0.0.1:0",
+    }),
     ...extras,
   };
 }

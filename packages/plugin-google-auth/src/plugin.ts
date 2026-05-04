@@ -46,14 +46,15 @@ export default definePlugin({
   register(api) {
     const cfg = api.config as Config;
 
-    // SQUAD_BASE_URL is published into process.env by the gateway at boot
-    // (see runtime-env.ts → gatewayBaseUrl), so we never need to bake in a
-    // port here. Operator overrides (plugin config / explicit env) win, then
-    // the gateway-derived base URL, then an empty string — which keeps the
-    // missing-creds prompt fragment honest instead of advertising a wrong
-    // default URL the user would never have registered in GCP.
+    // Prefer `api.runtime.publicBaseUrl` over `process.env.SQUAD_BASE_URL`:
+    // the gateway computes runtime fresh from the live listen config every
+    // boot, so it can't be poisoned by a stale secret-store entry from a
+    // run on a different port. Plugin-config `base_url` still wins for
+    // operators that need a different public host (rare; reverse proxies
+    // typically come through the gateway's own SQUAD_BASE_URL operator
+    // override before plugin load).
     const resolveBaseUrl = (): string =>
-      readString(cfg.base_url, "SQUAD_BASE_URL") ?? "";
+      readString(cfg.base_url, null) ?? api.runtime.publicBaseUrl ?? "";
     const resolveRedirectUri = (): string => {
       const explicit = readString(cfg.redirect_uri, "GOOGLE_REDIRECT_URI");
       if (explicit) return explicit;
