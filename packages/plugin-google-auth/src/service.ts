@@ -6,9 +6,16 @@ import { GoogleAuthStore, type GoogleAccount, type GoogleFeature } from "./store
 export interface GoogleOAuthCreds {
   clientId: string;
   clientSecret: string;
-  /** Public redirect URI registered with Google (e.g. http://localhost:8787/oauth/google/callback). */
+  /** Public redirect URI registered with Google. Must end in `/oauth/google/callback`. */
   redirectUri: string;
 }
+
+/**
+ * Resolver invoked on every OAuth client construction. Lets the plugin re-read
+ * `process.env` (or whatever source) on each call, so values written via
+ * `set_env` after the plugin loaded are picked up without a gateway restart.
+ */
+export type GoogleOAuthCredsResolver = () => GoogleOAuthCreds;
 
 export interface AuthedClient {
   client: OAuth2Client;
@@ -38,23 +45,30 @@ const STATE_TTL_MS = 10 * 60 * 1000;
  */
 export class GoogleAuthService {
   private readonly store: GoogleAuthStore;
-  private readonly creds: GoogleOAuthCreds;
+  private readonly resolveCreds: GoogleOAuthCredsResolver;
   private readonly scopes: string[];
   private readonly stateStore = new Map<string, { expires: number }>();
 
-  constructor(opts: { store: GoogleAuthStore; creds: GoogleOAuthCreds; scopes?: string[] }) {
+  constructor(opts: {
+    store: GoogleAuthStore;
+    creds: GoogleOAuthCreds | GoogleOAuthCredsResolver;
+    scopes?: string[];
+  }) {
     this.store = opts.store;
-    this.creds = opts.creds;
+    const creds = opts.creds;
+    this.resolveCreds = typeof creds === "function" ? creds : () => creds;
     this.scopes = opts.scopes ?? DEFAULT_SCOPES;
   }
 
-  /** Build a fresh OAuth2Client with the configured app credentials. */
+  /** Snapshot the current creds. Re-evaluates the resolver on every call. */
+  currentCreds(): GoogleOAuthCreds {
+    return this.resolveCreds();
+  }
+
+  /** Build a fresh OAuth2Client with the currently-configured app credentials. */
   newOAuthClient(): OAuth2Client {
-    return new google.auth.OAuth2(
-      this.creds.clientId,
-      this.creds.clientSecret,
-      this.creds.redirectUri,
-    );
+    const creds = this.resolveCreds();
+    return new google.auth.OAuth2(creds.clientId, creds.clientSecret, creds.redirectUri);
   }
 
   /** Mint a CSRF state token; consume it once via {@link consumeState}. */

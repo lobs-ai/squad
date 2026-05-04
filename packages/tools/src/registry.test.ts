@@ -100,4 +100,13 @@ describe("ToolRegistry", () => {
     expect(reg.size).toBe(1);
     expect(reg.get("echo")?.description).toBe("replaced");
   });
+
+  it("unregister removes both the entry and its BaseTool tracking slot", async () => {
+    const reg = new ToolRegistry().register(new EchoTool()).register(new WriteTool());
+    expect(reg.unregister("echo")).toBe(true);
+    expect(reg.has("echo")).toBe(false);
+    expect(reg.size).toBe(1);
+    await expect(reg.execute("echo", { value: "x" }, "/tmp")).rejects.toThrow(/Unknown tool/);
+    expect(reg.unregister("echo")).toBe(false);
+  });
 });

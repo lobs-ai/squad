@@ -143,7 +143,15 @@ export const pluginsInstallParams = z.object({
    */
   secrets: z.record(z.string()).optional(),
 });
-export const pluginsInstallResult = z.object({ plugin: pluginRecordSchema });
+export const pluginsInstallResult = z.object({
+  plugin: pluginRecordSchema,
+  /**
+   * True when the install was a no-op because the plugin was already
+   * loaded. Callers can use this to render an "already installed" notice
+   * instead of "Installed".
+   */
+  alreadyInstalled: z.boolean().optional(),
+});
 
 export const pluginsUninstallParams = z.object({ id: z.string() });
 export const pluginsUninstallResult = z.object({ id: z.string() });

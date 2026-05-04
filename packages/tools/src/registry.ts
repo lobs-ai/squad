@@ -72,6 +72,25 @@ export class ToolRegistry {
   }
 
   /**
+   * Drop a previously-registered tool by name. Returns `true` when an entry
+   * was removed. Used by the plugin host to evict a plugin's tools at unload
+   * time so subsequent calls don't reach into a torn-down service (e.g. a
+   * closed sqlite handle).
+   */
+  unregister(name: string): boolean {
+    const entry = this._tools.get(name);
+    if (!entry) return false;
+    this._tools.delete(name);
+    for (const t of this._baseTools) {
+      if (t.name === name) {
+        this._baseTools.delete(t);
+        break;
+      }
+    }
+    return true;
+  }
+
+  /**
    * Return tool definitions for the given names (or all registered tools
    * when `names` is omitted).
    */

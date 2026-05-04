@@ -46,16 +46,34 @@ export default definePlugin({
   register(api) {
     const cfg = api.config as Config;
 
-    const clientId = readString(cfg.client_id, "GOOGLE_CLIENT_ID");
-    const clientSecret = readString(cfg.client_secret, "GOOGLE_CLIENT_SECRET");
-    const redirectUri =
-      readString(cfg.redirect_uri, "GOOGLE_REDIRECT_URI") ??
-      "http://localhost:8787/oauth/google/callback";
-    const baseUrl = readString(cfg.base_url, "SQUAD_BASE_URL") ?? "http://localhost:8787";
+    // SQUAD_BASE_URL is published into process.env by the gateway at boot
+    // (see runtime-env.ts → gatewayBaseUrl), so we never need to bake in a
+    // port here. Operator overrides (plugin config / explicit env) win, then
+    // the gateway-derived base URL, then an empty string — which keeps the
+    // missing-creds prompt fragment honest instead of advertising a wrong
+    // default URL the user would never have registered in GCP.
+    const resolveBaseUrl = (): string =>
+      readString(cfg.base_url, "SQUAD_BASE_URL") ?? "";
+    const resolveRedirectUri = (): string => {
+      const explicit = readString(cfg.redirect_uri, "GOOGLE_REDIRECT_URI");
+      if (explicit) return explicit;
+      const base = resolveBaseUrl();
+      return base ? `${base.replace(/\/$/, "")}/oauth/google/callback` : "";
+    };
 
-    if (!clientId || !clientSecret) {
+    const resolveCreds = (): {
+      clientId: string;
+      clientSecret: string;
+      redirectUri: string;
+    } => ({
+      clientId: readString(cfg.client_id, "GOOGLE_CLIENT_ID") ?? "",
+      clientSecret: readString(cfg.client_secret, "GOOGLE_CLIENT_SECRET") ?? "",
+      redirectUri: resolveRedirectUri(),
+    });
+
+    if (!resolveCreds().clientId || !resolveCreds().clientSecret) {
       api.logger.warn(
-        "google-auth: client_id / client_secret not configured — set them in plugin config or GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET. Plugin will load but connections will fail.",
+        "google-auth: client_id / client_secret not configured — set them in plugin config or GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET. Plugin will load but connections will fail until set_env is called.",
       );
     }
 
@@ -71,11 +89,7 @@ export default definePlugin({
     const store = new GoogleAuthStore({ dbPath, encryptionKey });
     const service = new GoogleAuthService({
       store,
-      creds: {
-        clientId: clientId ?? "",
-        clientSecret: clientSecret ?? "",
-        redirectUri,
-      },
+      creds: resolveCreds,
       ...(cfg.scopes ? { scopes: cfg.scopes } : {}),
     });
     setSharedGoogleAuth(service);
@@ -94,38 +108,65 @@ export default definePlugin({
     // Lazy-loadable group: tools stay hidden in the system prompt until the
     // agent calls describe_tool_group({groups: "google_auth"}).
     api.toolGroups.register(googleAuthGroup);
-    registerGoogleAuthTools(api.tools, service, baseUrl);
+    registerGoogleAuthTools(api.tools, service, resolveBaseUrl);
 
     // ── Prompt fragments ─────────────────────────────────────────────────
-    const credsMissing = !clientId || !clientSecret;
+    const credsMissing = (): boolean => {
+      const c = resolveCreds();
+      return !c.clientId || !c.clientSecret;
+    };
     api.promptFragments.register({
       slot: PROMPT_SLOTS.SYSTEM_STARTUP_WARNINGS,
-      content:
-        "google-auth: GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not configured — google_connect_url, " +
-        "gmail_*, google_calendar_*, google_drive_* will all fail. Tell the user to set them in plugin " +
-        "config or env before retrying.",
-      when: () => credsMissing,
+      content: [
+        "google-auth: GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not configured — google_connect_url,",
+        "gmail_*, google_calendar_*, google_drive_* will all fail (Google's consent screen will reject",
+        "the request with 'invalid_request — Missing required parameter: client_id'). The agent owns",
+        "the gateway side of fixing this; the user only has to provision an OAuth client in the Google",
+        "Cloud console and hand back two strings. See describe_tool_group({groups:'google_auth'}) for",
+        "the full GCP click-path. Short version of what the agent does:",
+        "  1. Walk the user through creating an OAuth 2.0 Web-application client in GCP and registering",
+        `     this exact redirect URI on it: ${resolveRedirectUri()}`,
+        "  2. Ask the user to open the downloaded `client_secret_*.json` and paste back",
+        "     `web.client_id` and `web.client_secret`. The file itself is NOT read by the gateway —",
+        "     dropping it into ~/.squad does nothing. Only those two strings matter.",
+        "  3. Persist them with set_env — survives restarts and the plugin re-reads process.env on",
+        "     each OAuth call, so this takes effect immediately (no gateway restart needed):",
+        "       set_env({name: 'GOOGLE_CLIENT_ID',     value: <client_id>})",
+        "       set_env({name: 'GOOGLE_CLIENT_SECRET', value: <client_secret>})",
+        "     Never tell the user to edit .env, export shell vars, or touch config.json themselves.",
+      ].join("\n"),
+      when: credsMissing,
     });
     api.promptFragments.register({
       slot: PROMPT_SLOTS.SYSTEM_STARTUP_WARNINGS,
-      content:
-        "google-auth: no Google accounts connected — call google_connect_url and hand the URL to the user " +
-        "before any gmail / calendar / drive call.",
+      content: [
+        "google-auth: no Google accounts connected — gmail / calendar / drive tools will all fail until",
+        "at least one account is OAuthed in. Call google_connect_url, hand the URL to the user, and wait",
+        "for them to confirm the consent screen before retrying. Do NOT try to follow the OAuth flow",
+        "from the agent. (If the consent screen errors with 'Missing required parameter: client_id',",
+        "the upstream issue is missing app credentials — see the credentials warning above.)",
+      ].join("\n"),
       when: () => service.listAccounts().length === 0,
     });
     const encryptionKeyIsDefault = encryptionKey === "squad-google-auth-default-key-change-me";
     api.promptFragments.register({
       slot: PROMPT_SLOTS.SYSTEM_STARTUP_WARNINGS,
-      content:
-        "google-auth: token encryption key falling back to the built-in default — connected tokens are " +
-        "not meaningfully encrypted at rest. Tell the user to set SQUAD_GOOGLE_AUTH_KEY.",
+      content: [
+        "google-auth: token encryption key is falling back to the hard-coded default — any tokens written",
+        "to data/google-auth.db (or the configured db_path) are encrypted with a key that ships in the",
+        "source, so they are effectively plaintext to anyone with read access to the file. Tell the user",
+        "to export SQUAD_GOOGLE_AUTH_KEY (or set encryption_key in plugin config) to a long random",
+        "passphrase BEFORE connecting any account — rotating the key after the fact orphans existing",
+        "tokens and forces every account to reconnect.",
+      ].join("\n"),
       when: () => encryptionKeyIsDefault,
     });
 
+    const initial = resolveCreds();
     api.logger.info("google-auth plugin ready", {
       accounts: service.listAccounts().length,
-      clientConfigured: Boolean(clientId && clientSecret),
-      redirectUri,
+      clientConfigured: Boolean(initial.clientId && initial.clientSecret),
+      redirectUri: initial.redirectUri,
     });
 
     return () => {

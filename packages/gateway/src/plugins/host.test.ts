@@ -109,6 +109,82 @@ describe("PluginHost", () => {
     await expect(host.unload("never-loaded")).resolves.toBeUndefined();
   });
 
+  it("evicts tool + tool-group registrations on unload before running cleanup", async () => {
+    const path = writePlugin(
+      "tools",
+      `export default {
+        id: "p-tools", name: "PT", version: "0", kinds: ["tool"],
+        register(api) {
+          let closed = false;
+          const def = {
+            name: "ping",
+            description: "ping",
+            input_schema: { type: "object" },
+          };
+          api.tools.register({
+            name: "ping",
+            description: "ping",
+            inputSchema: { type: "object" },
+            tags: [],
+            toEntry: () => ({
+              definition: def,
+              executor: async () => {
+                if (closed) throw new Error("backing store closed");
+                return "pong";
+              },
+            }),
+            setPromptContextStore: () => {},
+            run: async () => "pong",
+          });
+          api.toolGroups.register({
+            name: "ping_group",
+            description: "g",
+            guidance: "g",
+            toolNames: ["ping"],
+          });
+          return () => { closed = true; };
+        },
+      };`,
+    );
+    const deps = makeDeps();
+    const host = new PluginHost(deps);
+    await host.load(path);
+    expect(deps.toolRegistry.has("ping")).toBe(true);
+    expect(deps.toolGroups.get("ping_group")).toBeDefined();
+
+    await host.unload("p-tools");
+    expect(deps.toolRegistry.has("ping")).toBe(false);
+    expect(deps.toolGroups.get("ping_group")).toBeUndefined();
+  });
+
+  it("evicts partial tool registrations when register() throws", async () => {
+    const path = writePlugin(
+      "tools-fail",
+      `export default {
+        id: "p-fail", name: "PF", version: "0", kinds: ["tool"],
+        register(api) {
+          api.tools.register({
+            name: "half",
+            description: "half",
+            inputSchema: { type: "object" },
+            tags: [],
+            toEntry: () => ({
+              definition: { name: "half", description: "half", input_schema: { type: "object" } },
+              executor: async () => "half",
+            }),
+            setPromptContextStore: () => {},
+            run: async () => "half",
+          });
+          throw new Error("boom");
+        },
+      };`,
+    );
+    const deps = makeDeps();
+    const host = new PluginHost(deps);
+    await expect(host.load(path)).rejects.toThrow(/boom/);
+    expect(deps.toolRegistry.has("half")).toBe(false);
+  });
+
   it("collects channel handles when a plugin registers one", async () => {
     const path = writePlugin(
       "channel",

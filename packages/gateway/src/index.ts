@@ -52,6 +52,7 @@ import { buildPluginSetupSessionFactory } from "./plugins/setup-session.js";
 import { buildPluginManagementBackend } from "./plugins/management-backend.js";
 import {
   captureRuntimeEnvironment,
+  gatewayBaseUrl,
   renderRuntimeEnvironmentSection,
 } from "./runtime-env.js";
 import { PluginRouteRegistry } from "./plugins/http-routes.js";
@@ -328,6 +329,14 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
       { skipped: merged.skipped },
       "secret store entries shadowed by existing env vars",
     );
+
+  // Publish the gateway's actual base URL so plugins (e.g. OAuth callback
+  // URLs in plugin-google-auth) can compute redirects without hardcoding a
+  // port. Operator/secret-store-set values win — never shadow a deliberate
+  // override (e.g. behind a reverse proxy with a different public host).
+  if (!process.env.SQUAD_BASE_URL || process.env.SQUAD_BASE_URL.trim() === "") {
+    process.env.SQUAD_BASE_URL = gatewayBaseUrl(config.server.host, config.server.port);
+  }
 
   // Resolve the agent's persistent home directory and ensure it exists.
   // Empty config value means "derive from data_dir" so test fixtures that
@@ -896,8 +905,11 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     unregisterPromptFragmentsForPlugin: (pluginId) => {
       promptContextStore.removeFragmentsForPlugin(pluginId);
     },
-    registerHttpRoute: (method, path, handler) => {
-      pluginRoutes.register(method, path, handler);
+    registerHttpRoute: (method, path, handler, pluginId) => {
+      pluginRoutes.register(method, path, handler, pluginId);
+    },
+    unregisterHttpRoutesForPlugin: (pluginId) => {
+      pluginRoutes.removeForPlugin(pluginId);
     },
     onPluginChanged: (rec) => {
       broadcast.publish("plugins.changed", { plugin: rec });
@@ -1193,6 +1205,8 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     dataDir: config.server.data_dir,
     workspaceDir,
     squadName: config.server.squad_name,
+    serverHost: config.server.host,
+    serverPort: config.server.port,
   });
   const runtimeEnvSection = renderRuntimeEnvironmentSection(runtimeEnv);
   logger.info(

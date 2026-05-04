@@ -115,6 +115,19 @@ export function Chat(): JSX.Element {
     return () => window.removeEventListener("keydown", onKey);
   }, [pickingModel, editingTitle, drawer, chatError, clearChatError]);
 
+  // Reset the stop-button "stopping…" label whenever the user switches
+  // sessions, or once the run actually winds down. Without this, a fast
+  // cancelChat() reply would flip the label back to "stop" while the agent
+  // is still finishing its in-flight LLM call.
+  useEffect(() => {
+    setStopping(false);
+  }, [activeSession?.id]);
+  useEffect(() => {
+    const running =
+      activeSession?.status === "running" || awaitingResponse || !!streaming;
+    if (!running) setStopping(false);
+  }, [activeSession?.status, awaitingResponse, streaming]);
+
   // Auto-scroll the transcript. On session switch we pin to the bottom once
   // the new session's messages have loaded so the user lands on the newest
   // turn. For follow-up updates within the same session we only auto-follow
@@ -173,12 +186,16 @@ export function Chat(): JSX.Element {
 
   const isRunning =
     activeSession.status === "running" || awaitingResponse || !!streaming;
+  // Cooperative cancel: the request returns as soon as the cancel signal is
+  // sent, but the agent keeps working until its in-flight LLM call finishes.
+  // Hold the "stopping…" label until the run actually winds down so the user
+  // can see their click is still in progress.
   const stop = async (): Promise<void> => {
     if (stopping) return;
     setStopping(true);
     try {
       await cancelChat();
-    } finally {
+    } catch {
       setStopping(false);
     }
   };

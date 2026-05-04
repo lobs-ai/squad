@@ -53,6 +53,8 @@ export interface PluginInstallSuccess {
   pluginId: string;
   name: string;
   version: string;
+  /** Set when the install was a no-op because the plugin was already loaded. */
+  alreadyInstalled?: boolean;
 }
 
 export interface PluginInstallFailure {

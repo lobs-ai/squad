@@ -12,6 +12,8 @@ interface Route {
   path: string;
   handler: PluginHttpHandler;
   prefix: string | null; // non-null for `/foo/*`-style routes
+  /** Plugin id that owns this route, so unloads can drop it. */
+  pluginId: string;
 }
 
 /**
@@ -25,7 +27,12 @@ export class PluginRouteRegistry {
 
   constructor(private readonly logger: Logger) {}
 
-  register(method: HttpMethod, path: string, handler: PluginHttpHandler): void {
+  register(
+    method: HttpMethod,
+    path: string,
+    handler: PluginHttpHandler,
+    pluginId: string,
+  ): void {
     if (!path.startsWith("/")) {
       throw new Error(`plugin route path must start with "/", got ${path}`);
     }
@@ -40,8 +47,26 @@ export class PluginRouteRegistry {
         throw new Error(`duplicate plugin route: ${method} ${path}`);
       }
     }
-    this.routes.push({ method, path, handler, prefix });
-    this.logger.info({ method, path }, "plugin http route registered");
+    this.routes.push({ method, path, handler, prefix, pluginId });
+    this.logger.info({ method, path, pluginId }, "plugin http route registered");
+  }
+
+  /**
+   * Drop every route owned by `pluginId`. Called by the host when a plugin
+   * unloads so its endpoints stop responding (and don't conflict on a later
+   * reinstall).
+   */
+  removeForPlugin(pluginId: string): void {
+    let removed = 0;
+    for (let i = this.routes.length - 1; i >= 0; i--) {
+      if (this.routes[i]!.pluginId === pluginId) {
+        this.routes.splice(i, 1);
+        removed++;
+      }
+    }
+    if (removed > 0) {
+      this.logger.info({ pluginId, removed }, "plugin http routes removed");
+    }
   }
 
   /**

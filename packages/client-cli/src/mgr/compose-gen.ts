@@ -64,6 +64,12 @@ function renderSquadService(squad: Squad, buildContext: string): string {
     environment:
       - SQUAD_CONFIG=/app/docker/config.json
       - SEARXNG_URL=http://searxng:8080
+      # The container always listens on 8080 internally; the *host-facing*
+      # URL is the one users (and OAuth providers) hit. Pass it in so the
+      # gateway can publish it as the public base URL — plugins like
+      # google-auth use it to compute callback URLs, and the runtime-env
+      # system-prompt section uses it to tell the agent the right port.
+      - SQUAD_BASE_URL=http://localhost:${squad.port}
       # Tells the gateway that Docker (via 'restart: unless-stopped') will
       # respawn this container on exit. The agent's restart_gateway tool keys
       # off this to know the restart will actually complete.

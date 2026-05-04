@@ -73,6 +73,14 @@ describe("generateCompose", () => {
     expect(alphaBlock).toMatch(/depends_on:[\s\S]*searxng:/);
   });
 
+  it("passes each squad's host-facing base URL so the gateway can publish it", () => {
+    const out = generateCompose(REG);
+    const alphaBlock = out.split("squad-alpha:")[1]!.split("squad-beta:")[0]!;
+    const betaBlock = out.split("squad-beta:")[1]!;
+    expect(alphaBlock).toContain("SQUAD_BASE_URL=http://localhost:8081");
+    expect(betaBlock).toContain("SQUAD_BASE_URL=http://localhost:8082");
+  });
+
   it("includes a header banner warning the file is generated", () => {
     const out = generateCompose(REG);
     expect(out.startsWith("# GENERATED")).toBe(true);

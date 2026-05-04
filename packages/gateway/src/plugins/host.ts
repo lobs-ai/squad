@@ -84,7 +84,14 @@ export interface PluginHostDeps {
     method: HttpMethod,
     path: string,
     handler: PluginHttpHandler,
+    pluginId: string,
   ) => void;
+  /**
+   * Drop every HTTP route owned by a plugin id. Called by `unload()` so an
+   * uninstalled plugin's endpoints stop responding (and don't collide on
+   * a later reinstall).
+   */
+  unregisterHttpRoutesForPlugin?: (pluginId: string) => void;
   /**
    * Plugin-contributed prompt fragments. Each registration is keyed by the
    * registering plugin id so the gateway can drop them when the plugin is
@@ -136,6 +143,11 @@ export interface FailedPlugin {
   installedAt: string;
 }
 
+interface PluginContributions {
+  toolNames: Set<string>;
+  toolGroupNames: Set<string>;
+}
+
 export class PluginHost {
   private readonly loaded: Map<string, LoadedPlugin> = new Map();
   /**
@@ -144,6 +156,13 @@ export class PluginHost {
    * failure instead of the plugin silently vanishing.
    */
   private readonly failed: Map<string, FailedPlugin> = new Map();
+  /**
+   * Tool / tool-group names contributed by each plugin. Drained on unload so
+   * the registries don't hand out stale entries pointing at torn-down state
+   * (most painful symptom: a closed sqlite handle throwing "database
+   * connection is not open" on the next tool call).
+   */
+  private readonly contributions: Map<string, PluginContributions> = new Map();
   /** Per-call cache-busting stamp used by reload(). Cleared after each load. */
   private reloadStamp: number | null = null;
 
@@ -257,6 +276,13 @@ export class PluginHost {
     try {
       cleanup = await descriptor.register(api);
     } catch (cause) {
+      // Partial contributions from a failed register() must not linger in
+      // the global registries — otherwise reloading the plugin trips
+      // duplicate-name conflicts and the agent can still resolve a tool
+      // whose plugin never finished bootstrapping.
+      this.evictContributions(descriptor.id);
+      this.deps.unregisterHttpRoutesForPlugin?.(descriptor.id);
+      this.deps.unregisterPromptFragmentsForPlugin?.(descriptor.id);
       // MissingConfigError → preserve the structured fields so the UI can
       // open a configure form pre-pointed at the offending key.
       if (cause instanceof MissingConfigError) {
@@ -313,6 +339,18 @@ export class PluginHost {
     );
     this.deps.onPluginChanged?.(this.toRecord(entry));
     return entry;
+  }
+
+  /**
+   * Drop every tool / tool-group this plugin registered. Idempotent — safe
+   * to call from both the unload path and the failed-register cleanup.
+   */
+  private evictContributions(id: string): void {
+    const owned = this.contributions.get(id);
+    if (!owned) return;
+    for (const name of owned.toolNames) this.deps.toolRegistry.unregister(name);
+    for (const name of owned.toolGroupNames) this.deps.toolGroups.unregister(name);
+    this.contributions.delete(id);
   }
 
   /**
@@ -382,6 +420,14 @@ export class PluginHost {
   async unload(id: string): Promise<void> {
     const entry = this.loaded.get(id);
     if (!entry) return;
+    // Evict tool / tool-group registrations BEFORE running the plugin's
+    // cleanup. Plugin teardowns commonly close database handles or sockets
+    // that the registered tools captured by reference; if a caller resolved
+    // the tool between cleanup and registry eviction it would call into a
+    // torn-down resource (e.g. better-sqlite3 throws "The database
+    // connection is not open"). Dropping registry entries first makes the
+    // tool unresolvable instead.
+    this.evictContributions(id);
     if (entry.cleanup) {
       try {
         await entry.cleanup();
@@ -390,6 +436,7 @@ export class PluginHost {
       }
     }
     this.deps.unregisterPromptFragmentsForPlugin?.(id);
+    this.deps.unregisterHttpRoutesForPlugin?.(id);
     this.loaded.delete(id);
     this.deps.logger.info({ id, source: entry.source }, "plugin unloaded");
   }
@@ -498,17 +545,28 @@ export class PluginHost {
         `plugin tried to register into "${ns}" without declaring it in manifest.permissions`,
       );
     };
+    const trackContribution = (kind: "tool" | "toolGroup", name: string): void => {
+      if (!pluginId) return;
+      let owned = this.contributions.get(pluginId);
+      if (!owned) {
+        owned = { toolNames: new Set(), toolGroupNames: new Set() };
+        this.contributions.set(pluginId, owned);
+      }
+      (kind === "tool" ? owned.toolNames : owned.toolGroupNames).add(name);
+    };
     return {
       tools: {
         register: (tool: AnyTool) => {
           if (!allow("tools")) denied("tools");
           this.deps.toolRegistry.register(tool);
+          trackContribution("tool", tool.name);
         },
       },
       toolGroups: {
         register: (group: ToolGroup) => {
           if (!allow("toolGroups")) denied("toolGroups");
           this.deps.toolGroups.register(group);
+          trackContribution("toolGroup", group.name);
         },
       },
       providers: {
@@ -590,7 +648,7 @@ export class PluginHost {
               "plugin tried to register an HTTP route but the host has no HTTP server attached",
             );
           }
-          this.deps.registerHttpRoute(method, path, handler);
+          this.deps.registerHttpRoute(method, path, handler, pluginId ?? "unknown");
         },
       },
       ui: {

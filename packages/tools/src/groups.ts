@@ -41,6 +41,14 @@ export class ToolGroupRegistry {
     return this;
   }
 
+  /**
+   * Drop a registered group by name. Returns `true` when a group was removed.
+   * Used by the plugin host to evict a plugin's contributions at unload.
+   */
+  unregister(name: string): boolean {
+    return this.groups.delete(name);
+  }
+
   get(name: string): ToolGroup | undefined {
     return this.groups.get(name);
   }

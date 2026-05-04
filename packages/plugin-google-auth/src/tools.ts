@@ -39,13 +39,13 @@ export class GoogleConnectUrlTool extends BaseTool<ConnectUrlInput> {
 
   constructor(
     private readonly service: GoogleAuthService,
-    private readonly baseUrl: string,
+    private readonly resolveBaseUrl: () => string,
   ) {
     super();
   }
 
   async run(_input: ConnectUrlInput, _ctx: ToolContext): Promise<string> {
-    const url = `${this.baseUrl.replace(/\/$/, "")}/oauth/google/connect`;
+    const url = `${this.resolveBaseUrl().replace(/\/$/, "")}/oauth/google/connect`;
     return `Open this URL in a browser to connect a Google account:\n${url}\n\nIt will redirect to Google's consent screen, then back here when you approve.`;
   }
 }
@@ -98,9 +98,9 @@ export const googleAuthGroup: ToolGroup = {
 export function registerGoogleAuthTools(
   registry: { register(tool: AnyTool): unknown },
   service: GoogleAuthService,
-  baseUrl: string,
+  resolveBaseUrl: () => string,
 ): void {
   registry.register(new GoogleListAccountsTool(service) as unknown as AnyTool);
-  registry.register(new GoogleConnectUrlTool(service, baseUrl) as unknown as AnyTool);
+  registry.register(new GoogleConnectUrlTool(service, resolveBaseUrl) as unknown as AnyTool);
   registry.register(new GoogleDisconnectTool(service) as unknown as AnyTool);
 }

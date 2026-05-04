@@ -321,6 +321,21 @@ export function registerPluginMethods(
         "plugins.install requires a writable config backend; gateway is running without one",
       );
     }
+    // Idempotent install: if the plugin is already loaded successfully,
+    // short-circuit instead of re-running the install pipeline. Reloading
+    // re-invokes register() which trips conflict checks (duplicate HTTP
+    // routes, duplicate tools, etc.); the common cause for hitting this is
+    // an agent retrying install without realizing the plugin is up.
+    const alreadyLoaded = host
+      .records()
+      .find((r) => r.source === entry.source && r.status === "loaded");
+    if (alreadyLoaded) {
+      log.info(
+        { pluginId: entry.id, source: entry.source },
+        "plugins.install: already installed, returning existing record",
+      );
+      return { plugin: alreadyLoaded, alreadyInstalled: true };
+    }
     const requested = params.config ?? {};
     const merged = applySchemaDefaults(entry, requested);
 
@@ -434,21 +449,11 @@ export function registerPluginMethods(
       return [...without, newEntry];
     });
 
-    const findLoadedBySource = (): string | undefined =>
-      host.records().find((r) => r.source === entry.source && r.status === "loaded")?.id;
-
     try {
-      const existingId = findLoadedBySource();
-      if (existingId) {
-        const record = await host.reload(existingId);
-        if (!record) {
-          throw new Error(`plugin ${entry.id} reload returned no record`);
-        }
-        log.info({ pluginId: entry.id, source: entry.source }, "plugin reloaded after install");
-        return { plugin: record };
-      }
       await host.load(entry.source, merged);
-      const id = findLoadedBySource();
+      const id = host
+        .records()
+        .find((r) => r.source === entry.source && r.status === "loaded")?.id;
       const record = id ? host.recordFor(id) : null;
       if (!record) {
         throw new Error(`plugin ${entry.id} loaded but produced no record`);

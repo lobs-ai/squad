@@ -307,6 +307,9 @@ function formatField(f: PluginConfigFieldSummary): string {
 
 function formatInstall(result: PluginInstallResult): string {
   if (result.ok) {
+    if (result.alreadyInstalled) {
+      return `Already installed: ${result.name} (${result.pluginId} v${result.version}).`;
+    }
     return `Installed ${result.name} (${result.pluginId} v${result.version}).`;
   }
   const lines = [

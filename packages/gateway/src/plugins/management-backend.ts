@@ -160,19 +160,20 @@ export function buildPluginManagementBackend(args: {
         // dispatcher's own validation produce the error.
       }
       try {
-        const r = await call<{ plugin: { id: string; name: string; version: string } }>(
-          "plugins.install",
-          {
-            id,
-            config: routedConfig,
-            ...(Object.keys(routedSecrets).length > 0 ? { secrets: routedSecrets } : {}),
-          },
-        );
+        const r = await call<{
+          plugin: { id: string; name: string; version: string };
+          alreadyInstalled?: boolean;
+        }>("plugins.install", {
+          id,
+          config: routedConfig,
+          ...(Object.keys(routedSecrets).length > 0 ? { secrets: routedSecrets } : {}),
+        });
         return {
           ok: true,
           pluginId: r.plugin.id,
           name: r.plugin.name,
           version: r.plugin.version,
+          ...(r.alreadyInstalled ? { alreadyInstalled: true } : {}),
         };
       } catch (err) {
         if (err instanceof ProtocolError) {
