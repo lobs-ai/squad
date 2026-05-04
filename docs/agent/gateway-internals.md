@@ -84,10 +84,14 @@ caching keys on the prefix:
    turn, so edits take effect on the next turn).
 5. **Project context** — discovered `AGENTS.md` / `CLAUDE.md` / `SQUAD.md`
    from walking up from `cwd`.
-6. **Startup warnings** — entries from `PromptContextStore.startupWarnings`
-   (degraded plugin state, missing perms, OAuth expired). Pulled fresh
-   each turn via `deps.promptContextStore?.get().startupWarnings`. Empty
-   list → section skipped.
+6. **Startup warnings** — degraded plugin state, missing perms, OAuth
+   expired. `runs.ts` merges two sources before passing them in:
+   `PromptContextStore.startupWarnings` (programmatic warnings set via
+   `setStartupWarnings`) plus
+   `fragmentsFor(PROMPT_SLOTS.SYSTEM_STARTUP_WARNINGS, render)` —
+   plugin-registered fragments evaluated against the per-turn render
+   context, so a `when` predicate can scope a warning to a specific
+   surface/channel. Empty after merge → section skipped.
 7. **Persistent memory** — eager block (frozen) + per-turn retrieval block.
 
 Subagents build the same prompt with their own `.squad/subagents/<name>/`

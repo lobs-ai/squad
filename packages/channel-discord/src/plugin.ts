@@ -130,13 +130,6 @@ export default definePlugin({
         "config snippets, ASCII tables. Avoid wide tables (>80 cols wrap badly).",
       when: (render) => isDiscordTurn(render),
     });
-    api.promptFragments.register({
-      slot: PROMPT_SLOTS.EXEC_ENVIRONMENT_WARNINGS,
-      content:
-        "DISCORD_BOT_TOKEN is in process.env. Do not run `env` / `printenv` / `set` " +
-        "and post the output to a channel — strip secrets first or scope the command.",
-    });
-
     api.logger.info("discord channel plugin registered", {
       dm_policy: cfg.dm_policy,
       dm_allow_list_size: cfg.dm_allow_list.length,

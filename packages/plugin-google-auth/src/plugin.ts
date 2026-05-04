@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { definePlugin } from "@squad/plugin-sdk";
+import { definePlugin, PROMPT_SLOTS } from "@squad/plugin-sdk";
 import { GoogleAuthStore } from "./store.js";
 import { GoogleAuthService, setSharedGoogleAuth } from "./service.js";
 import {
@@ -95,6 +95,32 @@ export default definePlugin({
     // agent calls describe_tool_group({groups: "google_auth"}).
     api.toolGroups.register(googleAuthGroup);
     registerGoogleAuthTools(api.tools, service, baseUrl);
+
+    // ── Prompt fragments ─────────────────────────────────────────────────
+    const credsMissing = !clientId || !clientSecret;
+    api.promptFragments.register({
+      slot: PROMPT_SLOTS.SYSTEM_STARTUP_WARNINGS,
+      content:
+        "google-auth: GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not configured — google_connect_url, " +
+        "gmail_*, google_calendar_*, google_drive_* will all fail. Tell the user to set them in plugin " +
+        "config or env before retrying.",
+      when: () => credsMissing,
+    });
+    api.promptFragments.register({
+      slot: PROMPT_SLOTS.SYSTEM_STARTUP_WARNINGS,
+      content:
+        "google-auth: no Google accounts connected — call google_connect_url and hand the URL to the user " +
+        "before any gmail / calendar / drive call.",
+      when: () => service.listAccounts().length === 0,
+    });
+    const encryptionKeyIsDefault = encryptionKey === "squad-google-auth-default-key-change-me";
+    api.promptFragments.register({
+      slot: PROMPT_SLOTS.SYSTEM_STARTUP_WARNINGS,
+      content:
+        "google-auth: token encryption key falling back to the built-in default — connected tokens are " +
+        "not meaningfully encrypted at rest. Tell the user to set SQUAD_GOOGLE_AUTH_KEY.",
+      when: () => encryptionKeyIsDefault,
+    });
 
     api.logger.info("google-auth plugin ready", {
       accounts: service.listAccounts().length,

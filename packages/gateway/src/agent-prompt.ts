@@ -338,6 +338,13 @@ export interface BuildSquadPromptInput {
    * acting (e.g. "Discord bot lacks Send permission in guild Foo"). When
    * present, rendered as a block near the top of the system prompt so the
    * agent can pre-empt the failure. Empty/undefined → section skipped.
+   *
+   * Sourced by `runs.ts` from two places, merged in order:
+   *   1. `PromptContextStore.startupWarnings` — programmatic warnings set
+   *      via `setStartupWarnings`.
+   *   2. Fragments at `PROMPT_SLOTS.SYSTEM_STARTUP_WARNINGS`, evaluated
+   *      against the per-turn `RenderContext` (so a fragment's `when`
+   *      predicate can scope a warning to a specific surface/channel).
    */
   startupWarnings?: string[];
 }
@@ -397,6 +404,14 @@ If the user asks you to "use all your tools", "show me what you can do",
 or anything similar, batch-unlock every group in the index in one
 \`describe_tool_group\` call (it accepts an array). Don't claim you lack
 a capability that's listed below.
+
+## Secrets hygiene
+Tokens, API keys, OAuth secrets, and similar credentials live in
+\`process.env\` and in plugin config. **Never** dump them into outputs
+the user (or any channel) sees: don't run \`env\` / \`printenv\` / \`set\`
+and post the result, don't echo secret values in error messages, don't
+paste a config file containing them. If you need to confirm a secret is
+loaded, check its existence/length — never its value.
 
 ## How messages reach you
 Chat delivery is one of two modes set in config:

@@ -91,8 +91,13 @@ export const PROMPT_SLOTS = {
   // ── exec ───────────────────────────────────────────────────────────────
 
   /**
-   * Env-var / cwd warnings from loaded plugins (e.g. "DISCORD_BOT_TOKEN is
-   * in process.env — don't echo env in posted output").
+   * **Extra**, plugin-specific environment notes for `exec` calls. The
+   * baseline "don't echo `env` / `printenv` / `set` output, don't paste
+   * secret values" rule already lives in the system prompt (see
+   * `buildSquadSystemPrompt` § Secrets hygiene) — do not repeat it here.
+   * Use this slot for things the agent could not infer otherwise: a
+   * required cwd, a sentinel env var that changes tool behaviour, a
+   * non-obvious binary that's been shimmed, etc.
    */
   EXEC_ENVIRONMENT_WARNINGS: "exec.environment-warnings",
 
@@ -111,7 +116,9 @@ export const PROMPT_SLOTS = {
   /**
    * Top-of-prompt warnings (degraded plugin state, missing perms, OAuth
    * expired). Surfaced in the system prompt so the agent pre-empts the
-   * failure rather than discovering it via a 4xx mid-task.
+   * failure rather than discovering it via a 4xx mid-task. Fragments
+   * registered here are inlined into the "Startup warnings" section
+   * alongside `PromptContextSnapshot.startupWarnings`.
    */
   SYSTEM_STARTUP_WARNINGS: "system.startup-warnings",
 } as const;

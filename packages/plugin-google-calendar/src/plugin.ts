@@ -1,4 +1,4 @@
-import { definePlugin } from "@squad/plugin-sdk";
+import { definePlugin, PROMPT_SLOTS } from "@squad/plugin-sdk";
 import { getSharedGoogleAuth } from "@squad/plugin-google-auth";
 import { googleCalendarGroup, registerGoogleCalendarTools } from "./tools.js";
 
@@ -20,6 +20,20 @@ export default definePlugin({
       name: "@squad/toolset-google-calendar",
       description: "Google Calendar — list/create/update/delete/rsvp.",
       tools: [...googleCalendarGroup.toolNames],
+    });
+
+    api.promptFragments.register({
+      slot: PROMPT_SLOTS.WEB_FETCH_AUTH_WALLED_DOMAINS,
+      content:
+        "calendar.google.com — use google_calendar_list_events / google_calendar_list_calendars; " +
+        "web_fetch returns the Google sign-in page.",
+    });
+    api.promptFragments.register({
+      slot: PROMPT_SLOTS.SYSTEM_STARTUP_WARNINGS,
+      content:
+        "google-calendar: no connected Google account has the 'calendar' feature enabled — " +
+        "google_calendar_* tools will throw. Connect or enable via google_connect_url / google_list_accounts first.",
+      when: () => service.authedClientFor("calendar") === null,
     });
 
     api.logger.info("google-calendar plugin ready");

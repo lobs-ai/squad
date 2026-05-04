@@ -6,6 +6,7 @@ import {
   type PromptContextStore,
   type RenderContext,
   formatGroupIndexForPrompt,
+  PROMPT_SLOTS,
 } from "@squad/tools";
 import type { LLMClient } from "@squad/llm";
 import type { ContentBlock, MessageRecord } from "@squad/protocol";
@@ -311,7 +312,16 @@ export async function runChatTurn(
       });
     }
 
-    const startupWarnings = deps.promptContextStore?.get().startupWarnings;
+    const renderForPrompt = deps.renderContextFor?.(options.sessionId);
+    const baseStartupWarnings = deps.promptContextStore?.get().startupWarnings ?? [];
+    const fragmentStartupWarnings =
+      deps.promptContextStore && renderForPrompt
+        ? deps.promptContextStore.fragmentsFor(
+            PROMPT_SLOTS.SYSTEM_STARTUP_WARNINGS,
+            renderForPrompt,
+          )
+        : [];
+    const startupWarnings = [...baseStartupWarnings, ...fragmentStartupWarnings];
     const systemPrompt =
       options.systemPrompt ??
       buildSquadSystemPrompt({
@@ -322,7 +332,7 @@ export async function runChatTurn(
         ...(toolGroupsIndex ? { toolGroupsIndex } : {}),
         ...(contextFilesSection ? { contextFilesSection } : {}),
         ...(deps.runtimeEnvSection ? { runtimeEnvSection: deps.runtimeEnvSection } : {}),
-        ...(startupWarnings && startupWarnings.length > 0 ? { startupWarnings } : {}),
+        ...(startupWarnings.length > 0 ? { startupWarnings } : {}),
       });
 
     // toolUseId → tool_calls row id, so tool_result can find the row begin()
@@ -393,9 +403,8 @@ export async function runChatTurn(
       },
     };
 
-    if (deps.promptContextStore && deps.renderContextFor) {
-      const render = deps.renderContextFor(options.sessionId);
-      result = await deps.promptContextStore.runWithRender(render, () => runAgent(spec));
+    if (deps.promptContextStore && renderForPrompt) {
+      result = await deps.promptContextStore.runWithRender(renderForPrompt, () => runAgent(spec));
     } else {
       result = await runAgent(spec);
     }
