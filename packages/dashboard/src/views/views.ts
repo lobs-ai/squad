@@ -9,4 +9,6 @@ export type ViewId =
   | "routines"
   | "search"
   | "logs"
+  | "apps"
+  | `apps:${string}`
   | `plugin:${string}`;

@@ -46,10 +46,13 @@ import type { ToolsetRegistry } from "./toolsets/registry.js";
 import { registerCommandMethods } from "./dispatch/commands.js";
 import { registerToolsetMethods } from "./dispatch/toolsets.js";
 import { registerLogMethods } from "./dispatch/logs.js";
+import { registerAppMethods } from "./dispatch/apps.js";
 import type { LogBuffer } from "./logs/buffer.js";
 import type { HttpApiHandler } from "./http-api.js";
 import type { PluginRouteRegistry } from "./plugins/http-routes.js";
 import { dispatchPluginRoute } from "./plugins/http-routes.js";
+import type { AppRegistry } from "./apps/registry.js";
+import { matchAppPath, proxyHttp, proxyWebSocketUpgrade } from "./apps/proxy.js";
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 export interface GatewayDeps {
@@ -136,6 +139,8 @@ export interface GatewayDeps {
   traceRegistry?: import("./traces.js").TraceSessionRegistry;
   /** Plugin-contributed HTTP routes; consulted between built-ins and statics. */
   pluginRoutes?: PluginRouteRegistry;
+  /** Agent-spawned web apps proxied at `/apps/<name>/*`. */
+  apps?: AppRegistry;
   /**
    * In-memory ring buffer of pino log lines. When present, exposes
    * `logs.tail` and (via boot wiring) live `logs.entry` events.
@@ -184,6 +189,21 @@ export function createGatewayServer(deps: GatewayDeps): GatewayHandle {
 
   http.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+    // /apps/<name>/* — proxy WS upgrades to the registered app. Same auth
+    // story as the HTTP path: caller must present a valid bearer token.
+    if (deps.apps) {
+      const appMatch = matchAppPath(url.pathname);
+      if (appMatch) {
+        const token = extractToken(req, url) ?? extractCookieToken(req);
+        if (!deps.authenticator.verify(token)) {
+          socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+        proxyWebSocketUpgrade(req, socket, head, appMatch, deps.apps, deps.logger, url.search);
+        return;
+      }
+    }
     if (url.pathname !== "/ws") {
       socket.destroy();
       return;
@@ -224,6 +244,24 @@ function extractToken(req: IncomingMessage, url: URL): string | undefined {
   }
   const q = url.searchParams.get("token");
   if (q) return q;
+  return undefined;
+}
+
+/**
+ * Pull a bearer token out of the `squad_token` cookie. The dashboard sets
+ * this cookie on connect so iframed `/apps/<name>/` requests authenticate
+ * without the iframe's app having to know about the gateway's auth model.
+ */
+function extractCookieToken(req: IncomingMessage): string | undefined {
+  const raw = req.headers["cookie"];
+  if (typeof raw !== "string") return undefined;
+  for (const part of raw.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq < 0) continue;
+    const name = part.slice(0, eq).trim();
+    if (name !== "squad_token") continue;
+    return decodeURIComponent(part.slice(eq + 1).trim());
+  }
   return undefined;
 }
 
@@ -356,6 +394,35 @@ function handleHttp(req: IncomingMessage, res: ServerResponse, deps: GatewayDeps
       return;
     }
   }
+  // ── Agent-spawned apps — /apps/<name>/* ──────────────────────────────
+  // Proxied to 127.0.0.1:<port> on the agent's child process. Auth is
+  // required: bearer token via header / query / cookie. The registry is
+  // consulted on every request so a freshly registered app is reachable
+  // without restart.
+  if (deps.apps && typeof req.url === "string") {
+    const url = new URL(req.url, "http://host");
+    const match = matchAppPath(url.pathname);
+    if (match) {
+      const token = extractToken(req, url) ?? extractCookieToken(req);
+      if (!deps.authenticator.verify(token)) {
+        // Browsers iframing /apps/<name>/ before the cookie is set will hit
+        // this once; the dashboard refreshes after setting it. Plain text
+        // body keeps this readable when curl'd.
+        res.writeHead(401, { "content-type": "text/plain", "www-authenticate": "Bearer" });
+        res.end("unauthorized\n");
+        return;
+      }
+      // Bare `/apps/<name>` (no trailing slash) — redirect so relative URLs
+      // inside the app resolve under `/apps/<name>/`.
+      if (match.upstreamPath === "/" && !url.pathname.endsWith("/")) {
+        res.writeHead(302, { location: url.pathname + "/" + url.search });
+        res.end();
+        return;
+      }
+      proxyHttp(req, res, match, deps.apps, deps.logger, url.search);
+      return;
+    }
+  }
   // ── Plugin-contributed routes ─────────────────────────────────────────
   // These run after gateway built-ins so plugins can't shadow /health,
   // /pair/*, webhooks, or /v1/*. Dashboard statics still get the last word
@@ -474,6 +541,7 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
   if (deps.commands) registerCommandMethods(d, deps.commands);
   if (deps.toolsets) registerToolsetMethods(d, deps.toolsets);
   if (deps.logBuffer) registerLogMethods(d, deps.logBuffer);
+  if (deps.apps) registerAppMethods(d, deps.apps);
 
   // Identity + peers need a PeerSource. When boot() doesn't pass one (test
   // harness), synthesize a minimal in-process source so admin.peers still

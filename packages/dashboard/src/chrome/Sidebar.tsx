@@ -121,6 +121,10 @@ export function Sidebar({ setView, onNewChat }: Props): JSX.Element {
         <span className="lbl">plugins</span>
         <span className="meta">{plugins.length}</span>
       </div>
+      <div className="side-item" onClick={() => setView("apps")}>
+        <Icon name="manager" size={12} />
+        <span className="lbl">apps</span>
+      </div>
       <div className="side-item" onClick={() => setView("routines")}>
         <Icon name="spark" size={12} />
         <span className="lbl">cron</span>

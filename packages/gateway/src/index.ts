@@ -46,6 +46,8 @@ import { SubagentDefStore } from "./db/subagent-defs.js";
 import { DeliveryQueue } from "./delivery/queue.js";
 import { RunCoordinator } from "./delivery/coordinator.js";
 import { PluginHost } from "./plugins/host.js";
+import { AppRegistry, AppProber } from "./apps/index.js";
+import { registerAppTools, type AppBackend } from "@squad/tools";
 import { SecretStore } from "./secrets/store.js";
 import { envBackendFor } from "./secrets/env-backend.js";
 import { buildPluginSetupSessionFactory } from "./plugins/setup-session.js";
@@ -127,6 +129,7 @@ export { DeliveryQueue } from "./delivery/queue.js";
 export { RunCoordinator } from "./delivery/coordinator.js";
 export { PluginHost } from "./plugins/host.js";
 export { PluginRouteRegistry } from "./plugins/http-routes.js";
+export { AppRegistry, AppProber } from "./apps/index.js";
 export { RoutineScheduler, matchesCron, computeNextRunAt, isDue } from "./routines/scheduler.js";
 export { RoutineStore } from "./routines/store.js";
 export { CronExecutor } from "./routines/executor.js";
@@ -383,6 +386,12 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   // clients see new and modified sessions live without polling session.list.
   sessions.onChange((kind, session) => {
     broadcast.publish(`session.${kind}`, { session });
+    // Drop any session-scoped app registrations when the session ends.
+    // Idempotent: setStatus emits "updated" on every status flip, so we just
+    // check the current status — extra calls to dropForSession are no-ops.
+    if (kind === "updated" && session.status === "ended") {
+      apps.dropForSession(session.id);
+    }
   });
   const tokens = resolveTokenSecrets(config);
   const authenticator = new Authenticator(tokens);
@@ -834,6 +843,26 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     },
   });
 
+  // ── Agent-spawned apps registry ─────────────────────────────────────────
+  // Tracks the loopback address of every web app the agent has registered
+  // via `expose_app`. The HTTP dispatcher proxies `/apps/<name>/*` to the
+  // matching upstream; the prober flips health based on /squad/health.
+  const apps = new AppRegistry(logger, {
+    onRegistered: (app) => broadcast.publish("apps.registered", { app }),
+    onUnregistered: (name) => broadcast.publish("apps.unregistered", { name }),
+    onHealthChanged: (name, health, lastProbeAt) =>
+      broadcast.publish("apps.health_changed", { name, health, lastProbeAt }),
+  });
+  const appProber = new AppProber(apps, logger);
+  appProber.start();
+  const appBackend: AppBackend = {
+    register: (input) => apps.register(input),
+    unregister: (name) => apps.unregister(name),
+    list: () => apps.list(),
+    get: (name) => apps.get(name),
+  };
+  registerAppTools(toolRegistry, appBackend);
+
   // ── PromptContext mutators ────────────────────────────────────────────
   // Push the current state of channels / delivery handlers / plugins /
   // skills / toolsets into the live PromptContextStore. Each call bumps
@@ -1278,6 +1307,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     version: VERSION,
     plugins,
     pluginRoutes,
+    apps,
     secretStore,
     pluginSetupSessionFactory,
     runtimeEnvSection,
@@ -1396,6 +1426,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     logger.info({ uptimeMs: Date.now() - startedAt }, "gateway closing");
     routines.stop();
     peers.stop();
+    appProber.stop();
     if (sessionIngestion) await sessionIngestion.stop();
     for (const ch of channelHandles) {
       try {

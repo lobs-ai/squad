@@ -12,6 +12,7 @@ import { adminMethods, adminEvents } from "./admin.js";
 import { commandMethods } from "./commands.js";
 import { toolsetMethods } from "./toolsets.js";
 import { logMethods, logEvents } from "./logs.js";
+import { appMethods, appEvents } from "./apps.js";
 
 export * from "./session.js";
 export * from "./chat.js";
@@ -26,6 +27,7 @@ export * from "./admin.js";
 export * from "./commands.js";
 export * from "./toolsets.js";
 export * from "./logs.js";
+export * from "./apps.js";
 
 /**
  * Central method registry. The gateway dispatch layer and typed clients both
@@ -45,6 +47,7 @@ export const methodRegistry = {
   ...commandMethods,
   ...toolsetMethods,
   ...logMethods,
+  ...appMethods,
 } as const;
 
 export type MethodName = keyof typeof methodRegistry;
@@ -65,6 +68,7 @@ export const eventRegistry = {
   ...routineEvents,
   ...adminEvents,
   ...logEvents,
+  ...appEvents,
 } as const;
 
 export type EventName = keyof typeof eventRegistry;

@@ -17,6 +17,7 @@ import { Gate } from "./views/Gate.js";
 import { Routines } from "./views/Routines.js";
 import { SearchView } from "./views/Search.js";
 import { Logs } from "./views/Logs.js";
+import { Apps } from "./views/Apps.js";
 import type { ViewId } from "./views/views.js";
 import "./styles/tokens.css";
 import "./styles/styles.css";
@@ -42,6 +43,14 @@ export function App(): JSX.Element {
         } catch {
           // Safari private mode etc. — fine to skip persistence.
         }
+      }
+      // Drop a cookie scoped to /apps/ so iframed agent apps authenticate
+      // automatically. The path scope keeps the token from leaking into
+      // dashboard statics or the API. Lifetime: session cookie (no Expires).
+      try {
+        document.cookie = `squad_token=${encodeURIComponent(token)}; path=/apps/; SameSite=Strict`;
+      } catch {
+        // ignore — cookies disabled means /apps/* iframes will get 401, which is fair.
       }
       setClient(c);
     },
@@ -220,6 +229,9 @@ function Shell(): JSX.Element {
           {view === "routines" && <Routines />}
           {view === "search" && <SearchView onOpenSession={onOpenSession} />}
           {view === "logs" && <Logs />}
+          {(view === "apps" || view.startsWith("apps:")) && (
+            <Apps view={view} setView={setView} />
+          )}
           {view === "manager" && (
             <Manager
               onPickPeer={(peer) => {

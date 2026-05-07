@@ -14,6 +14,7 @@ export * from "./restart/index.js";
 export * from "./doctor/index.js";
 export * from "./plugins/index.js";
 export * from "./env/index.js";
+export * from "./apps/index.js";
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 export { capOutput, DEFAULT_OUTPUT_CAP, DEFAULT_MAX_LINES } from "./output-cap.js";
@@ -145,6 +146,7 @@ import { restartGroup } from "./restart/index.js";
 import { doctorGroup } from "./doctor/index.js";
 import { pluginManagementGroup } from "./plugins/index.js";
 import { envGroup } from "./env/index.js";
+import { appsGroup } from "./apps/index.js";
 
 /** All built-in tool class instances. */
 export const BUILTIN_TOOLS: readonly BaseTool[] = [
@@ -234,4 +236,5 @@ export const BUILTIN_GROUPS: readonly ToolGroup[] = [
   doctorGroup,
   htmlToPdfGroup,
   pptxGroup,
+  appsGroup,
 ] as const;
