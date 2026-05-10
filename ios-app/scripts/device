@@ -1,0 +1,265 @@
+#!/usr/bin/env bash
+# Squad Mobile device script — build, install, launch on a real iPhone.
+# Sibling to scripts/dev (simulator). Lives in ios-app/scripts/, runs from anywhere.
+#
+# Quick start:    scripts/device           # build + install + launch + tail logs
+# Subcommands:    scripts/device help
+#
+# First time: export DEVELOPMENT_TEAM=ABCDE12345 (your Apple Developer Team ID).
+# Pick device:  DEVICE_ID=00008140-... scripts/device   (or DEVICE="Rafe's iPhone")
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
+
+PROJECT="SquadMobile.xcodeproj"
+SCHEME="SquadMobile"
+BUNDLE_ID="dev.squad.SquadMobile"
+CONFIG="${CONFIG:-Debug}"
+DERIVED_DATA="${DERIVED_DATA:-build}"
+DEVELOPMENT_TEAM="${DEVELOPMENT_TEAM:-}"
+DEVICE="${DEVICE:-}"
+DEVICE_ID="${DEVICE_ID:-}"
+
+c_blue='\033[1;34m'; c_dim='\033[2m'; c_green='\033[32m'; c_red='\033[31m'; c_off='\033[0m'
+log()  { printf "${c_blue}▸${c_off} %s\n" "$*"; }
+ok()   { printf "${c_green}✓${c_off} %s\n" "$*"; }
+warn() { printf "${c_red}!${c_off} %s\n" "$*" >&2; }
+fail() { printf "${c_red}✗${c_off} %s\n" "$*" >&2; exit 1; }
+
+require_tool() {
+  command -v "$1" >/dev/null 2>&1 || fail "missing tool: $1${2:+ ($2)}"
+}
+
+require_team() {
+  [[ -n "$DEVELOPMENT_TEAM" ]] || fail \
+    "DEVELOPMENT_TEAM is empty. Export your Apple Developer Team ID, e.g.\n    export DEVELOPMENT_TEAM=ABCDE12345"
+}
+
+# Resolve a connected iPhone via devicectl. Honors DEVICE_ID > DEVICE name >
+# first connected device. devicectl JSON output keys differ slightly between
+# Xcode versions, so we look for the canonical fields.
+resolve_device_id() {
+  if [[ -n "$DEVICE_ID" ]]; then echo "$DEVICE_ID"; return; fi
+  require_tool xcrun
+  local json
+  json="$(xcrun devicectl list devices --json-output - 2>/dev/null || true)"
+  [[ -n "$json" ]] || fail "devicectl returned no output (Xcode 15+ required, plug in iPhone, trust this Mac)"
+  local id
+  id="$(printf '%s' "$json" | /usr/bin/python3 -c "
+import json,sys,os
+data=json.load(sys.stdin)
+want_name=os.environ.get('DEVICE','').strip()
+matches=[]
+for d in data.get('result',{}).get('devices',[]):
+  props=d.get('deviceProperties',{}) or {}
+  conn=d.get('connectionProperties',{}) or {}
+  hw=d.get('hardwareProperties',{}) or {}
+  name=props.get('name') or hw.get('marketingName') or hw.get('productType') or ''
+  state=conn.get('tunnelState') or conn.get('pairingState') or ''
+  is_phone=(hw.get('platform','').lower().startswith('ios')) or (hw.get('deviceType','').lower()=='iphone')
+  if not is_phone: continue
+  if conn.get('transportType','').lower()=='localnetwork' and state and state.lower()!='connected': continue
+  if want_name and want_name not in name: continue
+  matches.append((d.get('identifier') or hw.get('udid') or '', name))
+if matches:
+  print(matches[0][0])
+")"
+  if [[ -z "$id" ]]; then
+    if [[ -n "$DEVICE" ]]; then
+      fail "no connected iPhone matching '${DEVICE}'. Run: scripts/device list"
+    else
+      fail "no connected iPhone found. Plug in via USB, trust this Mac, then: scripts/device list"
+    fi
+  fi
+  echo "$id"
+}
+
+cmd_list() {
+  log "connected devices"
+  xcrun devicectl list devices
+}
+
+cmd_regen() {
+  require_tool xcodegen "brew install xcodegen"
+  log "regenerating ${PROJECT} from project.yml"
+  xcodegen generate
+  ok "project regenerated"
+}
+
+cmd_build() {
+  require_team
+  local id; id="$(resolve_device_id)"
+  log "building (${SCHEME}, ${CONFIG}) for device ${id}"
+  xcodebuild \
+    -project "$PROJECT" \
+    -scheme "$SCHEME" \
+    -configuration "$CONFIG" \
+    -destination "platform=iOS,id=${id}" \
+    -derivedDataPath "$DERIVED_DATA" \
+    -allowProvisioningUpdates \
+    DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
+    CODE_SIGN_STYLE=Automatic \
+    -quiet \
+    build
+  ok "build succeeded"
+}
+
+app_path() {
+  local p="$DERIVED_DATA/Build/Products/${CONFIG}-iphoneos/${SCHEME}.app"
+  [[ -d "$p" ]] || fail "app not built — run: scripts/device build  (looked at $p)"
+  echo "$p"
+}
+
+cmd_install() {
+  local id; id="$(resolve_device_id)"
+  local app; app="$(app_path)"
+  log "installing $app → $id"
+  xcrun devicectl device install app --device "$id" "$app"
+  ok "installed"
+}
+
+cmd_launch() {
+  local id; id="$(resolve_device_id)"
+  log "launching ${BUNDLE_ID} on $id"
+  # --console streams stdout/stderr from the app; falls back to plain launch
+  # on older Xcode versions.
+  if xcrun devicectl device process launch --help 2>&1 | grep -q -- '--console'; then
+    xcrun devicectl device process launch --console --device "$id" "$BUNDLE_ID"
+  else
+    xcrun devicectl device process launch --device "$id" "$BUNDLE_ID"
+  fi
+}
+
+cmd_run() {
+  cmd_install
+  cmd_launch
+}
+
+cmd_start() {
+  cmd_build
+  cmd_run
+}
+
+cmd_logs() {
+  local id; id="$(resolve_device_id)"
+  log "streaming device logs for ${BUNDLE_ID} (Ctrl-C to stop)"
+  # devicectl doesn't have a direct log stream. Fall back to idevicesyslog if
+  # installed, otherwise point the user at Console.app.
+  if command -v idevicesyslog >/dev/null; then
+    idevicesyslog | grep --line-buffered -E "${BUNDLE_ID}|${SCHEME}"
+  else
+    fail "no log streamer available. Either:
+    brew install libimobiledevice   # then: scripts/device logs
+  or open Console.app and select your device."
+  fi
+}
+
+cmd_uninstall() {
+  local id; id="$(resolve_device_id)"
+  log "uninstalling ${BUNDLE_ID} from $id"
+  xcrun devicectl device uninstall app --device "$id" "$BUNDLE_ID" || true
+  ok "uninstalled"
+}
+
+cmd_open_xcode() {
+  log "opening ${PROJECT}"
+  open "$PROJECT"
+}
+
+cmd_clean() {
+  log "removing $DERIVED_DATA"
+  rm -rf "$DERIVED_DATA"
+  ok "clean"
+}
+
+cmd_doctor() {
+  printf "%-22s %s\n" "xcodebuild:"  "$(xcodebuild -version | head -1)"
+  printf "%-22s %s\n" "xcrun:"       "$(xcrun --version 2>&1 | head -1)"
+  if xcrun --find devicectl >/dev/null 2>&1; then
+    printf "%-22s %s\n" "devicectl:"  "$(xcrun devicectl --version 2>&1 | head -1 || echo present)"
+  else
+    printf "%-22s %s\n" "devicectl:"  "(missing — needs Xcode 15+)"
+  fi
+  if command -v idevicesyslog >/dev/null; then
+    printf "%-22s %s\n" "idevicesyslog:" "present"
+  else
+    printf "%-22s %s\n" "idevicesyslog:" "(optional — brew install libimobiledevice for logs)"
+  fi
+  printf "%-22s %s\n" "project:"     "$PROJECT"
+  printf "%-22s %s\n" "scheme:"      "$SCHEME"
+  printf "%-22s %s\n" "bundle id:"   "$BUNDLE_ID"
+  printf "%-22s %s\n" "config:"      "$CONFIG"
+  printf "%-22s %s\n" "derivedData:" "$DERIVED_DATA"
+  printf "%-22s %s\n" "team:"        "${DEVELOPMENT_TEAM:-(unset — export DEVELOPMENT_TEAM=...)}"
+  printf "%-22s %s\n" "device id:"   "${DEVICE_ID:-(auto)}"
+  printf "%-22s %s\n" "device name:" "${DEVICE:-(auto)}"
+  printf "%-22s %s\n" "resolved id:" "$(DEVELOPMENT_TEAM=skip resolve_device_id 2>&1 || echo '(none)')"
+}
+
+cmd_help() {
+  cat <<EOF
+Squad Mobile device script (physical iPhone)
+
+Usage: scripts/device <command> [args]
+
+Default (no args) ── build, install, launch, then tail console output.
+
+Commands:
+  start            build + install + launch (default)
+  build            xcodebuild for a connected iPhone
+  run              install the prebuilt app and launch
+  install          install the prebuilt app on the device
+  launch           launch the installed app + stream stdio
+  logs             stream device syslog filtered to this app (needs idevicesyslog)
+  list             show all connected devices (xcrun devicectl list devices)
+  uninstall        remove the app from the device
+  regen            run xcodegen against project.yml
+  xcode            open the project in Xcode
+  clean            wipe DerivedData (./build by default)
+  doctor           print resolved tools, paths, and device id
+  help             this message
+
+Environment:
+  DEVELOPMENT_TEAM=...  Apple Developer Team ID (REQUIRED for signing)
+  DEVICE_ID=...         exact device UDID (skips lookup)
+  DEVICE=...            substring of device name (e.g. "Rafe's iPhone")
+  CONFIG=...            Debug or Release (default "${CONFIG}")
+  DERIVED_DATA=...      build output path (default "${DERIVED_DATA}")
+
+First-time setup:
+  1. Plug in iPhone, unlock, tap "Trust This Computer".
+  2. export DEVELOPMENT_TEAM=ABCDE12345     # find in Apple Developer portal
+  3. scripts/device doctor                   # confirm device is detected
+  4. scripts/device                          # build + install + launch
+
+Examples:
+  scripts/device                              # full cycle
+  DEVICE="Rafe's iPhone" scripts/device       # pin to a specific device
+  scripts/device build && scripts/device run  # rebuild only when source changes
+  scripts/device list                         # show what's connected
+EOF
+}
+
+main() {
+  local cmd="${1:-start}"
+  case "$cmd" in
+    start)        shift || true; cmd_start "$@" ;;
+    build)        shift || true; cmd_build "$@" ;;
+    run)          shift || true; cmd_run "$@" ;;
+    install)      shift || true; cmd_install "$@" ;;
+    launch)       shift || true; cmd_launch "$@" ;;
+    logs)         shift || true; cmd_logs "$@" ;;
+    list|devices) shift || true; cmd_list "$@" ;;
+    uninstall)    shift || true; cmd_uninstall "$@" ;;
+    regen)        shift || true; cmd_regen "$@" ;;
+    xcode)        shift || true; cmd_open_xcode "$@" ;;
+    clean)        shift || true; cmd_clean "$@" ;;
+    doctor)       shift || true; cmd_doctor "$@" ;;
+    help|-h|--help) cmd_help ;;
+    *) printf "unknown command: %s\n\n" "$cmd"; cmd_help; exit 2 ;;
+  esac
+}
+
+main "$@"
