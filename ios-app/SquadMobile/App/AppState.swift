@@ -6,8 +6,12 @@ import SwiftUI
 @MainActor
 final class AppState: ObservableObject {
     @Published var paired: [PairedSquad] = []
-    @Published var activeSquadId: String?           // PairedSquad.id (== url)
-    @Published var allSquadsMode: Bool = false      // aggregate overview across squads
+    @Published var activeSquadId: String? {         // PairedSquad.id (== url)
+        didSet { UserDefaults.standard.set(activeSquadId, forKey: Defaults.activeSquadId) }
+    }
+    @Published var allSquadsMode: Bool = false {    // aggregate overview across squads
+        didSet { UserDefaults.standard.set(allSquadsMode, forKey: Defaults.allSquadsMode) }
+    }
     @Published var identity: AdminIdentity?         // for the active squad
 
     // Live data caches (populated from RPCs + WS events)
@@ -22,9 +26,22 @@ final class AppState: ObservableObject {
     let client = SquadClient()
     private var eventTask: Task<Void, Never>?
 
+    private enum Defaults {
+        static let activeSquadId = "activeSquadId"
+        static let allSquadsMode = "allSquadsMode"
+    }
+
     init() {
-        self.paired = KeychainStore.load()
-        self.activeSquadId = paired.first?.id
+        self.paired = PairedSquadStore.load()
+        let storedId = UserDefaults.standard.string(forKey: Defaults.activeSquadId)
+        // Only restore the stored id if it still matches a known squad; otherwise
+        // fall back to whichever is first so we don't connect to a removed one.
+        if let storedId, paired.contains(where: { $0.id == storedId }) {
+            self.activeSquadId = storedId
+        } else {
+            self.activeSquadId = paired.first?.id
+        }
+        self.allSquadsMode = UserDefaults.standard.bool(forKey: Defaults.allSquadsMode)
     }
 
     var activeSquad: PairedSquad? {
@@ -52,14 +69,14 @@ final class AppState: ObservableObject {
     func addPaired(_ squad: PairedSquad) {
         if let i = paired.firstIndex(where: { $0.id == squad.id }) { paired[i] = squad }
         else { paired.append(squad) }
-        KeychainStore.save(paired)
+        PairedSquadStore.save(paired)
         activeSquadId = squad.id
         connectActive()
     }
 
     func removePaired(_ id: String) {
         paired.removeAll { $0.id == id }
-        KeychainStore.save(paired)
+        PairedSquadStore.save(paired)
         if activeSquadId == id { activeSquadId = paired.first?.id }
         if paired.isEmpty {
             client.disconnect()
@@ -71,8 +88,9 @@ final class AppState: ObservableObject {
     func resetAll() {
         client.disconnect()
         paired = []
-        KeychainStore.clear()
+        PairedSquadStore.clear()
         activeSquadId = nil
+        allSquadsMode = false
         sessions = []; tasks = []; questions = []; approvals = []; peers = []; identity = nil
     }
 
@@ -95,7 +113,7 @@ final class AppState: ObservableObject {
             if let active = activeSquad, active.name != id.name {
                 if let i = paired.firstIndex(where: { $0.id == active.id }) {
                     paired[i].name = id.name
-                    KeychainStore.save(paired)
+                    PairedSquadStore.save(paired)
                 }
             }
         } catch { /* identity is best-effort */ }
