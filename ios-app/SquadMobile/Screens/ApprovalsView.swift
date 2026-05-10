@@ -27,7 +27,7 @@ struct ApprovalsView: View {
                     VStack(spacing: 10) {
                         Text("✓").font(.system(size: 42, weight: .light))
                             .foregroundStyle(Tokens.ok)
-                        Text("All clear. Agents have nothing waiting.")
+                        Text("All clear. \(state.branding.agentName.capitalized) has nothing waiting.")
                             .font(.system(size: 13)).foregroundStyle(Tokens.fgDim)
                     }
                     .padding(.top, 60)

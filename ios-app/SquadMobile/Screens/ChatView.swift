@@ -13,14 +13,25 @@ struct ChatView: View {
     let sessionId: String
     var go: (NavigationIntent) -> Void
 
-    @State private var session: SessionRecord?
+    @State private var resumedSession: SessionRecord?
     @State private var messages: [MessageRecord] = []
     @State private var streamingDelta: String = ""    // live tokens since last assistant message
     @State private var pendingToolCalls: [String: PendingToolCall] = [:]
     @State private var draft: String = ""
     @State private var sending = false
+    @State private var awaitingResponse = false       // user sent / tool returned → agent thinking
     @State private var showSubagents = false
     @State private var subscriptionTask: Task<Void, Never>?
+
+    // Prefer the live record from AppState so status flips ("idle" → "running"
+    // → "ended") drive the header pulse and the thinking indicator. Fall back
+    // to a fetched-by-resume copy for sessions not yet in the cache.
+    private var session: SessionRecord? {
+        state.sessions.first(where: { $0.id == sessionId }) ?? resumedSession
+    }
+    private var isThinking: Bool {
+        awaitingResponse && streamingDelta.isEmpty && pendingApprovals.isEmpty
+    }
 
     private let perSessionTopics: [String]
     init(sessionId: String, go: @escaping (NavigationIntent) -> Void) {
@@ -57,6 +68,10 @@ struct ChatView: View {
                             assistantBubble(text: streamingDelta, streaming: true)
                                 .id("__streaming")
                         }
+                        if isThinking {
+                            thinkingBubble
+                                .id("__thinking")
+                        }
                         if !pendingApprovals.isEmpty {
                             pendingApprovalBanner
                         }
@@ -69,6 +84,9 @@ struct ChatView: View {
                     withAnimation { proxy.scrollTo("__bottom", anchor: .bottom) }
                 }
                 .onChange(of: streamingDelta) { _, _ in
+                    proxy.scrollTo("__bottom", anchor: .bottom)
+                }
+                .onChange(of: awaitingResponse) { _, _ in
                     proxy.scrollTo("__bottom", anchor: .bottom)
                 }
             }
@@ -88,7 +106,10 @@ struct ChatView: View {
             // Composer
             VStack(spacing: 0) {
                 Spacer()
-                Composer(text: $draft, sending: sending, onSend: send)
+                Composer(text: $draft,
+                         sending: sending,
+                         placeholder: "Reply to \(state.branding.agentName)…",
+                         onSend: send)
             }
         }
         .task { await onFirstAppear() }
@@ -132,20 +153,24 @@ struct ChatView: View {
     // MARK: lifecycle
 
     private func onFirstAppear() async {
-        if let cached = state.sessions.first(where: { $0.id == sessionId }) {
-            self.session = cached
-        } else {
+        if state.sessions.first(where: { $0.id == sessionId }) == nil {
             let resumed = try? await state.client.call(
                 "session.resume",
                 params: ["sessionId": sessionId],
                 as: SquadClient.SessionStartResult.self
             )
-            self.session = resumed?.session
+            self.resumedSession = resumed?.session
         }
         do {
             self.messages = try await state.client.chatHistory(sessionId: sessionId)
         } catch {
             state.lastError = error.localizedDescription
+        }
+        // If we're attaching to a session that's already in flight, show the
+        // thinking indicator until a delta or assistant message lands. Events
+        // for tool_call / tool_result will adjust this in handle().
+        if session?.status == "running", messages.last?.role != "assistant" {
+            awaitingResponse = true
         }
         state.client.subscribe(perSessionTopics)
         subscriptionTask = Task { @MainActor in
@@ -162,6 +187,7 @@ struct ChatView: View {
         case "chat.text_delta":
             if let obj = event.data.objectValue, let delta = obj["delta"]?.stringValue {
                 streamingDelta += delta
+                awaitingResponse = false
             }
         case "chat.assistant_message":
             if let obj = event.data.objectValue, let msgVal = obj["message"] {
@@ -169,6 +195,7 @@ struct ChatView: View {
                    let msg = try? JSONDecoder().decode(MessageRecord.self, from: bytes) {
                     messages.append(msg)
                     streamingDelta = ""
+                    awaitingResponse = false
                 }
             }
         case "chat.user_message":
@@ -176,6 +203,8 @@ struct ChatView: View {
                let bytes = try? JSONEncoder().encode(msgVal),
                let msg = try? JSONDecoder().decode(MessageRecord.self, from: bytes) {
                 if !messages.contains(where: { $0.id == msg.id }) { messages.append(msg) }
+                // A user turn means the agent is about to think.
+                awaitingResponse = true
             }
         case "chat.tool_call":
             if let obj = event.data.objectValue,
@@ -190,6 +219,11 @@ struct ChatView: View {
                 messages.append(MessageRecord(id: "tc_\(id)", sessionId: sessionId,
                                               role: "assistant",
                                               content: [block], createdAt: nil))
+                // Mid-tool: text streaming is paused and the agent isn't
+                // thinking, it's executing. The next text_delta will start a
+                // fresh chunk after the result.
+                streamingDelta = ""
+                awaitingResponse = false
             }
         case "chat.tool_result":
             if let obj = event.data.objectValue, let id = obj["toolCallId"]?.stringValue {
@@ -203,11 +237,16 @@ struct ChatView: View {
                 messages.append(MessageRecord(id: "tr_\(id)", sessionId: sessionId,
                                               role: "tool", content: [block], createdAt: nil))
                 pendingToolCalls.removeValue(forKey: id)
+                // Between a tool finishing and the next text/tool_use, the
+                // agent is thinking again — re-arm the indicator.
+                awaitingResponse = true
             }
         case "chat.error":
             if let obj = event.data.objectValue, let msg = obj["message"]?.stringValue {
                 state.lastError = msg
             }
+            streamingDelta = ""
+            awaitingResponse = false
         default: break
         }
     }
@@ -218,6 +257,7 @@ struct ChatView: View {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !sending else { return }
         sending = true
+        awaitingResponse = true
         let snapshot = text
         draft = ""
         Task {
@@ -226,6 +266,7 @@ struct ChatView: View {
             } catch {
                 state.lastError = error.localizedDescription
                 draft = snapshot
+                awaitingResponse = false
             }
             sending = false
         }
@@ -268,10 +309,28 @@ struct ChatView: View {
         }
     }
 
+    private var thinkingBubble: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text(state.branding.agentName.uppercased())
+                Text("·")
+                Mono(session?.model ?? "—", size: 10, color: Tokens.fgMuted, weight: .bold)
+                Text("·")
+                Text("THINKING")
+            }
+            .font(Fonts.mono(10, weight: .bold))
+            .tracking(0.8)
+            .foregroundStyle(Tokens.fgMuted)
+            TypingDots()
+        }
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private func assistantBubble(text: String, streaming: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Text("AGENT")
+                Text(state.branding.agentName.uppercased())
                 Text("·")
                 Mono(session?.model ?? "—", size: 10, color: Tokens.fgMuted, weight: .bold)
             }
@@ -356,7 +415,7 @@ struct ChatView: View {
             Text("APPROVAL REQUIRED · \(count) PENDING")
                 .font(Fonts.mono(10, weight: .bold)).tracking(1)
                 .foregroundStyle(Tokens.warn)
-            Text("Agent wants to run \(count) tool call\(count == 1 ? "" : "s") that need a decision.")
+            Text("\(state.branding.agentName.capitalized) wants to run \(count) tool call\(count == 1 ? "" : "s") that need a decision.")
                 .font(.system(size: 13.5, weight: .medium))
                 .foregroundStyle(Tokens.fg)
             SqButton(title: "Review & decide", style: .warn,
@@ -416,6 +475,7 @@ private struct ChatHeader: View {
 private struct Composer: View {
     @Binding var text: String
     var sending: Bool
+    var placeholder: String
     var onSend: () -> Void
     var body: some View {
         HStack(spacing: 8) {
@@ -423,7 +483,7 @@ private struct Composer: View {
                 .font(.system(size: 18))
                 .foregroundStyle(Tokens.fgMuted)
                 .frame(width: 36, height: 36)
-            TextField("", text: $text, prompt: Text("Reply to the agent…").foregroundColor(Tokens.fgDim),
+            TextField("", text: $text, prompt: Text(placeholder).foregroundColor(Tokens.fgDim),
                       axis: .vertical)
                 .lineLimit(1...5)
                 .font(.system(size: 14))
@@ -446,6 +506,26 @@ private struct Composer: View {
         .padding(.horizontal, 12).padding(.bottom, 28).padding(.top, 10)
         .background(LinearGradient(colors: [Tokens.bg.opacity(0), Tokens.bg.opacity(0.95)],
                                    startPoint: .top, endPoint: .bottom))
+    }
+}
+
+// MARK: - Typing dots (mirrors the dashboard "thinking…" indicator)
+
+private struct TypingDots: View {
+    @State private var phase = 0
+    private let timer = Timer.publish(every: 0.35, on: .main, in: .common).autoconnect()
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(0..<3, id: \.self) { i in
+                Circle()
+                    .fill(Tokens.fgMuted)
+                    .frame(width: 6, height: 6)
+                    .opacity(phase == i ? 1.0 : 0.3)
+                    .animation(.easeInOut(duration: 0.3), value: phase)
+            }
+        }
+        .padding(.vertical, 4)
+        .onReceive(timer) { _ in phase = (phase + 1) % 3 }
     }
 }
 

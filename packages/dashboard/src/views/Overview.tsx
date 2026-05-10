@@ -23,7 +23,9 @@ export function Overview({ setView, onOpenSession, onNewChat }: Props): JSX.Elem
     rootSession,
     subagentTree,
     answerQuestion,
+    dismissQuestion,
     decideApproval,
+    dismissApproval,
     plugins,
   } = useGateway();
 
@@ -60,6 +62,8 @@ export function Overview({ setView, onOpenSession, onNewChat }: Props): JSX.Elem
           onOpenSession={onOpenSession}
           onAnswer={(qid, answers) => void answerQuestion(qid, answers)}
           onDecide={(id, dec) => void decideApproval(id, dec)}
+          onDismissQuestion={(qid) => void dismissQuestion(qid)}
+          onDismissApproval={(id) => void dismissApproval(id)}
         />
         <RecentActivity activity={activity} onOpenSession={onOpenSession} />
         <SharedTaskList tasks={tasks} sessions={sessions} setView={setView} />
@@ -213,6 +217,53 @@ function SubagentMiniTree({ node, title }: { node: SubagentTreeNode; title: stri
   );
 }
 
+// Small inline `×` affordance used to dismiss a pending question/approval
+// from the Overview without answering. Sized to nestle into a card header
+// next to the timestamp.
+function DismissButton({
+  title,
+  onClick,
+}: {
+  title: string;
+  onClick: () => void;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 18,
+        height: 18,
+        padding: 0,
+        border: "1px solid transparent",
+        borderRadius: 3,
+        background: "transparent",
+        color: "var(--fg-muted)",
+        cursor: "pointer",
+        lineHeight: 0,
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.borderColor = "var(--border-soft)";
+        e.currentTarget.style.color = "var(--fg)";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.borderColor = "transparent";
+        e.currentTarget.style.color = "var(--fg-muted)";
+      }}
+    >
+      <Icon name="x" size={11} />
+    </button>
+  );
+}
+
 // ── Needs you ───────────────────────────────────────────────────────────────
 
 interface NeedsYouProps {
@@ -221,9 +272,19 @@ interface NeedsYouProps {
   onOpenSession: (id: string) => void;
   onAnswer: (questionId: string, answers: Record<string, string>) => void;
   onDecide: (approvalId: string, decision: "approve" | "deny") => void;
+  onDismissQuestion: (questionId: string) => void;
+  onDismissApproval: (approvalId: string) => void;
 }
 
-function NeedsYou({ questions, approvals, onOpenSession, onAnswer, onDecide }: NeedsYouProps): JSX.Element {
+function NeedsYou({
+  questions,
+  approvals,
+  onOpenSession,
+  onAnswer,
+  onDecide,
+  onDismissQuestion,
+  onDismissApproval,
+}: NeedsYouProps): JSX.Element {
   const branding = useBranding();
   const total = questions.length + approvals.length;
   return (
@@ -239,6 +300,7 @@ function NeedsYou({ questions, approvals, onOpenSession, onAnswer, onDecide }: N
           question={q}
           onAnswer={onAnswer}
           onOpenSession={onOpenSession}
+          onDismiss={onDismissQuestion}
         />
       ))}
       {approvals.map((a) => (
@@ -249,6 +311,10 @@ function NeedsYou({ questions, approvals, onOpenSession, onAnswer, onDecide }: N
             {a.tags[0] && <span className="tag warn">{a.tags[0]}</span>}
             <span className="spacer" />
             <span className="hint">{fmtAgo(a.createdAt)}</span>
+            <DismissButton
+              title="dismiss this approval"
+              onClick={() => onDismissApproval(a.id)}
+            />
           </div>
           <div className="mono" style={{ fontSize: "var(--t-sm)", marginBottom: 6 }}>
             <span className="muted">$ </span>
@@ -292,10 +358,12 @@ function NeedsYouQuestion({
   question,
   onAnswer,
   onOpenSession,
+  onDismiss,
 }: {
   question: QuestionRecord;
   onAnswer: (questionId: string, answers: Record<string, string>) => void;
   onOpenSession: (id: string) => void;
+  onDismiss: (questionId: string) => void;
 }): JSX.Element | null {
   const [picks, setPicks] = useState<Record<string, string>>({});
   const [otherOpen, setOtherOpen] = useState<Record<string, boolean>>({});
@@ -323,6 +391,10 @@ function NeedsYouQuestion({
         </span>
         <span className="spacer" />
         <span className="hint">{fmtAgo(question.askedAt)}</span>
+        <DismissButton
+          title="dismiss this question"
+          onClick={() => onDismiss(question.id)}
+        />
       </div>
       {subQs.map((sq, qi) => {
         const picked = picks[sq.question];

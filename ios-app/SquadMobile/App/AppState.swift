@@ -51,6 +51,13 @@ final class AppState: ObservableObject {
 
     var isOnboarded: Bool { !paired.isEmpty }
 
+    // Display labels for "agent" and "you" everywhere in the UI. Falls back to
+    // the same generic words the gateway defaults to so screens render sanely
+    // before `admin.identity` resolves.
+    var branding: Branding {
+        identity?.branding ?? Branding(agentName: "agent", userName: "you")
+    }
+
     // MARK: lifecycle
 
     func connectActive() {
@@ -132,11 +139,14 @@ final class AppState: ObservableObject {
     }
     func refreshTasks() async {
         // Without a session filter the server may not return all tasks, so fan out
-        // across every active session and merge.
+        // across every active session and merge. Stamp each task with the
+        // sessionId we used so that mutations (update/delete) can route correctly.
         var merged: [TaskRecord] = []
         let active = sessions.filter { $0.parentSessionId == nil }
         for s in active {
-            if let list = try? await client.listTasks(sessionId: s.id) { merged.append(contentsOf: list) }
+            if let list = try? await client.listTasks(sessionId: s.id) {
+                merged.append(contentsOf: list.map { var t = $0; t.sessionId = s.id; return t })
+            }
         }
         self.tasks = merged
     }
@@ -146,6 +156,60 @@ final class AppState: ObservableObject {
     }
 
     // MARK: actions
+
+    // Most recently-updated active (non-ended) root session — the destination for
+    // task creation when the user doesn't pick one explicitly.
+    var defaultTaskSession: SessionRecord? {
+        sessions
+            .filter { $0.parentSessionId == nil && $0.status != "ended" }
+            .sorted { ($0.updatedAt ?? "") > ($1.updatedAt ?? "") }
+            .first
+    }
+
+    func updateTaskStatus(_ task: TaskRecord, status: String) async {
+        guard let sid = task.sessionId else { return }
+        do { _ = try await client.updateTask(sessionId: sid, taskId: task.id, status: status) }
+        catch { self.lastError = error.localizedDescription }
+    }
+
+    func saveTaskEdits(
+        _ task: TaskRecord,
+        subject: String,
+        description: String,
+        owner: String?,
+        status: String
+    ) async {
+        guard let sid = task.sessionId else { return }
+        let trimmedOwner = owner?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ownerArg: String?? = (trimmedOwner?.isEmpty ?? true) ? .some(nil) : .some(trimmedOwner)
+        do {
+            _ = try await client.updateTask(
+                sessionId: sid,
+                taskId: task.id,
+                subject: subject,
+                description: description,
+                owner: ownerArg,
+                status: status
+            )
+        } catch {
+            self.lastError = error.localizedDescription
+        }
+    }
+
+    func deleteTask(_ task: TaskRecord) async {
+        guard let sid = task.sessionId else { return }
+        do { _ = try await client.deleteTask(sessionId: sid, taskId: task.id) }
+        catch { self.lastError = error.localizedDescription }
+    }
+
+    func createTask(subject: String, description: String = "") async {
+        guard let session = defaultTaskSession else {
+            self.lastError = "No active session to attach the task to"
+            return
+        }
+        do { _ = try await client.createTask(sessionId: session.id, subject: subject, description: description) }
+        catch { self.lastError = error.localizedDescription }
+    }
 
     // Match dashboard parity: a blank session.start with no opts. Title/model
     // defaults come from the gateway; the user types their first message in the

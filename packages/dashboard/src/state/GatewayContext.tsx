@@ -238,7 +238,18 @@ export interface GatewayState {
     questionId: string,
     answers: Record<string, string>,
   ) => Promise<void>;
+  /**
+   * Cancel a pending question without answering. Used by the "dismiss" affordance
+   * on the Overview / chat — the agent receives a cancellation, the record drops
+   * out of `pendingQuestions`, and the UI stops surfacing it.
+   */
+  dismissQuestion: (questionId: string) => Promise<void>;
   decideApproval: (approvalId: string, decision: "approve" | "deny", reason?: string) => Promise<void>;
+  /**
+   * Dismiss a pending approval. Implemented as a deny with reason="dismissed by
+   * user" so the tool sees a definitive answer and stops blocking the agent.
+   */
+  dismissApproval: (approvalId: string) => Promise<void>;
   /**
    * Mark this (toolName, target) as "always allow" and decide the current
    * pending approval as `approve` in one round-trip. `scope` defaults to
@@ -1058,6 +1069,32 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     [client],
   );
 
+  const dismissQuestion = useCallback(
+    async (questionId: string) => {
+      const q =
+        sessionQuestions.find((x) => x.id === questionId) ??
+        pendingQuestions.find((x) => x.id === questionId);
+      if (!q) return;
+      await client.request("questions.cancel", {
+        sessionId: q.sessionId,
+        questionId,
+        reason: "dismissed by user",
+      });
+    },
+    [client, sessionQuestions, pendingQuestions],
+  );
+
+  const dismissApproval = useCallback(
+    async (approvalId: string) => {
+      await client.request("approvals.decide", {
+        approvalId,
+        decision: "deny",
+        reason: "dismissed by user",
+      });
+    },
+    [client],
+  );
+
   const allowApprovalPath = useCallback(
     async (approvalId: string, scope: "exact" | "tool" = "exact") => {
       await client.request("approvals.allow_path", { approvalId, scope });
@@ -1256,7 +1293,9 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     setSessionModel,
     setSessionTitleModel,
     answerQuestion,
+    dismissQuestion,
     decideApproval,
+    dismissApproval,
     allowApprovalPath,
     createTask,
     updateTaskStatus,

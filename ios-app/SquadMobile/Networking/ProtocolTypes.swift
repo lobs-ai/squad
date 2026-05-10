@@ -127,6 +127,9 @@ struct TaskRecord: Codable, Identifiable, Hashable {
     var blockedBy: [String]?
     var createdAt: String?
     var updatedAt: String?
+    // Stamped client-side after listing so mutations know which session to target.
+    // tasks.update / tasks.delete need a sessionId; the wire payload doesn't carry one.
+    var sessionId: String?
 }
 
 struct AskOption: Codable, Hashable {
@@ -205,6 +208,16 @@ struct AdminIdentity: Codable, Hashable {
     let build: String?
     let version: String?
     let startedAt: String?
+    let branding: Branding?
+}
+
+// Display labels surfaced via `admin.identity.branding`. The dashboard uses
+// these to substitute "agent" / "you" everywhere a friendly name belongs;
+// iOS does the same so the apps stay in lockstep when the user customises
+// `branding.agent_name` / `branding.user_name` in config.
+struct Branding: Codable, Hashable {
+    let agentName: String
+    let userName: String
 }
 
 struct AdminPeer: Codable, Identifiable, Hashable {

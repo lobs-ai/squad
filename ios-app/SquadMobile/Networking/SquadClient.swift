@@ -388,6 +388,40 @@ extension SquadClient {
         let r = try await call("tasks.list", params: p, as: TasksListResult.self)
         return r.tasks
     }
+    struct TaskMutationResult: Codable { let task: TaskRecord }
+    func createTask(sessionId: String, subject: String, description: String = "") async throws -> TaskRecord {
+        let r = try await call(
+            "tasks.create",
+            params: ["sessionId": sessionId, "subject": subject, "description": description],
+            as: TaskMutationResult.self
+        )
+        return r.task
+    }
+    // Pass `.some(nil)` to owner to clear it; `.none` to leave it alone.
+    func updateTask(
+        sessionId: String,
+        taskId: String,
+        subject: String? = nil,
+        description: String? = nil,
+        owner: String?? = nil,
+        status: String? = nil
+    ) async throws -> TaskRecord {
+        var p: [String: Any] = ["sessionId": sessionId, "taskId": taskId]
+        if let subject { p["subject"] = subject }
+        if let description { p["description"] = description }
+        if case .some(let v) = owner { p["owner"] = (v as Any?) ?? NSNull() }
+        if let status { p["status"] = status }
+        let r = try await call("tasks.update", params: p, as: TaskMutationResult.self)
+        return r.task
+    }
+    func deleteTask(sessionId: String, taskId: String) async throws -> TaskRecord {
+        let r = try await call(
+            "tasks.delete",
+            params: ["sessionId": sessionId, "taskId": taskId],
+            as: TaskMutationResult.self
+        )
+        return r.task
+    }
 
     // Questions
     struct QuestionsListResult: Codable { let questions: [QuestionRecord] }
@@ -400,6 +434,12 @@ extension SquadClient {
         _ = try await call("questions.answer",
                            params: ["sessionId": sessionId, "questionId": questionId, "answers": answers],
                            as: QuestionsAnswerResult.self)
+    }
+    struct QuestionsCancelResult: Codable { let question: QuestionRecord }
+    func cancelQuestion(sessionId: String, questionId: String, reason: String? = nil) async throws {
+        var p: [String: Any] = ["sessionId": sessionId, "questionId": questionId]
+        if let reason { p["reason"] = reason }
+        _ = try await call("questions.cancel", params: p, as: QuestionsCancelResult.self)
     }
 
     // Approvals

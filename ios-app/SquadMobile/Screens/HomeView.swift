@@ -26,7 +26,7 @@ struct HomeView: View {
                 // Needs you
                 let pending = state.questions.filter { $0.status == "pending" }
                 let pendingApprovals = state.approvals.filter { $0.status == "pending" }
-                SectionLabel(title: "Needs you",
+                SectionLabel(title: "Needs \(state.branding.userName)",
                              trailing: "\(pending.count + pendingApprovals.count) pending")
 
                 if pending.isEmpty && pendingApprovals.isEmpty {
@@ -36,7 +36,7 @@ struct HomeView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("All clear").font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(Tokens.fg)
-                            Text("Agents have nothing waiting on you.")
+                            Text("\(state.branding.agentName.capitalized) has nothing waiting on \(state.branding.userName).")
                                 .font(.system(size: 11)).foregroundStyle(Tokens.fgDim)
                         }
                         Spacer()
@@ -50,28 +50,33 @@ struct HomeView: View {
                 if !pendingApprovals.isEmpty {
                     CardView {
                         ForEach(Array(pendingApprovals.prefix(2).enumerated()), id: \.element.id) { idx, a in
-                            Button { go(.approvals) } label: {
-                                CardRow(isLast: idx == min(pendingApprovals.count, 2) - 1) {
-                                    ApprovalTag(tag: a.primaryTag)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(approvalSummary(a))
-                                            .font(.system(size: 13.5, weight: .medium))
-                                            .foregroundStyle(Tokens.fg).lineLimit(2)
-                                        HStack(spacing: 6) {
-                                            Text(a.toolName)
-                                            Text("·").foregroundStyle(Tokens.fgDim)
-                                            Mono(state.activeSquad?.name ?? "squad", size: 11, color: Tokens.fgDim)
+                            CardRow(isLast: idx == min(pendingApprovals.count, 2) - 1) {
+                                ApprovalTag(tag: a.primaryTag)
+                                Button { go(.approvals) } label: {
+                                    HStack(spacing: 8) {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(approvalSummary(a))
+                                                .font(.system(size: 13.5, weight: .medium))
+                                                .foregroundStyle(Tokens.fg).lineLimit(2)
+                                            HStack(spacing: 6) {
+                                                Text(a.toolName)
+                                                Text("·").foregroundStyle(Tokens.fgDim)
+                                                Mono(state.activeSquad?.name ?? "squad", size: 11, color: Tokens.fgDim)
+                                            }
+                                            .font(Fonts.mono(11))
+                                            .foregroundStyle(Tokens.fgDim)
                                         }
-                                        .font(Fonts.mono(11))
-                                        .foregroundStyle(Tokens.fgDim)
+                                        Spacer(minLength: 0)
+                                        Image(systemName: "chevron.right")
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundStyle(Tokens.fgDim)
                                     }
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                        .font(.system(size: 12, weight: .bold))
-                                        .foregroundStyle(Tokens.fgDim)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
                                 }
+                                .buttonStyle(.plain)
+                                DismissButton(label: "Dismiss approval") { dismissApproval(a) }
                             }
-                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -132,6 +137,41 @@ struct HomeView: View {
         }
         return a.toolName
     }
+
+    // Dismiss a pending approval without approve/deny semantics in the UI:
+    // implemented as `decideApproval(deny, "dismissed by user")` so the agent
+    // sees a definitive answer and the record drops out of `pending`.
+    private func dismissApproval(_ a: ApprovalRecord) {
+        Task {
+            do {
+                try await state.client.decideApproval(id: a.id, decision: "deny", reason: "dismissed by user")
+                await state.refreshApprovals()
+            } catch {
+                state.lastError = error.localizedDescription
+            }
+        }
+    }
+}
+
+// Small `×` button used to dismiss a pending question/approval card from the
+// home screen without answering. Styled subtly so it reads as "stop bugging
+// me" rather than a primary action.
+struct DismissButton: View {
+    let label: String
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(Tokens.fgDim)
+                .frame(width: 26, height: 26)
+                .background(Tokens.bg)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Tokens.border, lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
 }
 
 // MARK: - Question card
@@ -149,8 +189,12 @@ struct QuestionCard: View {
             HStack(spacing: 6) {
                 Image(systemName: "sparkles").font(.system(size: 11, weight: .bold))
                 Text("Question · ")
-                + Text(question.askedBy ?? "agent").font(Fonts.mono(10, weight: .bold))
+                + Text(question.askedBy ?? state.branding.agentName).font(Fonts.mono(10, weight: .bold))
                 + Text(" · \(timeAgo(question.askedAt))")
+                Spacer(minLength: 8)
+                DismissButton(label: "Dismiss question") { dismiss() }
+                    .disabled(sending != nil)
+                    .opacity(sending != nil ? 0.4 : 1)
             }
             .font(Fonts.mono(10, weight: .bold))
             .tracking(1)
@@ -235,6 +279,23 @@ struct QuestionCard: View {
                 await state.refreshQuestions()
             } catch {
                 go(.toast("send failed: \(error.localizedDescription)"))
+                sending = nil
+            }
+        }
+    }
+
+    private func dismiss() {
+        sending = "__dismiss"
+        Task {
+            do {
+                try await state.client.cancelQuestion(
+                    sessionId: question.sessionId,
+                    questionId: question.id,
+                    reason: "dismissed by user"
+                )
+                await state.refreshQuestions()
+            } catch {
+                go(.toast("dismiss failed: \(error.localizedDescription)"))
                 sending = nil
             }
         }
