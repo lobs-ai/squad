@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+# Squad Mobile dev script. Lives in ios-app/scripts/, runs from anywhere.
+#
+# Quick start:   scripts/dev           # build + install + launch + tail logs
+# Subcommands:   scripts/dev help      # list everything
+#
+# Override the simulator: SIM="iPhone Air" scripts/dev
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
+
+PROJECT="SquadMobile.xcodeproj"
+SCHEME="SquadMobile"
+BUNDLE_ID="dev.squad.SquadMobile"
+SIM="${SIM:-iPhone 17 Pro}"
+CONFIG="${CONFIG:-Debug}"
+DERIVED_DATA="${DERIVED_DATA:-build}"
+
+c_blue='\033[1;34m'; c_dim='\033[2m'; c_green='\033[32m'; c_red='\033[31m'; c_off='\033[0m'
+log()  { printf "${c_blue}▸${c_off} %s\n" "$*"; }
+ok()   { printf "${c_green}✓${c_off} %s\n" "$*"; }
+fail() { printf "${c_red}✗${c_off} %s\n" "$*" >&2; exit 1; }
+
+require_tool() {
+  command -v "$1" >/dev/null 2>&1 || fail "missing tool: $1${2:+ ($2)}"
+}
+
+resolve_sim_id() {
+  # First booted matching device wins; otherwise first available shutdown one.
+  local id
+  id="$(xcrun simctl list devices available -j \
+        | /usr/bin/python3 -c "
+import json,sys
+data=json.load(sys.stdin)
+booted=[]; shutdown=[]
+for runtime,devs in data['devices'].items():
+  for d in devs:
+    if d.get('name')=='${SIM}' and d.get('isAvailable'):
+      (booted if d['state']=='Booted' else shutdown).append((d['udid'],runtime))
+chosen=(booted+shutdown)[0:1]
+print(chosen[0][0] if chosen else '')
+")"
+  [[ -z "$id" ]] && fail "no available simulator named '${SIM}' (override with SIM=...)"
+  echo "$id"
+}
+
+cmd_regen() {
+  require_tool xcodegen "brew install xcodegen"
+  log "regenerating ${PROJECT} from project.yml"
+  xcodegen generate
+  ok "project regenerated"
+}
+
+cmd_build() {
+  log "building (${SCHEME}, ${CONFIG}) for ${SIM}"
+  xcodebuild \
+    -project "$PROJECT" \
+    -scheme "$SCHEME" \
+    -configuration "$CONFIG" \
+    -destination "platform=iOS Simulator,name=${SIM}" \
+    -derivedDataPath "$DERIVED_DATA" \
+    -quiet \
+    build
+  ok "build succeeded"
+}
+
+cmd_boot() {
+  local id; id="$(resolve_sim_id)"
+  log "booting simulator ${SIM} (${id})"
+  xcrun simctl boot "$id" 2>/dev/null || true
+  open -a Simulator --args -CurrentDeviceUDID "$id"
+  # Wait until Springboard is ready (so install can target a live device).
+  for _ in {1..50}; do
+    if xcrun simctl listapps "$id" >/dev/null 2>&1; then ok "simulator ready"; return; fi
+    sleep 0.2
+  done
+  fail "simulator failed to boot in time"
+}
+
+app_path() {
+  local p="$DERIVED_DATA/Build/Products/${CONFIG}-iphonesimulator/${SCHEME}.app"
+  [[ -d "$p" ]] || fail "app not built — run ./dev build first ($p)"
+  echo "$p"
+}
+
+cmd_install() {
+  cmd_boot
+  local id; id="$(resolve_sim_id)"
+  log "installing $(app_path)"
+  xcrun simctl install "$id" "$(app_path)"
+  ok "installed"
+}
+
+cmd_launch() {
+  local id; id="$(resolve_sim_id)"
+  log "launching ${BUNDLE_ID}"
+  xcrun simctl launch --console-pty "$id" "$BUNDLE_ID"
+}
+
+cmd_run() {
+  cmd_install
+  cmd_launch
+}
+
+cmd_start() {
+  cmd_build
+  cmd_run
+}
+
+cmd_logs() {
+  local id; id="$(resolve_sim_id)"
+  log "streaming logs for ${BUNDLE_ID} (Ctrl-C to stop)"
+  xcrun simctl spawn "$id" log stream \
+    --level debug \
+    --predicate "subsystem CONTAINS \"${BUNDLE_ID}\" OR processImagePath ENDSWITH \"${SCHEME}\""
+}
+
+cmd_uninstall() {
+  local id; id="$(resolve_sim_id)"
+  log "uninstalling ${BUNDLE_ID}"
+  xcrun simctl uninstall "$id" "$BUNDLE_ID" || true
+  ok "uninstalled"
+}
+
+cmd_reset() {
+  # Wipes the app's container — useful for re-running onboarding.
+  cmd_uninstall
+  log "clearing keychain entries (best effort)"
+  local id; id="$(resolve_sim_id)"
+  xcrun simctl keychain "$id" reset 2>/dev/null || true
+  ok "reset"
+}
+
+cmd_screenshot() {
+  local out="${1:-/tmp/squad-mobile-$(date +%Y%m%d-%H%M%S).png}"
+  local id; id="$(resolve_sim_id)"
+  xcrun simctl io "$id" screenshot "$out"
+  ok "saved $out"
+  command -v open >/dev/null && open "$out" || true
+}
+
+cmd_open_sim() {
+  cmd_boot
+}
+
+cmd_open_xcode() {
+  log "opening ${PROJECT}"
+  open "$PROJECT"
+}
+
+cmd_clean() {
+  log "removing $DERIVED_DATA"
+  rm -rf "$DERIVED_DATA"
+  ok "clean"
+}
+
+cmd_doctor() {
+  printf "%-22s %s\n" "xcodebuild:" "$(xcodebuild -version | head -1)"
+  printf "%-22s %s\n" "xcrun:"      "$(xcrun --version 2>&1 | head -1)"
+  if command -v xcodegen >/dev/null; then
+    printf "%-22s %s\n" "xcodegen:"  "$(xcodegen --version 2>&1 | head -1)"
+  else
+    printf "%-22s %s\n" "xcodegen:"  "(missing — brew install xcodegen)"
+  fi
+  printf "%-22s %s\n" "project:"    "$PROJECT"
+  printf "%-22s %s\n" "scheme:"     "$SCHEME"
+  printf "%-22s %s\n" "bundle id:"  "$BUNDLE_ID"
+  printf "%-22s %s\n" "simulator:"  "$SIM"
+  printf "%-22s %s\n" "config:"     "$CONFIG"
+  printf "%-22s %s\n" "derivedData:" "$DERIVED_DATA"
+  printf "%-22s %s\n" "resolved id:" "$(resolve_sim_id 2>&1 || echo '(none)')"
+}
+
+cmd_help() {
+  cat <<EOF
+Squad Mobile dev script
+
+Usage: ./dev <command> [args]
+
+Default (no args) ── build, install, launch, then tail console output.
+
+Commands:
+  start            build + install + launch (default)
+  build            xcodebuild for the simulator
+  run              install the prebuilt app and launch
+  install          install the prebuilt app (boots sim if needed)
+  launch           launch the installed app + stream stdio
+  logs             stream OS-level logs for the app
+  boot | sim       open Simulator and boot the configured device
+  screenshot [p]   save a PNG (default: /tmp/squad-mobile-<ts>.png)
+  uninstall        remove the app from the simulator
+  reset            uninstall + reset the simulator's keychain
+  regen            run xcodegen against project.yml
+  xcode            open the project in Xcode
+  clean            wipe DerivedData (./build by default)
+  doctor           print resolved tools, paths, and simulator id
+  help             this message
+
+Environment:
+  SIM=...          simulator name (default "${SIM}")
+  CONFIG=...       Debug or Release (default "${CONFIG}")
+  DERIVED_DATA=... build output path (default "${DERIVED_DATA}")
+
+Examples:
+  ./dev                          # full cycle
+  SIM='iPhone Air' ./dev         # different simulator
+  ./dev build && ./dev run       # rebuild only when source changes
+  ./dev reset && ./dev start     # re-run onboarding from scratch
+EOF
+}
+
+main() {
+  local cmd="${1:-start}"
+  case "$cmd" in
+    start)        shift || true; cmd_start "$@" ;;
+    build)        shift || true; cmd_build "$@" ;;
+    run)          shift || true; cmd_run "$@" ;;
+    install)      shift || true; cmd_install "$@" ;;
+    launch)       shift || true; cmd_launch "$@" ;;
+    logs)         shift || true; cmd_logs "$@" ;;
+    boot|sim)     shift || true; cmd_boot "$@" ;;
+    screenshot)   shift || true; cmd_screenshot "$@" ;;
+    uninstall)    shift || true; cmd_uninstall "$@" ;;
+    reset)        shift || true; cmd_reset "$@" ;;
+    regen)        shift || true; cmd_regen "$@" ;;
+    xcode)        shift || true; cmd_open_xcode "$@" ;;
+    clean)        shift || true; cmd_clean "$@" ;;
+    doctor)       shift || true; cmd_doctor "$@" ;;
+    help|-h|--help) cmd_help ;;
+    *) printf "unknown command: %s\n\n" "$cmd"; cmd_help; exit 2 ;;
+  esac
+}
+
+main "$@"

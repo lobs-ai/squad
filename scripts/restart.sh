@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Restart every registered squad: full stop + start cycle (delegates to
-# `squad mgr stop --all` then `squad mgr start --all`). Use this when an
-# in-place `docker compose restart` isn't enough — e.g. compose template
-# changed, env file edits, image rebuild needed.
+# `squad mgr stop --all` then `squad mgr start --all --rebuild`). Always
+# forces an image rebuild so code/template/env changes are picked up — use
+# `squad mgr restart` directly if you want a plain in-place restart.
 #
 # Usage:
-#   scripts/restart.sh [--rebuild|--build]   # extra flags forwarded to `mgr start`
+#   scripts/restart.sh [extra flags]   # forwarded to `mgr start`
 
 set -euo pipefail
 
@@ -20,4 +20,4 @@ fi
 
 cli="$(ensure_mgr_cli)"
 $cli mgr stop --all
-exec $cli mgr start --all "$@"
+exec $cli mgr start --all --rebuild "$@"

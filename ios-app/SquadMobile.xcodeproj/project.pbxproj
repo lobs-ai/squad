@@ -1,0 +1,473 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		039B53C4300D8E062B049668 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E25553ADDFF1F275978E0574 /* HomeView.swift */; };
+		18486B4EF241E8ADAEA4AC24 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6250F48D76E38441790266E /* ChatView.swift */; };
+		1DFB863754E674ED09F6AA31 /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E73ED11637222C23699C6DE /* SearchView.swift */; };
+		2263349AEF664E5C98ED6737 /* StepReach.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9EC2D9450C40D483CEDB2DF6 /* StepReach.swift */; };
+		386B9FFB61195D128675798C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 86F05B03A1F72C691D5CF5FB /* Assets.xcassets */; };
+		491C06A788B84CF935C9765C /* SquadMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0277A01A7A9813F24AFAFEE3 /* SquadMobileApp.swift */; };
+		4BA03B26C1EEFA7FE084C45C /* StepConnect.swift in Sources */ = {isa = PBXBuildFile; fileRef = C588B6626038C466396F81C3 /* StepConnect.swift */; };
+		5ADB4A284492FE3C8BA24F2E /* SessionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DB87B987D4EE1668F49A9CE /* SessionsView.swift */; };
+		5BEBC08002A6591505DC823A /* StepNotifs.swift in Sources */ = {isa = PBXBuildFile; fileRef = A635372376FD80E4AC82F9B9 /* StepNotifs.swift */; };
+		62A2ECD4A57F476251A41445 /* StepWelcome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 353D16DE12E42A4E07DB56C7 /* StepWelcome.swift */; };
+		71C7D7AD78B7C2891A63080A /* MainTabsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D50A84CDAB1FFC1D82FD98C7 /* MainTabsView.swift */; };
+		79DDD57DC2A746E21C34FDE6 /* TasksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99637D3F841E35D031F8AF4A /* TasksView.swift */; };
+		8191CB2B9F560D0650A7907B /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D9837825C876DE38AA77296 /* RootView.swift */; };
+		842F33DE6C0A71F383857B74 /* SquadClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B69E66F2683BA822311855E8 /* SquadClient.swift */; };
+		8A198555BEC531453CEC9595 /* NotificationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6733D6E22239EC5414425AB /* NotificationsView.swift */; };
+		A1924DB40465875F62E3B1E9 /* Sheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0685AFECD143E2CDBB423435 /* Sheets.swift */; };
+		ADF96B32297C53607CDC9B2F /* MoreView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2266C10B6CD3569EFB7111D /* MoreView.swift */; };
+		C12E720112F54B465702A30A /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1611140FF1D210974B36F9F3 /* AppState.swift */; };
+		C29EB7251FC33E5F93919898 /* StepDone.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200DD9238314C921CA24D2B /* StepDone.swift */; };
+		C7A4281994312FEA07F11130 /* SquadsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 326846973AD008E52EF733C9 /* SquadsView.swift */; };
+		D3C9A133717115F19CCC45D2 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = A30F6531D760C3C4543F7BCA /* Components.swift */; };
+		DC81B4FFBA25C71F74BD1A25 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE6D4C3F0CF0794AABA905D9 /* OnboardingView.swift */; };
+		E260F07140921B075772862F /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54983AC0DD36A4939148D31D /* KeychainStore.swift */; };
+		F257E46D34F657559EB803AF /* Tokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6DE8D012B4D05BEF850B05D /* Tokens.swift */; };
+		F5FC6641C75113B811C7576E /* ProtocolTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 805D88ADD3FEC4DF9D4C5C45 /* ProtocolTypes.swift */; };
+		FE6DEE38E94884797C131708 /* ApprovalsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 156041CDBB60B2E7D993F014 /* ApprovalsView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		0277A01A7A9813F24AFAFEE3 /* SquadMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SquadMobileApp.swift; sourceTree = "<group>"; };
+		0685AFECD143E2CDBB423435 /* Sheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sheets.swift; sourceTree = "<group>"; };
+		156041CDBB60B2E7D993F014 /* ApprovalsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalsView.swift; sourceTree = "<group>"; };
+		1611140FF1D210974B36F9F3 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		2D9837825C876DE38AA77296 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		326846973AD008E52EF733C9 /* SquadsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SquadsView.swift; sourceTree = "<group>"; };
+		353D16DE12E42A4E07DB56C7 /* StepWelcome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StepWelcome.swift; sourceTree = "<group>"; };
+		54983AC0DD36A4939148D31D /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		5DB87B987D4EE1668F49A9CE /* SessionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionsView.swift; sourceTree = "<group>"; };
+		7E73ED11637222C23699C6DE /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
+		805D88ADD3FEC4DF9D4C5C45 /* ProtocolTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtocolTypes.swift; sourceTree = "<group>"; };
+		8113154A9392CAF22C2BEABE /* SquadMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = SquadMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		86F05B03A1F72C691D5CF5FB /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		95F23C355807FAB9E892B438 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		99637D3F841E35D031F8AF4A /* TasksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TasksView.swift; sourceTree = "<group>"; };
+		9EC2D9450C40D483CEDB2DF6 /* StepReach.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StepReach.swift; sourceTree = "<group>"; };
+		A30F6531D760C3C4543F7BCA /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
+		A635372376FD80E4AC82F9B9 /* StepNotifs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StepNotifs.swift; sourceTree = "<group>"; };
+		B6733D6E22239EC5414425AB /* NotificationsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsView.swift; sourceTree = "<group>"; };
+		B69E66F2683BA822311855E8 /* SquadClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SquadClient.swift; sourceTree = "<group>"; };
+		BE6D4C3F0CF0794AABA905D9 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		C588B6626038C466396F81C3 /* StepConnect.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StepConnect.swift; sourceTree = "<group>"; };
+		C6DE8D012B4D05BEF850B05D /* Tokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tokens.swift; sourceTree = "<group>"; };
+		D200DD9238314C921CA24D2B /* StepDone.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StepDone.swift; sourceTree = "<group>"; };
+		D50A84CDAB1FFC1D82FD98C7 /* MainTabsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabsView.swift; sourceTree = "<group>"; };
+		E25553ADDFF1F275978E0574 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		F2266C10B6CD3569EFB7111D /* MoreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreView.swift; sourceTree = "<group>"; };
+		F6250F48D76E38441790266E /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		07E777DA93C3F875460C46FA /* Design */ = {
+			isa = PBXGroup;
+			children = (
+				A30F6531D760C3C4543F7BCA /* Components.swift */,
+				C6DE8D012B4D05BEF850B05D /* Tokens.swift */,
+			);
+			path = Design;
+			sourceTree = "<group>";
+		};
+		26A2447083529C082609E329 /* Screens */ = {
+			isa = PBXGroup;
+			children = (
+				156041CDBB60B2E7D993F014 /* ApprovalsView.swift */,
+				F6250F48D76E38441790266E /* ChatView.swift */,
+				E25553ADDFF1F275978E0574 /* HomeView.swift */,
+				D50A84CDAB1FFC1D82FD98C7 /* MainTabsView.swift */,
+				F2266C10B6CD3569EFB7111D /* MoreView.swift */,
+				B6733D6E22239EC5414425AB /* NotificationsView.swift */,
+				2D9837825C876DE38AA77296 /* RootView.swift */,
+				7E73ED11637222C23699C6DE /* SearchView.swift */,
+				5DB87B987D4EE1668F49A9CE /* SessionsView.swift */,
+				0685AFECD143E2CDBB423435 /* Sheets.swift */,
+				326846973AD008E52EF733C9 /* SquadsView.swift */,
+				99637D3F841E35D031F8AF4A /* TasksView.swift */,
+			);
+			path = Screens;
+			sourceTree = "<group>";
+		};
+		2D14DEC64F7F07FCB3B7383E /* SquadMobile */ = {
+			isa = PBXGroup;
+			children = (
+				84F23789AE20CB313C394E27 /* App */,
+				07E777DA93C3F875460C46FA /* Design */,
+				3C09C048BD9B78519120C273 /* Networking */,
+				D4DC97E94122BC36E6422B42 /* Onboarding */,
+				FB90DE395BDAAB9F400C786C /* Resources */,
+				26A2447083529C082609E329 /* Screens */,
+			);
+			path = SquadMobile;
+			sourceTree = "<group>";
+		};
+		3C09C048BD9B78519120C273 /* Networking */ = {
+			isa = PBXGroup;
+			children = (
+				54983AC0DD36A4939148D31D /* KeychainStore.swift */,
+				805D88ADD3FEC4DF9D4C5C45 /* ProtocolTypes.swift */,
+				B69E66F2683BA822311855E8 /* SquadClient.swift */,
+			);
+			path = Networking;
+			sourceTree = "<group>";
+		};
+		84F23789AE20CB313C394E27 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				1611140FF1D210974B36F9F3 /* AppState.swift */,
+				0277A01A7A9813F24AFAFEE3 /* SquadMobileApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		A0EDE06D6632105BBCAF40F8 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				8113154A9392CAF22C2BEABE /* SquadMobile.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		AA2F69550FFA5FED4834FDCB = {
+			isa = PBXGroup;
+			children = (
+				2D14DEC64F7F07FCB3B7383E /* SquadMobile */,
+				A0EDE06D6632105BBCAF40F8 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		D4DC97E94122BC36E6422B42 /* Onboarding */ = {
+			isa = PBXGroup;
+			children = (
+				BE6D4C3F0CF0794AABA905D9 /* OnboardingView.swift */,
+				C588B6626038C466396F81C3 /* StepConnect.swift */,
+				D200DD9238314C921CA24D2B /* StepDone.swift */,
+				A635372376FD80E4AC82F9B9 /* StepNotifs.swift */,
+				9EC2D9450C40D483CEDB2DF6 /* StepReach.swift */,
+				353D16DE12E42A4E07DB56C7 /* StepWelcome.swift */,
+			);
+			path = Onboarding;
+			sourceTree = "<group>";
+		};
+		FB90DE395BDAAB9F400C786C /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				86F05B03A1F72C691D5CF5FB /* Assets.xcassets */,
+				95F23C355807FAB9E892B438 /* Info.plist */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		C31D3A6F8DBA966BBB6A7E4A /* SquadMobile */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E74A9A4F184CCDAC118949E8 /* Build configuration list for PBXNativeTarget "SquadMobile" */;
+			buildPhases = (
+				8AE9AB055C4993DF50CE6616 /* Sources */,
+				F4DC86CB88247481B23E42E0 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SquadMobile;
+			packageProductDependencies = (
+			);
+			productName = SquadMobile;
+			productReference = 8113154A9392CAF22C2BEABE /* SquadMobile.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A2ABCDD68E79CA270FD78EEA /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					C31D3A6F8DBA966BBB6A7E4A = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = B807E69B97C29DFAAB2B13A2 /* Build configuration list for PBXProject "SquadMobile" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = AA2F69550FFA5FED4834FDCB;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = A0EDE06D6632105BBCAF40F8 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				C31D3A6F8DBA966BBB6A7E4A /* SquadMobile */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F4DC86CB88247481B23E42E0 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				386B9FFB61195D128675798C /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		8AE9AB055C4993DF50CE6616 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C12E720112F54B465702A30A /* AppState.swift in Sources */,
+				FE6DEE38E94884797C131708 /* ApprovalsView.swift in Sources */,
+				18486B4EF241E8ADAEA4AC24 /* ChatView.swift in Sources */,
+				D3C9A133717115F19CCC45D2 /* Components.swift in Sources */,
+				039B53C4300D8E062B049668 /* HomeView.swift in Sources */,
+				E260F07140921B075772862F /* KeychainStore.swift in Sources */,
+				71C7D7AD78B7C2891A63080A /* MainTabsView.swift in Sources */,
+				ADF96B32297C53607CDC9B2F /* MoreView.swift in Sources */,
+				8A198555BEC531453CEC9595 /* NotificationsView.swift in Sources */,
+				DC81B4FFBA25C71F74BD1A25 /* OnboardingView.swift in Sources */,
+				F5FC6641C75113B811C7576E /* ProtocolTypes.swift in Sources */,
+				8191CB2B9F560D0650A7907B /* RootView.swift in Sources */,
+				1DFB863754E674ED09F6AA31 /* SearchView.swift in Sources */,
+				5ADB4A284492FE3C8BA24F2E /* SessionsView.swift in Sources */,
+				A1924DB40465875F62E3B1E9 /* Sheets.swift in Sources */,
+				842F33DE6C0A71F383857B74 /* SquadClient.swift in Sources */,
+				491C06A788B84CF935C9765C /* SquadMobileApp.swift in Sources */,
+				C7A4281994312FEA07F11130 /* SquadsView.swift in Sources */,
+				4BA03B26C1EEFA7FE084C45C /* StepConnect.swift in Sources */,
+				C29EB7251FC33E5F93919898 /* StepDone.swift in Sources */,
+				5BEBC08002A6591505DC823A /* StepNotifs.swift in Sources */,
+				2263349AEF664E5C98ED6737 /* StepReach.swift in Sources */,
+				62A2ECD4A57F476251A41445 /* StepWelcome.swift in Sources */,
+				79DDD57DC2A746E21C34FDE6 /* TasksView.swift in Sources */,
+				F257E46D34F657559EB803AF /* Tokens.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		0502EF63C833030F3419D017 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_PREVIEWS = YES;
+				INFOPLIST_FILE = SquadMobile/Resources/Info.plist;
+				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIRequiresFullScreen = YES;
+				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleLightContent;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UIViewControllerBasedStatusBarAppearance = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.squad.SquadMobile;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		2C0715E94503CC221B55A231 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_PREVIEWS = YES;
+				INFOPLIST_FILE = SquadMobile/Resources/Info.plist;
+				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIRequiresFullScreen = YES;
+				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleLightContent;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UIViewControllerBasedStatusBarAppearance = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.squad.SquadMobile;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		553A908F6FFAEEEE146F7D5D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		8C01B2520A1F37CD2ADA72C8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		B807E69B97C29DFAAB2B13A2 /* Build configuration list for PBXProject "SquadMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8C01B2520A1F37CD2ADA72C8 /* Debug */,
+				553A908F6FFAEEEE146F7D5D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		E74A9A4F184CCDAC118949E8 /* Build configuration list for PBXNativeTarget "SquadMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0502EF63C833030F3419D017 /* Debug */,
+				2C0715E94503CC221B55A231 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A2ABCDD68E79CA270FD78EEA /* Project object */;
+}
