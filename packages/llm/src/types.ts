@@ -183,6 +183,9 @@ export type Provider =
   | "openai"
   | "openai-codex"
 
+  // ── Claude Code CLI subprocess (Anthropic OAuth via `claude setup-token`) ──
+  | "claude-cli"
+
   // ── Cloud aggregators ──────────────────────────────────────────────────────
   | "openrouter"
 

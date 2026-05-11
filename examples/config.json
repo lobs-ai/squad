@@ -23,7 +23,9 @@
       "anthropic":  { "api_key_env": "ANTHROPIC_API_KEY" },
       "openai":     { "api_key_env": "OPENAI_API_KEY" },
       "google":     { "api_key_env": "GOOGLE_API_KEY" },
-      "openrouter": { "api_key_env": "OPENROUTER_API_KEY" }
+      "openrouter": { "api_key_env": "OPENROUTER_API_KEY" },
+
+      "claude-cli": { "oauth_token_env": "CLAUDE_CODE_OAUTH_TOKEN" }
     }
   },
 

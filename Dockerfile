@@ -105,6 +105,12 @@ RUN apt-get update \
 
 WORKDIR /app
 
+# Claude Code CLI — used by the `claude-cli` LLM provider to call Anthropic
+# models via OAuth. Auth comes in at runtime via CLAUDE_CODE_OAUTH_TOKEN
+# (produced by `claude setup-token` on a machine with browser access); no
+# credentials are baked into the image.
+RUN npm install -g @anthropic-ai/claude-code
+
 COPY --from=build /app /app
 COPY --from=build /ms-playwright /ms-playwright
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright

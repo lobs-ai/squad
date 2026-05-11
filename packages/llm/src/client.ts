@@ -16,6 +16,7 @@
 
 import { AnthropicClient } from "./providers/anthropic.js";
 import { OpenAIClient } from "./providers/openai.js";
+import { ClaudeCliClient } from "./providers/claude-cli.js";
 import {
   buildCompatibleClient,
   stripOpenRouterPrefix,
@@ -126,6 +127,8 @@ const KNOWN_PROVIDERS: Provider[] = [
   "anthropic",
   "openai",
   "openai-codex",
+  // Claude Code CLI subprocess
+  "claude-cli",
   // Cloud aggregators
   "openrouter",
   // Frontier labs
@@ -288,6 +291,13 @@ export function createClient(model: string, config?: ClientConfig): LLMClient {
     return new AnthropicClient({
       apiKey: getKey("anthropic") ?? process.env.ANTHROPIC_API_KEY,
       baseURL: getBaseUrl("anthropic"),
+    });
+  }
+
+  // ── Claude Code CLI (subprocess; OAuth via `claude setup-token`) ─────────
+  if (provider === "claude-cli") {
+    return new ClaudeCliClient({
+      oauthToken: getKey("claude-cli") ?? process.env.CLAUDE_CODE_OAUTH_TOKEN,
     });
   }
 

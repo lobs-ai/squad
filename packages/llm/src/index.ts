@@ -2,6 +2,8 @@ export * from "./types.js";
 export * from "./client.js";
 export { AnthropicClient } from "./providers/anthropic.js";
 export { OpenAIClient } from "./providers/openai.js";
+export { ClaudeCliClient } from "./providers/claude-cli.js";
+export type { ClaudeCliClientOptions } from "./providers/claude-cli.js";
 export {
   buildCompatibleClient,
   stripOpenRouterPrefix,

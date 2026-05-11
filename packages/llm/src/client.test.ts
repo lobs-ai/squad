@@ -32,4 +32,10 @@ describe("parseModelString", () => {
   it("throws on unknown prefix", () => {
     expect(() => parseModelString("unknown/model")).toThrow();
   });
+  it("parses explicit claude-cli/<model>", () => {
+    expect(parseModelString("claude-cli/claude-sonnet-4-5")).toEqual({
+      provider: "claude-cli",
+      modelId: "claude-sonnet-4-5",
+    });
+  });
 });

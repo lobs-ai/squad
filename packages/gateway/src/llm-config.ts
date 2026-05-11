@@ -16,6 +16,17 @@ export interface ProviderConfig {
    * `{ key_env }`.
    */
   keys?: KeyEntryConfig[];
+  /**
+   * For the `claude-cli` provider: long-lived OAuth token produced by
+   * `claude setup-token`. We stash it in the same `keys` pool as API-key
+   * providers so the rotating-client / fallback-chain code paths work
+   * unchanged — the only difference is the provider implementation
+   * (`ClaudeCliClient`) treats the string as an OAuth token rather than
+   * an API key.
+   */
+  oauth_token?: string;
+  /** Env var to read the OAuth token from. Defaults to CLAUDE_CODE_OAUTH_TOKEN. */
+  oauth_token_env?: string;
 }
 
 /**
@@ -100,6 +111,35 @@ export function resolveProviderConfig(
 
   for (const [provider, cfg] of Object.entries(providers)) {
     if (cfg.base_url) baseUrls[provider as Provider] = cfg.base_url;
+
+    // The claude-cli provider authenticates via an OAuth token from
+    // `claude setup-token`, not an API key. Resolve it the same way we
+    // resolve API keys so the rotating-client + fallback-chain code paths
+    // (which read from `keys[provider].keys[0].key`) work unchanged.
+    if (provider === "claude-cli") {
+      const tokenEnv = cfg.oauth_token_env ?? "CLAUDE_CODE_OAUTH_TOKEN";
+      const token = cfg.oauth_token ?? process.env[tokenEnv];
+      if (token && token.trim().length > 0) {
+        keys[provider] = {
+          keys: [{ key: token, label: cfg.oauth_token ? "oauth_token" : tokenEnv }],
+        };
+        keyPools[provider] = [
+          { key: token, label: cfg.oauth_token ? "oauth_token" : tokenEnv },
+        ];
+        resolved.push(provider);
+      } else {
+        missingKeys.push({
+          provider,
+          envVar: tokenEnv,
+          reason: cfg.oauth_token
+            ? "oauth_token was empty"
+            : process.env[tokenEnv] == null
+              ? `run \`claude setup-token\` and set ${tokenEnv}=… or providers.${provider}.oauth_token in config.json`
+              : "env var was empty",
+        });
+      }
+      continue;
+    }
 
     // No-key-needed cases: known local providers, or any provider with a
     // custom base_url (self-hosted / proxy endpoints typically don't need

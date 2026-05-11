@@ -9,6 +9,7 @@ describe("resolveProviderConfig", () => {
     for (const k of Object.keys(process.env)) {
       if (k.endsWith("_API_KEY")) delete process.env[k];
     }
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
   });
   afterEach(() => {
     process.env = { ...savedEnv };
@@ -65,5 +66,36 @@ describe("resolveProviderConfig", () => {
   it("synthesizes an env var name for unknown providers", () => {
     const r = resolveProviderConfig({ "weirdo-net": {} });
     expect(r.missingKeys[0]?.envVar).toBe("WEIRDO_NET_API_KEY");
+  });
+
+  it("resolves claude-cli from CLAUDE_CODE_OAUTH_TOKEN by default", () => {
+    process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "oauth-default";
+    const r = resolveProviderConfig({ "claude-cli": {} });
+    expect(r.resolved).toEqual(["claude-cli"]);
+    expect(r.clientConfig.keys?.["claude-cli"]?.keys[0]?.key).toBe("oauth-default");
+    expect(r.missingKeys).toEqual([]);
+  });
+
+  it("resolves claude-cli from a custom oauth_token_env", () => {
+    process.env["MY_CLAUDE_TOKEN"] = "oauth-custom";
+    const r = resolveProviderConfig({
+      "claude-cli": { oauth_token_env: "MY_CLAUDE_TOKEN" },
+    });
+    expect(r.clientConfig.keys?.["claude-cli"]?.keys[0]?.key).toBe("oauth-custom");
+  });
+
+  it("resolves claude-cli from a literal oauth_token", () => {
+    const r = resolveProviderConfig({
+      "claude-cli": { oauth_token: "oauth-literal" },
+    });
+    expect(r.clientConfig.keys?.["claude-cli"]?.keys[0]?.key).toBe("oauth-literal");
+  });
+
+  it("flags claude-cli with a setup-token hint when the token is missing", () => {
+    const r = resolveProviderConfig({ "claude-cli": {} });
+    expect(r.resolved).toEqual([]);
+    expect(r.missingKeys[0]?.provider).toBe("claude-cli");
+    expect(r.missingKeys[0]?.envVar).toBe("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(r.missingKeys[0]?.reason).toMatch(/claude setup-token/);
   });
 });

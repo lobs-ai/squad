@@ -29,6 +29,11 @@ export const MODEL_CATALOG: Record<string, ModelInfo[]> = {
     { id: "anthropic/claude-haiku-4-5",         displayName: "Claude Haiku 4.5",    provider: "anthropic", contextWindow: 200_000, notes: "fast + cheap" },
     { id: "anthropic/claude-3-5-sonnet-20241022", displayName: "Claude 3.5 Sonnet", provider: "anthropic", contextWindow: 200_000 },
   ],
+  "claude-cli": [
+    { id: "claude-cli/claude-opus-4-5",   displayName: "Claude Opus 4.5 (CLI / OAuth)",   provider: "claude-cli", contextWindow: 200_000, notes: "via claude setup-token" },
+    { id: "claude-cli/claude-sonnet-4-5", displayName: "Claude Sonnet 4.5 (CLI / OAuth)", provider: "claude-cli", contextWindow: 200_000, notes: "via claude setup-token" },
+    { id: "claude-cli/claude-haiku-4-5",  displayName: "Claude Haiku 4.5 (CLI / OAuth)",  provider: "claude-cli", contextWindow: 200_000, notes: "via claude setup-token" },
+  ],
   openai: [
     { id: "openai/gpt-4o",        displayName: "GPT-4o",      provider: "openai", contextWindow: 128_000, notes: "flagship" },
     { id: "openai/gpt-4o-mini",   displayName: "GPT-4o mini", provider: "openai", contextWindow: 128_000, notes: "cheap" },
