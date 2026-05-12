@@ -25,6 +25,7 @@
  *    Use this for text-in / text-out calls (chat, summarization).
  */
 
+import { AsyncResource } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -445,8 +446,16 @@ function setupMcpBridge(
     "utf8",
   );
 
+  // The bridge's client is the spawned `claude` subprocess, so its socket
+  // connections come from outside this process's async context and Node
+  // does not propagate AsyncLocalStorage across that boundary. The gateway
+  // reads `currentAgentContext()` inside the executor to attach the live
+  // `sessionId` to tool meta — without binding, that read returns
+  // `undefined` and any tool that gates on sessionId (notably
+  // describe_tool_group → sessions.unlockGroup) silently no-ops.
+  const boundExecutor = AsyncResource.bind(executor);
   const socketServer = createServer((conn) => {
-    runMcpServerOnConnection(conn, tools, executor);
+    runMcpServerOnConnection(conn, tools, boundExecutor);
   });
   socketServer.on("error", (err) => onError(err));
   socketServer.listen(socketPath);

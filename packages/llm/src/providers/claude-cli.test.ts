@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { EventEmitter, Readable, Writable } from "node:stream";
 import { readFileSync } from "node:fs";
 import { connect } from "node:net";
@@ -765,6 +766,95 @@ describe("ClaudeCliClient MCP bridge (stage 2)", () => {
 
     // Let the held-open child close so createMessage resolves and the
     // bridge cleanup runs.
+    release();
+    await callPromise;
+  });
+
+  // Regression: the gateway reads its per-run sessionId from an
+  // AsyncLocalStorage frame around createMessage, so the MCP bridge must
+  // preserve that frame when the spawned `claude` subprocess connects from
+  // outside the parent's async context. Without AsyncResource.bind on the
+  // executor, the connection callback runs in the empty root context, the
+  // gateway reads sessionId=undefined, and describe_tool_group → unlockGroup
+  // silently no-ops (bug: lazy tool groups never become callable).
+  it("propagates the caller's AsyncLocalStorage frame into the executor", async () => {
+    const storage = new AsyncLocalStorage<{ sessionId: string }>();
+    let observedSessionId: string | undefined;
+
+    const { fn, liveCalls, release } = makeFakeSpawn({
+      stdoutLines: STREAM_DELTAS,
+      holdOpen: true,
+    });
+
+    const client = new ClaudeCliClient(
+      {
+        oauthToken: "tok-xyz",
+        executeTool: async () => {
+          observedSessionId = storage.getStore()?.sessionId;
+          return "ok";
+        },
+      },
+      fn,
+    );
+
+    const callPromise = storage.run({ sessionId: "sess-42" }, () =>
+      client.createMessage({
+        model: "claude-sonnet-4-5",
+        system: "",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [
+          {
+            name: "list_tasks",
+            description: "",
+            input_schema: { type: "object" },
+          },
+        ],
+        maxTokens: 100,
+      }),
+    );
+
+    for (let attempt = 0; attempt < 50 && liveCalls.length === 0; attempt++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const socketPath = liveCalls[0]?.mcpConfig?.mcpServers?.squad?.args?.[1];
+    if (!socketPath) {
+      release();
+      await callPromise;
+      throw new Error("bridge socket path not exposed by fake spawn");
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const sock = connect(socketPath);
+      sock.setEncoding("utf8");
+      let buffer = "";
+      let seen = 0;
+      sock.on("data", (chunk: string) => {
+        buffer += chunk;
+        let nl: number;
+        while ((nl = buffer.indexOf("\n")) !== -1) {
+          buffer.slice(0, nl);
+          buffer = buffer.slice(nl + 1);
+          seen++;
+          if (seen === 2) {
+            sock.end();
+            resolve();
+          }
+        }
+      });
+      sock.on("error", reject);
+      sock.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" })}\n`);
+      sock.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: { name: "list_tasks", arguments: {} },
+        })}\n`,
+      );
+    });
+
+    expect(observedSessionId).toBe("sess-42");
+
     release();
     await callPromise;
   });
