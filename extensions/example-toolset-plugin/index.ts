@@ -23,7 +23,7 @@ export default definePlugin({
       name: "researcher",
       description:
         "General-purpose researcher. Ships with the @squad/toolset-research bundle resolved at spawn.",
-      model: "claude-sonnet-4-5",
+      model: "claude-sonnet-4-6",
       tools: [],
       toolsets: ["@squad/toolset-research"],
       systemPrompt: [

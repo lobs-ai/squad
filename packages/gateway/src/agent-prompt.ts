@@ -310,6 +310,16 @@ export interface PromptMemoryHit {
 export interface BuildSquadPromptInput {
   workspaceDir: string;
   coreFiles: CoreFileContents;
+  /**
+   * Provider routing this turn — controls which tool-usage guidance shows
+   * up in the prompt. For `claude-cli` we drop the squad-flavored
+   * "filesystem/search/exec/web" instructions because Claude Code's own
+   * system prompt already documents Read/Write/Edit/Bash/Grep/Glob/Web*
+   * in detail, and stacking two sets of guidance just confuses the model.
+   * For every other provider (or undefined), the full squad guidance is
+   * emitted as before.
+   */
+  provider?: string;
   /** Frozen-at-session-start eager block. user + feedback entries. */
   memoryEager?: PromptMemoryEntry[];
   /** Per-turn FTS retrieval results for project + reference entries. */
@@ -365,6 +375,7 @@ export function buildSquadSystemPrompt(input: BuildSquadPromptInput): string {
   const {
     workspaceDir,
     coreFiles,
+    provider,
     memoryEager,
     memoryRetrieval,
     toolGroupsIndex,
@@ -374,15 +385,29 @@ export function buildSquadSystemPrompt(input: BuildSquadPromptInput): string {
   } = input;
   const sections: string[] = [];
 
-  sections.push(`# Squad agent
+  // Claude Code's built-in system prompt already documents Read / Write /
+  // Edit / Bash / Grep / Glob / WebSearch / WebFetch in detail — duplicating
+  // squad's flavor of that guidance on top of it just produces conflicting
+  // instructions ("use Read before Write" vs Claude Code's own rules).
+  // Drop the redundant "## Tools" block and keep only the squad-specific
+  // bits: the lazy tool-group index (Claude Code has no idea those exist)
+  // and the ask_user etiquette.
+  const isClaudeCli = provider === "claude-cli";
+  const toolsSection = isClaudeCli
+    ? `## Tools
+You are talking through the Claude Code CLI — Read / Write / Edit / Bash /
+Grep / Glob / WebSearch / WebFetch are documented in your built-in prompt
+and work the way Claude Code describes them. Don't expect squad-specific
+overrides on top of those.
 
-You are the primary agent on a Squad gateway. Squad is a self-hostable agent
-platform: one gateway process owns sessions, the agent loop, the plugin host,
-storage, the subagent pool, the task store, and the question store. Every
-client (Discord, the React dashboard, the CLI, third-party UIs) talks to that
-gateway over the same WebSocket protocol — no client is privileged.
-
-## Tools
+Squad also exposes its own tools through the \`mcp__squad__*\` namespace —
+chat questions (\`ask_user\`), task management, memory, subagents, plugin
+channels, etc. Their schemas land via the lazy "Tool groups" section
+below; call \`describe_tool_group\` to bring a group online for the next
+turn. Reach for \`ask_user\` for any multiple-choice clarification — it
+renders natively per channel and you can bundle up to 4 sub-questions
+in one call. Don't use it for "are you sure?" / "should I proceed?".`
+    : `## Tools
 A small default set is always loaded — **filesystem** (read/write/edit/ls),
 **search** (grep/glob/find_files/code_search), **exec** (shell-out for
 builds, tests, git, gh), **web** (web_search/web_fetch), and **questions**
@@ -403,7 +428,17 @@ don't have. When in doubt, unlock; the cost is one turn.
 If the user asks you to "use all your tools", "show me what you can do",
 or anything similar, batch-unlock every group in the index in one
 \`describe_tool_group\` call (it accepts an array). Don't claim you lack
-a capability that's listed below.
+a capability that's listed below.`;
+
+  sections.push(`# Squad agent
+
+You are the primary agent on a Squad gateway. Squad is a self-hostable agent
+platform: one gateway process owns sessions, the agent loop, the plugin host,
+storage, the subagent pool, the task store, and the question store. Every
+client (Discord, the React dashboard, the CLI, third-party UIs) talks to that
+gateway over the same WebSocket protocol — no client is privileged.
+
+${toolsSection}
 
 ## Secrets hygiene
 Tokens, API keys, OAuth secrets, and similar credentials live in

@@ -5,7 +5,7 @@ import {
   type ToolGroupRegistry,
   formatGroupIndexForPrompt,
 } from "@squad/tools";
-import type { LLMClient } from "@squad/llm";
+import { parseModelString, type LLMClient } from "@squad/llm";
 import type { ContentBlock, SubagentDefinition } from "@squad/protocol";
 import type { SessionStore } from "../db/sessions.js";
 import type { MessageStore } from "../db/messages.js";
@@ -27,6 +27,7 @@ import {
   discoverContextFiles,
   renderContextFilesSection,
 } from "../context-discovery.js";
+import { runWithAgentContext } from "../agent-context.js";
 import {
   RunPersister,
   ensureIncrementalFlushHook,
@@ -464,9 +465,20 @@ export class SubagentPool {
       });
     }
 
+    // Same provider-aware trim as the primary runner: when this subagent
+    // is going to talk through the claude-cli provider, drop the squad
+    // tool-usage guidance that Claude Code already covers.
+    const subagentModel = input.modelOverride ?? def.model;
+    let subagentProvider: string | undefined;
+    try {
+      subagentProvider = parseModelString(subagentModel).provider;
+    } catch {
+      subagentProvider = undefined;
+    }
     const systemPrompt = buildSquadSystemPrompt({
       workspaceDir: this.deps.workspaceDir,
       coreFiles,
+      ...(subagentProvider ? { provider: subagentProvider } : {}),
       memoryEager,
       ...(toolGroupsIndex ? { toolGroupsIndex } : {}),
       ...(contextFilesSection ? { contextFilesSection } : {}),
@@ -587,7 +599,12 @@ export class SubagentPool {
 
     let result;
     try {
-      result = await runAgent(spec);
+      // Thread sessionId/taskId via AsyncLocalStorage so the claude-cli
+      // MCP bridge executor can attach them to tool meta (matches the
+      // wrapper in runChatTurn).
+      result = await runWithAgentContext({ sessionId, taskId: runId }, () =>
+        runAgent(spec),
+      );
     } catch (err) {
       try {
         persister.flush();

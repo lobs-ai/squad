@@ -246,12 +246,31 @@ export async function runAgent(spec: AgentSpec): Promise<AgentResult> {
       // ── LLM call ───────────────────────────────────────────────────────
       let response;
       try {
+        // Providers that own their own tool loop (claude-cli delegates
+        // dispatch to the spawned Claude Code subprocess) surface tool
+        // activity via `onToolEvent` — bridge it to the same onProgress
+        // channel a native model's tool_use blocks feed, so the dashboard
+        // / CLI client see structured tool calls regardless of provider.
+        const onToolEvent = spec.onProgress
+          ? (ev: import("@squad/llm").ToolEvent) => {
+              spec.onProgress?.({
+                type: ev.type,
+                agentType: agent,
+                toolName: ev.toolName,
+                ...(ev.toolInput !== undefined ? { toolInput: ev.toolInput } : {}),
+                ...(ev.toolUseId !== undefined ? { toolUseId: ev.toolUseId } : {}),
+                ...(ev.result !== undefined ? { result: ev.result } : {}),
+                ...(ev.isError !== undefined ? { isError: ev.isError } : {}),
+              });
+            }
+          : undefined;
         const llmParams = {
           system: systemPrompt,
           messages,
           tools: toolDefsForLlm,
           model: parsed.modelId,
           maxTokens,
+          ...(onToolEvent ? { onToolEvent } : {}),
         };
         const llmPromise =
           spec.onTextChunk && llm.streamMessage

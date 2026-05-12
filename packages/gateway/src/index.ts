@@ -27,6 +27,7 @@ import type {
 import { JsonConfigBackend } from "./config-backend.js";
 import { RestartManager } from "./restart/manager.js";
 import { recoverInFlightRuns } from "./restart/recovery.js";
+import { currentAgentContext } from "./agent-context.js";
 import { logger, logBuffer } from "./logger.js";
 import { resolveTokenSecrets, configSchema, type Config } from "./config.js";
 import { Authenticator } from "./auth.js";
@@ -450,6 +451,57 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   const llmResolution = resolveProviderConfig(
     config.llm.providers as Record<string, import("./llm-config.js").ProviderConfig>,
   );
+  // Wire the claude-cli MCP bridge executor: lets the CLI's agent loop
+  // call squad tools that don't map to a Claude Code built-in via a
+  // per-call Unix-socket MCP server. The executor delegates to the live
+  // toolRegistry so squad's tool implementations (and their plugin tools)
+  // are the ones that run, not Claude Code's.
+  if (config.llm.providers["claude-cli"]) {
+    const existing = llmResolution.clientConfig.providerOptions ?? {};
+    llmResolution.clientConfig.providerOptions = {
+      ...existing,
+      "claude-cli": {
+        ...(existing["claude-cli"] ?? {}),
+        executeTool: async (name, params) => {
+          try {
+            // Pull the live sessionId/taskId from the AsyncLocalStorage set
+            // by runChatTurn / the subagent pool. Tools like ask_user need
+            // sessionId in `meta` — without it they throw on every call.
+            const ctx = currentAgentContext();
+            const meta = ctx
+              ? ({
+                  sessionId: ctx.sessionId,
+                  ...(ctx.taskId !== undefined ? { taskId: ctx.taskId } : {}),
+                } as Record<string, unknown>)
+              : undefined;
+            const r = await toolRegistry.execute(
+              name,
+              params as Record<string, unknown>,
+              process.cwd(),
+              meta,
+            );
+            // `toolRegistry.execute` returns either a string or
+            // `{ result, sideEffects }` — unwrap the latter so the model
+            // sees the actual tool output, not the wrapper.
+            if (typeof r === "string") return r;
+            if (r && typeof r === "object" && "result" in r) {
+              const result = (r as { result: unknown }).result;
+              return typeof result === "string" ? result : JSON.stringify(result);
+            }
+            return JSON.stringify(r);
+          } catch (err) {
+            // Surface the error to the MCP client (Claude Code) as the
+            // tool result text — `runMcpServerOnConnection` wraps it as
+            // an isError response. Silent failures here cause the model
+            // to hang waiting on a tool that already aborted.
+            const msg = err instanceof Error ? err.message : String(err);
+            logger.warn({ tool: name, err: msg }, "claude-cli MCP executor: tool failed");
+            throw new Error(msg);
+          }
+        },
+      },
+    };
+  }
   const sharedClient: LLMClient | undefined = (() => {
     if (opts.clientOverride) return opts.clientOverride;
     if (!config.llm.primary?.model) return undefined;

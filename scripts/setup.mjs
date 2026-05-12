@@ -502,12 +502,31 @@ function syncRegistryAndCompose(hostPort) {
  * these — listing every niche one here would be overwhelming. Users can still
  * add any provider by hand-editing docker/config.json after setup.
  */
+// Each entry's `auth` field controls how the wizard treats the secret:
+//   - "api-key" (default): prompts for an API key, writes
+//     `{ api_key_env: <envVar> }` into config.json.
+//   - "oauth-token": prompts for a long-lived OAuth token (e.g.
+//     `claude setup-token`), writes `{ oauth_token_env: <envVar> }`.
+// `keyUrl` is the page where the user grabs the secret. For OAuth providers
+// it can be a CLI command instead of a URL — it's shown verbatim.
 const PROVIDERS = {
   anthropic: {
     label: "Anthropic (Claude)",
+    auth: "api-key",
     envVar: "ANTHROPIC_API_KEY",
-    defaultModel: "anthropic/claude-sonnet-4-5",
+    defaultModel: "anthropic/claude-sonnet-4-6",
     keyUrl: "https://console.anthropic.com",
+  },
+  "claude-cli": {
+    label: "Claude Code CLI (Anthropic via OAuth — use your Claude.ai subscription)",
+    auth: "oauth-token",
+    envVar: "CLAUDE_CODE_OAUTH_TOKEN",
+    defaultModel: "claude-cli/claude-sonnet-4-6",
+    keyUrl: "run `claude setup-token` locally",
+    setupInstructions:
+      "  Run `claude setup-token` on a machine with browser access (your laptop),\n" +
+      "  log in to your Claude.ai account, and paste the resulting token below.\n" +
+      "  The token is long-lived and works inside Docker.",
   },
   openai: {
     label: "OpenAI (GPT)",
@@ -518,7 +537,7 @@ const PROVIDERS = {
   openrouter: {
     label: "OpenRouter (~24 providers via one key)",
     envVar: "OPENROUTER_API_KEY",
-    defaultModel: "openrouter/anthropic/claude-sonnet-4-5",
+    defaultModel: "openrouter/anthropic/claude-sonnet-4-6",
     keyUrl: "https://openrouter.ai/keys",
   },
   google: {
@@ -820,11 +839,17 @@ function renderConfig(existing, opts) {
   cfg.plugins = withoutDiscord;
 
   // llm.providers — replace fully (this is the wizard's domain). Unticked
-  // providers are intentionally dropped from the active list.
+  // providers are intentionally dropped from the active list. OAuth-token
+  // providers (e.g. claude-cli) use `oauth_token_env` instead of `api_key_env`.
   const providers = {};
   for (const name of opts.providers ?? []) {
     const spec = PROVIDERS[name];
-    if (spec) providers[name] = { api_key_env: spec.envVar };
+    if (!spec) continue;
+    if (spec.auth === "oauth-token") {
+      providers[name] = { oauth_token_env: spec.envVar };
+    } else {
+      providers[name] = { api_key_env: spec.envVar };
+    }
   }
 
   cfg.llm = {
@@ -882,6 +907,12 @@ async function main() {
   console.log(
     dim("  Pick one or more providers. You can add more later by re-running onboard."),
   );
+  console.log(
+    dim(
+      "  Most providers use an API key from their console. ‘Claude Code CLI’\n" +
+        "  is special: it talks to Anthropic via your Claude.ai OAuth — no API key.",
+    ),
+  );
   const providerList = Object.entries(PROVIDERS);
   const labels = providerList.map(([_n, spec]) =>
     existingEnv[spec.envVar] ? `${spec.label} ${green("✓ set")}` : spec.label,
@@ -908,10 +939,17 @@ async function main() {
       configuredProviders.push(name);
       continue;
     }
-    const key = await ask(
-      `  ${bold(spec.label)} ${dim(spec.keyUrl)}`,
-      { secret: true },
-    );
+    let key;
+    if (spec.auth === "oauth-token") {
+      console.log(`\n  ${bold(spec.label)}`);
+      if (spec.setupInstructions) console.log(dim(spec.setupInstructions));
+      key = await ask(`  OAuth token`, { secret: true });
+    } else {
+      key = await ask(
+        `  ${bold(spec.label)} ${dim(spec.keyUrl)}`,
+        { secret: true },
+      );
+    }
     if (key) {
       providerKeys[spec.envVar] = key;
       configuredProviders.push(name);
@@ -952,7 +990,7 @@ async function main() {
   if (existingEnv.__previousPrimary) defaultPrimary = existingEnv.__previousPrimary;
   const defaultProvider =
     configuredProviders[0] ?? "anthropic";
-  const suggestedPrimary = PROVIDERS[defaultProvider]?.defaultModel ?? "anthropic/claude-sonnet-4-5";
+  const suggestedPrimary = PROVIDERS[defaultProvider]?.defaultModel ?? "anthropic/claude-sonnet-4-6";
 
   const primaryProvider =
     configuredProviders.length === 1

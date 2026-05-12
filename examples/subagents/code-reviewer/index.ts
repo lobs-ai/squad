@@ -11,7 +11,7 @@ export const codeReviewerDefinition: SubagentDefinition = {
   name: "code-reviewer",
   description:
     "Reviews a diff or a set of files and reports concrete issues with file:line references. No write access.",
-  model: "claude-sonnet-4-5",
+  model: "claude-sonnet-4-6",
   tools: ["read_file", "list_tasks", "update_task", "create_task"],
   systemPrompt: [
     "You are a careful code reviewer. You have read-only access.",

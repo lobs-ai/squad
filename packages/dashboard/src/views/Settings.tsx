@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Card, PageHead } from "../ui/primitives.js";
 import { Icon } from "../ui/Icon.js";
-import { useGateway, type FullConfigState } from "../state/GatewayContext.js";
+import { useGateway, type FullConfigState, type ModelOption } from "../state/GatewayContext.js";
 import { fmtAgo } from "../state/fmt.js";
 import { usePersistedState } from "../state/usePersistedState.js";
 
@@ -41,11 +41,67 @@ const ACCENTS: Array<{ name: string; hex: string }> = [
   { name: "cyan", hex: "#67e8f9" },
 ];
 
-// Common, well-known providers — surfaced as suggestions when the user adds a
-// new provider. The gateway accepts arbitrary keys here (custom local proxies
-// like `minimax/minimax-m2.7` route through a base_url override), so the list
-// is a hint, not a constraint.
-const KNOWN_PROVIDERS = ["anthropic", "openai", "google", "groq", "openrouter", "mistral"];
+/**
+ * Catalog of well-known providers, surfaced in the "add provider" picker so
+ * users can see what they're choosing rather than typing a string and hoping
+ * it's spelled right. Mirrors `PROVIDERS` in scripts/setup.mjs — keep in
+ * sync when you add a new entry to either file.
+ *
+ * The gateway accepts arbitrary provider names (custom proxies route through
+ * a `base_url` override), so this list is a hint, not a constraint — users
+ * can still type a name not in the catalog and the gateway will route it
+ * via the openai-compatible adapter.
+ *
+ * `auth: "oauth-token"` switches the provider card to show an oauth_token
+ * field instead of api_key, with provider-specific setup instructions.
+ */
+interface ProviderCatalogEntry {
+  id: string;
+  label: string;
+  /** "api-key" (default) or "oauth-token". */
+  auth: "api-key" | "oauth-token";
+  /** Standard env var the gateway reads the secret from. */
+  envVar: string;
+  /** Page or command where the user obtains the secret. */
+  keyUrl: string;
+  /** Short one-liner shown in pickers. */
+  description?: string;
+  /**
+   * Multi-line instructions for oauth-token providers — e.g. the exact
+   * command to run to mint a token.
+   */
+  setupInstructions?: string;
+}
+
+const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
+  { id: "anthropic", label: "Anthropic (Claude)", auth: "api-key", envVar: "ANTHROPIC_API_KEY", keyUrl: "https://console.anthropic.com" },
+  {
+    id: "claude-cli",
+    label: "Claude Code CLI (Anthropic via OAuth)",
+    auth: "oauth-token",
+    envVar: "CLAUDE_CODE_OAUTH_TOKEN",
+    keyUrl: "run `claude setup-token` locally",
+    description: "use your Claude.ai subscription — no API key required",
+    setupInstructions:
+      "run `claude setup-token` on a machine with browser access, log in to your Claude.ai account, then paste the token below.",
+  },
+  { id: "openai", label: "OpenAI (GPT)", auth: "api-key", envVar: "OPENAI_API_KEY", keyUrl: "https://platform.openai.com/api-keys" },
+  { id: "openrouter", label: "OpenRouter", auth: "api-key", envVar: "OPENROUTER_API_KEY", keyUrl: "https://openrouter.ai/keys", description: "~24 providers via one key" },
+  { id: "google", label: "Google (Gemini)", auth: "api-key", envVar: "GOOGLE_API_KEY", keyUrl: "https://aistudio.google.com/apikey" },
+  { id: "groq", label: "Groq", auth: "api-key", envVar: "GROQ_API_KEY", keyUrl: "https://console.groq.com/keys", description: "very fast inference" },
+  { id: "deepseek", label: "DeepSeek", auth: "api-key", envVar: "DEEPSEEK_API_KEY", keyUrl: "https://platform.deepseek.com/api_keys" },
+  { id: "xai", label: "xAI (Grok)", auth: "api-key", envVar: "XAI_API_KEY", keyUrl: "https://console.x.ai" },
+  { id: "mistral", label: "Mistral", auth: "api-key", envVar: "MISTRAL_API_KEY", keyUrl: "https://console.mistral.ai/api-keys/" },
+  { id: "together", label: "Together.ai", auth: "api-key", envVar: "TOGETHER_API_KEY", keyUrl: "https://api.together.ai/settings/api-keys", description: "open-weight models" },
+  { id: "perplexity", label: "Perplexity", auth: "api-key", envVar: "PPLX_API_KEY", keyUrl: "https://www.perplexity.ai/settings/api" },
+  { id: "fireworks", label: "Fireworks", auth: "api-key", envVar: "FIREWORKS_API_KEY", keyUrl: "https://fireworks.ai/account/api-keys" },
+  { id: "cerebras", label: "Cerebras", auth: "api-key", envVar: "CEREBRAS_API_KEY", keyUrl: "https://cloud.cerebras.ai", description: "very fast inference" },
+  { id: "cohere", label: "Cohere", auth: "api-key", envVar: "COHERE_API_KEY", keyUrl: "https://dashboard.cohere.com/api-keys" },
+  { id: "minimax", label: "MiniMax", auth: "api-key", envVar: "MINIMAX_API_KEY", keyUrl: "https://www.minimax.io/platform/user-center/basic-information/interface-key" },
+  { id: "ollama", label: "Ollama (local)", auth: "api-key", envVar: "OLLAMA_API_KEY", keyUrl: "http://localhost:11434 — no key needed; set base_url instead", description: "self-hosted; configure base_url" },
+];
+
+const PROVIDER_CATALOG_BY_ID = new Map(PROVIDER_CATALOG.map((p) => [p.id, p]));
 
 export function Settings({ theme, setTheme, density, setDensity, accent, setAccent }: Props): JSX.Element {
   const [sectionRaw, setSectionRaw] = usePersistedState("squad-settings-section", "squad");
@@ -148,7 +204,7 @@ export function Settings({ theme, setTheme, density, setDensity, accent, setAcce
               fullConfig={fullConfig}
               setConfigPath={setConfigPath}
               unsetConfigPath={unsetConfigPath}
-              models={models.map((m) => m.id)}
+              models={models}
               configuredPrimary={config?.primary.model ?? null}
               configuredFallbacks={(config?.fallbacks ?? []).map((f) => f.model)}
             />
@@ -604,15 +660,29 @@ function ProvidersEditor({
     (getPath(fullConfig?.config, ["llm", "providers"]) as Record<string, ProviderEntry>) ?? {};
   const names = Object.keys(providers).sort();
 
-  const [newProvider, setNewProvider] = useState("");
+  const [selectedToAdd, setSelectedToAdd] = useState("");
+  const [customProvider, setCustomProvider] = useState("");
 
-  const addProvider = async (name: string): Promise<void> => {
-    if (!name.trim()) return;
-    const cleaned = name.trim();
-    if (providers[cleaned]) return;
-    await setConfigPath(`llm.providers.${cleaned}`, { api_key_env: defaultEnvFor(cleaned) });
-    setNewProvider("");
+  const addCatalogProvider = async (id: string): Promise<void> => {
+    if (!id || providers[id]) return;
+    const spec = PROVIDER_CATALOG_BY_ID.get(id);
+    if (!spec) return;
+    const entry =
+      spec.auth === "oauth-token"
+        ? { oauth_token_env: spec.envVar }
+        : { api_key_env: spec.envVar };
+    await setConfigPath(`llm.providers.${id}`, entry);
+    setSelectedToAdd("");
   };
+
+  const addCustomProvider = async (name: string): Promise<void> => {
+    const cleaned = name.trim();
+    if (!cleaned || providers[cleaned]) return;
+    await setConfigPath(`llm.providers.${cleaned}`, { api_key_env: defaultEnvFor(cleaned) });
+    setCustomProvider("");
+  };
+
+  const available = PROVIDER_CATALOG.filter((p) => !providers[p.id]);
 
   return (
     <Card
@@ -620,9 +690,8 @@ function ProvidersEditor({
       badge={<span className="tag">{names.length}</span>}
     >
       <div className="hint" style={{ marginBottom: 12 }}>
-        each provider needs an api key — either an env var name (read from the gateway process)
-        or a literal key stored in <span className="kbd">config.json</span>. {RESTART_HINT} key
-        env vars are preferred for secrets that shouldn't land on disk.
+        every provider needs a credential — usually an api key, occasionally an oauth token.
+        pick from the catalog below or add a custom one. {RESTART_HINT}
       </div>
       {names.length === 0 && (
         <div className="hint" style={{ padding: 12 }}>
@@ -640,36 +709,60 @@ function ProvidersEditor({
         />
       ))}
       <div
-        className="row gap-2"
         style={{
           marginTop: 16,
           paddingTop: 12,
           borderTop: "1px solid var(--border-soft)",
-          alignItems: "center",
         }}
       >
-        <span className="section-label">add provider</span>
-        <input
-          className="input"
-          list="known-providers"
-          placeholder="anthropic | openai | google | …"
-          value={newProvider}
-          onChange={(e) => setNewProvider(e.target.value)}
-          style={{ flex: 1 }}
-          disabled={!editable}
-        />
-        <datalist id="known-providers">
-          {KNOWN_PROVIDERS.filter((p) => !providers[p]).map((p) => (
-            <option key={p} value={p} />
-          ))}
-        </datalist>
-        <button
-          className="btn primary sm"
-          onClick={() => void addProvider(newProvider)}
-          disabled={!editable || !newProvider.trim()}
-        >
-          add
-        </button>
+        <div className="section-label" style={{ marginBottom: 6 }}>add from catalog</div>
+        <div className="row gap-2" style={{ alignItems: "center", marginBottom: 6 }}>
+          <select
+            className="input"
+            value={selectedToAdd}
+            onChange={(e) => setSelectedToAdd(e.target.value)}
+            disabled={!editable || available.length === 0}
+            style={{ flex: 1 }}
+          >
+            <option value="">
+              {available.length === 0 ? "all catalog providers added" : "choose a provider…"}
+            </option>
+            {available.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+                {p.auth === "oauth-token" ? "  [OAuth]" : ""}
+                {p.description ? `  — ${p.description}` : ""}
+              </option>
+            ))}
+          </select>
+          <button
+            className="btn primary sm"
+            onClick={() => void addCatalogProvider(selectedToAdd)}
+            disabled={!editable || !selectedToAdd}
+          >
+            add
+          </button>
+        </div>
+        <div className="hint" style={{ fontSize: "var(--t-sm)", marginBottom: 12 }}>
+          can't find your provider? add it manually:
+        </div>
+        <div className="row gap-2" style={{ alignItems: "center" }}>
+          <input
+            className="input"
+            placeholder="custom provider id (e.g. minimax)"
+            value={customProvider}
+            onChange={(e) => setCustomProvider(e.target.value)}
+            style={{ flex: 1 }}
+            disabled={!editable}
+          />
+          <button
+            className="btn ghost sm"
+            onClick={() => void addCustomProvider(customProvider)}
+            disabled={!editable || !customProvider.trim()}
+          >
+            add custom
+          </button>
+        </div>
       </div>
     </Card>
   );
@@ -678,26 +771,15 @@ function ProvidersEditor({
 interface ProviderEntry {
   api_key?: string;
   api_key_env?: string;
+  oauth_token?: string;
+  oauth_token_env?: string;
   base_url?: string;
 }
 
 function defaultEnvFor(name: string): string {
-  switch (name) {
-    case "anthropic":
-      return "ANTHROPIC_API_KEY";
-    case "openai":
-      return "OPENAI_API_KEY";
-    case "google":
-      return "GOOGLE_API_KEY";
-    case "groq":
-      return "GROQ_API_KEY";
-    case "openrouter":
-      return "OPENROUTER_API_KEY";
-    case "mistral":
-      return "MISTRAL_API_KEY";
-    default:
-      return name.toUpperCase().replace(/[^A-Z0-9]+/g, "_") + "_API_KEY";
-  }
+  const cataloged = PROVIDER_CATALOG_BY_ID.get(name);
+  if (cataloged) return cataloged.envVar;
+  return name.toUpperCase().replace(/[^A-Z0-9]+/g, "_") + "_API_KEY";
 }
 
 function ProviderCard({
@@ -714,6 +796,21 @@ function ProviderCard({
   unsetConfigPath: (p: string) => Promise<void>;
 }): JSX.Element {
   const base = `llm.providers.${name}`;
+  const spec = PROVIDER_CATALOG_BY_ID.get(name);
+  const usesOAuth = spec?.auth === "oauth-token";
+
+  const statusTag = usesOAuth
+    ? entry.oauth_token
+      ? "literal token"
+      : entry.oauth_token_env
+        ? `env: ${entry.oauth_token_env}`
+        : "no token"
+    : entry.api_key
+      ? "literal key"
+      : entry.api_key_env
+        ? `env: ${entry.api_key_env}`
+        : "no key";
+
   return (
     <div
       style={{
@@ -724,9 +821,10 @@ function ProviderCard({
         borderRadius: 4,
       }}
     >
-      <div className="row gap-2" style={{ alignItems: "center", marginBottom: 8 }}>
+      <div className="row gap-2" style={{ alignItems: "center", marginBottom: 4 }}>
         <span className="mono strong" style={{ flex: 1 }}>{name}</span>
-        <span className="tag">{entry.api_key ? "literal key" : entry.api_key_env ? `env: ${entry.api_key_env}` : "no key"}</span>
+        {usesOAuth && <span className="tag">OAuth</span>}
+        <span className="tag">{statusTag}</span>
         <button
           className="btn ghost sm"
           onClick={() => void unsetConfigPath(base)}
@@ -736,37 +834,88 @@ function ProviderCard({
           <Icon name="x" /> remove
         </button>
       </div>
-      <Field
-        label="api_key_env"
-        hint="env var name on the gateway host (e.g. ANTHROPIC_API_KEY)"
-        initial={entry.api_key_env}
-        placeholder={defaultEnvFor(name)}
-        disabled={!editable}
-        onSave={async (raw) => {
-          if (raw.trim() === "") {
-            await unsetConfigPath(`${base}.api_key_env`);
-          } else {
-            await setConfigPath(`${base}.api_key_env`, raw.trim());
-          }
-        }}
-        onClear={() => unsetConfigPath(`${base}.api_key_env`)}
-      />
-      <Field
-        label="api_key"
-        hint="literal api key. avoid when possible — prefer api_key_env so the secret stays out of config.json."
-        type="password"
-        initial={entry.api_key}
-        placeholder="sk-…"
-        disabled={!editable}
-        onSave={async (raw) => {
-          if (raw.trim() === "") {
-            await unsetConfigPath(`${base}.api_key`);
-          } else {
-            await setConfigPath(`${base}.api_key`, raw);
-          }
-        }}
-        onClear={() => unsetConfigPath(`${base}.api_key`)}
-      />
+      {spec && (
+        <div className="hint" style={{ marginBottom: 8, fontSize: "var(--t-sm)" }}>
+          {spec.label}
+          {spec.description ? ` — ${spec.description}` : ""}
+          <span style={{ display: "block", marginTop: 2 }}>
+            <span className="faint">key from: </span>
+            <span className="mono">{spec.keyUrl}</span>
+          </span>
+          {usesOAuth && spec.setupInstructions && (
+            <span style={{ display: "block", marginTop: 4 }}>{spec.setupInstructions}</span>
+          )}
+        </div>
+      )}
+      {usesOAuth ? (
+        <>
+          <Field
+            label="oauth_token_env"
+            hint="env var name on the gateway host that holds the long-lived OAuth token."
+            initial={entry.oauth_token_env}
+            placeholder={spec?.envVar ?? "CLAUDE_CODE_OAUTH_TOKEN"}
+            disabled={!editable}
+            onSave={async (raw) => {
+              if (raw.trim() === "") {
+                await unsetConfigPath(`${base}.oauth_token_env`);
+              } else {
+                await setConfigPath(`${base}.oauth_token_env`, raw.trim());
+              }
+            }}
+            onClear={() => unsetConfigPath(`${base}.oauth_token_env`)}
+          />
+          <Field
+            label="oauth_token"
+            hint="literal oauth token. avoid when possible — prefer oauth_token_env so the secret stays out of config.json."
+            type="password"
+            initial={entry.oauth_token}
+            placeholder="paste long-lived token from `claude setup-token`"
+            disabled={!editable}
+            onSave={async (raw) => {
+              if (raw.trim() === "") {
+                await unsetConfigPath(`${base}.oauth_token`);
+              } else {
+                await setConfigPath(`${base}.oauth_token`, raw);
+              }
+            }}
+            onClear={() => unsetConfigPath(`${base}.oauth_token`)}
+          />
+        </>
+      ) : (
+        <>
+          <Field
+            label="api_key_env"
+            hint="env var name on the gateway host (e.g. ANTHROPIC_API_KEY)"
+            initial={entry.api_key_env}
+            placeholder={defaultEnvFor(name)}
+            disabled={!editable}
+            onSave={async (raw) => {
+              if (raw.trim() === "") {
+                await unsetConfigPath(`${base}.api_key_env`);
+              } else {
+                await setConfigPath(`${base}.api_key_env`, raw.trim());
+              }
+            }}
+            onClear={() => unsetConfigPath(`${base}.api_key_env`)}
+          />
+          <Field
+            label="api_key"
+            hint="literal api key. avoid when possible — prefer api_key_env so the secret stays out of config.json."
+            type="password"
+            initial={entry.api_key}
+            placeholder="sk-…"
+            disabled={!editable}
+            onSave={async (raw) => {
+              if (raw.trim() === "") {
+                await unsetConfigPath(`${base}.api_key`);
+              } else {
+                await setConfigPath(`${base}.api_key`, raw);
+              }
+            }}
+            onClear={() => unsetConfigPath(`${base}.api_key`)}
+          />
+        </>
+      )}
       <Field
         label="base_url"
         hint="optional. override the provider's endpoint (proxies, on-prem, custom relays)."
@@ -790,10 +939,116 @@ function ProviderCard({
 // models
 // ─────────────────────────────────────────────────────────────────────────────
 
+function fmtContextWindow(n: number): string {
+  if (!n || n <= 0) return "—";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(n);
+}
+
+function groupModelsByProvider(models: ModelOption[]): Array<[string, ModelOption[]]> {
+  const groups = new Map<string, ModelOption[]>();
+  for (const m of models) {
+    const arr = groups.get(m.provider) ?? [];
+    arr.push(m);
+    groups.set(m.provider, arr);
+  }
+  return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
+}
+
+/**
+ * Picker that returns a model id, sourced from the gateway's `admin.models`
+ * list (grouped by provider) plus a "custom id…" escape hatch for models the
+ * catalog doesn't know about.
+ */
+function ModelPicker({
+  models,
+  excluded,
+  disabled,
+  buttonLabel,
+  onPick,
+}: {
+  models: ModelOption[];
+  excluded?: Set<string>;
+  disabled: boolean;
+  buttonLabel: string;
+  onPick: (id: string) => void;
+}): JSX.Element {
+  const [selected, setSelected] = useState("");
+  const [custom, setCustom] = useState("");
+  const visible = models.filter((m) => !excluded?.has(m.id));
+  const grouped = groupModelsByProvider(visible);
+
+  const submit = (): void => {
+    const id = (selected === "__custom__" ? custom.trim() : selected.trim());
+    if (!id) return;
+    onPick(id);
+    setSelected("");
+    setCustom("");
+  };
+
+  return (
+    <div className="row gap-2" style={{ alignItems: "center" }}>
+      <select
+        className="input"
+        value={selected}
+        onChange={(e) => setSelected(e.target.value)}
+        disabled={disabled}
+        style={{ flex: 1 }}
+      >
+        <option value="">
+          {visible.length === 0 ? "no models available — wire a provider first" : "choose a model…"}
+        </option>
+        {grouped.map(([provider, list]) => (
+          <optgroup key={provider} label={provider}>
+            {list.map((m) => {
+              const ctx = fmtContextWindow(m.contextWindow);
+              const suffix = [
+                ctx !== "—" ? `${ctx} ctx` : null,
+                m.notes ? m.notes : null,
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              return (
+                <option key={m.id} value={m.id}>
+                  {m.displayName}
+                  {suffix ? `  (${suffix})` : ""}
+                </option>
+              );
+            })}
+          </optgroup>
+        ))}
+        <option value="__custom__">custom model id…</option>
+      </select>
+      {selected === "__custom__" && (
+        <input
+          className="input mono"
+          placeholder="provider/model-id"
+          value={custom}
+          onChange={(e) => setCustom(e.target.value)}
+          disabled={disabled}
+          style={{ flex: 1 }}
+        />
+      )}
+      <button
+        className="btn primary sm"
+        onClick={submit}
+        disabled={
+          disabled ||
+          !selected ||
+          (selected === "__custom__" && !custom.trim())
+        }
+      >
+        {buttonLabel}
+      </button>
+    </div>
+  );
+}
+
 function ModelsEditor({
   fullConfig,
   setConfigPath,
-  unsetConfigPath,
+  unsetConfigPath: _unsetConfigPath,
   models,
   configuredPrimary,
   configuredFallbacks,
@@ -801,7 +1056,7 @@ function ModelsEditor({
   fullConfig: FullConfigState | null;
   setConfigPath: (p: string, v: unknown) => Promise<void>;
   unsetConfigPath: (p: string) => Promise<void>;
-  models: string[];
+  models: ModelOption[];
   configuredPrimary: string | null;
   configuredFallbacks: string[];
 }): JSX.Element {
@@ -816,116 +1071,189 @@ function ModelsEditor({
   const fallbacks: string[] = fallbacksRaw.map((f) => (typeof f === "string" ? f : f.model));
   const effective = fallbacks.length > 0 ? fallbacks : configuredFallbacks;
 
-  const [newFallback, setNewFallback] = useState("");
+  const modelsById = new Map(models.map((m) => [m.id, m]));
+  const grouped = groupModelsByProvider(models);
+
+  const describe = (id: string): { displayName: string; provider: string; ctx: string; notes?: string } => {
+    const found = modelsById.get(id);
+    if (found) {
+      return {
+        displayName: found.displayName,
+        provider: found.provider,
+        ctx: fmtContextWindow(found.contextWindow),
+        notes: found.notes,
+      };
+    }
+    const slash = id.indexOf("/");
+    return {
+      displayName: slash > 0 ? id.slice(slash + 1) : id,
+      provider: slash > 0 ? id.slice(0, slash) : "unknown",
+      ctx: "—",
+      notes: "not in catalog",
+    };
+  };
+
+  const setPrimary = async (id: string): Promise<void> => {
+    await setConfigPath("llm.primary", { model: id });
+  };
+  const addFallback = async (id: string): Promise<void> => {
+    if (fallbacks.includes(id) || id === primary) return;
+    const next = [...fallbacks, id];
+    await setConfigPath("llm.fallbacks", next.map((x) => ({ model: x })));
+  };
+
+  const fallbackExcluded = new Set<string>([primary, ...fallbacks].filter(Boolean));
 
   return (
-    <Card
-      title="models"
-      badge={<span className="tag">{models.length} available</span>}
-    >
+    <Card title="models" badge={<span className="tag">{models.length} available</span>}>
       <div className="hint" style={{ marginBottom: 12 }}>
         the runner tries <strong>primary</strong> first; on a fallback-eligible failure (rate
         limit, 5xx, timeout) it advances to the next entry and stays there for the rest of the
         session. {RESTART_HINT}
       </div>
-      <Field
-        label="primary"
-        hint="model id. matches one of the available models below or a custom string for unknown providers."
-        initial={primary}
-        placeholder="claude-sonnet-4-5"
-        disabled={!editable}
-        onSave={async (raw) => {
-          await setConfigPath("llm.primary", { model: raw.trim() });
-        }}
-      />
-      <div className="section-label" style={{ marginTop: 8, marginBottom: 6 }}>
-        fallbacks
-      </div>
-      {effective.length === 0 && <div className="hint" style={{ marginBottom: 8 }}>no fallbacks — primary failures bubble up.</div>}
-      <div className="row-list" style={{ marginBottom: 8 }}>
-        {fallbacks.map((m, i) => (
-          <div key={`${m}:${i}`} className="row gap-2" style={{ padding: "6px 0" }}>
-            <span className="faint" style={{ width: 24 }}>{i + 1}.</span>
-            <span className="mono" style={{ flex: 1 }}>{m}</span>
-            <button
-              className="btn ghost sm"
-              disabled={!editable || i === 0}
-              onClick={async () => {
-                const next = [...fallbacks];
-                [next[i - 1], next[i]] = [next[i]!, next[i - 1]!];
-                await setConfigPath("llm.fallbacks", next.map((x) => ({ model: x })));
-              }}
-              title="move up"
-            >
-              ↑
-            </button>
-            <button
-              className="btn ghost sm"
-              disabled={!editable || i === fallbacks.length - 1}
-              onClick={async () => {
-                const next = [...fallbacks];
-                [next[i + 1], next[i]] = [next[i]!, next[i + 1]!];
-                await setConfigPath("llm.fallbacks", next.map((x) => ({ model: x })));
-              }}
-              title="move down"
-            >
-              ↓
-            </button>
-            <button
-              className="btn ghost sm"
-              disabled={!editable}
-              onClick={async () => {
-                const next = fallbacks.filter((_, j) => j !== i);
-                await setConfigPath("llm.fallbacks", next.map((x) => ({ model: x })));
-              }}
-            >
-              <Icon name="x" />
-            </button>
-          </div>
-        ))}
-      </div>
-      <div className="row gap-2">
-        <input
-          className="input"
-          list="known-models"
-          placeholder="add fallback model id"
-          value={newFallback}
-          onChange={(e) => setNewFallback(e.target.value)}
-          style={{ flex: 1 }}
-          disabled={!editable}
-        />
-        <datalist id="known-models">
-          {models.map((m) => (
-            <option key={m} value={m} />
-          ))}
-        </datalist>
-        <button
-          className="btn primary sm"
-          disabled={!editable || !newFallback.trim()}
-          onClick={async () => {
-            const m = newFallback.trim();
-            if (!m) return;
-            const next = [...fallbacks, m];
-            await setConfigPath("llm.fallbacks", next.map((x) => ({ model: x })));
-            setNewFallback("");
+
+      <div className="section-label" style={{ marginBottom: 6 }}>primary</div>
+      {primary ? (
+        <div
+          className="row gap-2"
+          style={{
+            padding: "10px 12px",
+            background: "var(--bg-card)",
+            border: "1px solid var(--border-soft)",
+            borderRadius: 4,
+            marginBottom: 8,
+            alignItems: "center",
           }}
         >
-          add
-        </button>
+          <span className="mono strong" style={{ flex: 1 }}>{primary}</span>
+          {(() => {
+            const d = describe(primary);
+            return (
+              <>
+                <span className="tag">{d.provider}</span>
+                <span className="hint" style={{ fontSize: "var(--t-sm)" }}>
+                  {d.displayName} · {d.ctx} ctx{d.notes ? ` · ${d.notes}` : ""}
+                </span>
+              </>
+            );
+          })()}
+        </div>
+      ) : (
+        <div className="hint" style={{ marginBottom: 8 }}>
+          no primary model set — pick one below to enable agent runs.
+        </div>
+      )}
+      <ModelPicker
+        models={models}
+        disabled={!editable}
+        buttonLabel="set primary"
+        onPick={(id) => void setPrimary(id)}
+      />
+
+      <div className="section-label" style={{ marginTop: 16, marginBottom: 6 }}>
+        fallbacks
       </div>
-      <div className="section-label" style={{ marginTop: 16, marginBottom: 6 }}>available models (admin.models)</div>
+      {effective.length === 0 && (
+        <div className="hint" style={{ marginBottom: 8 }}>
+          no fallbacks — primary failures bubble up.
+        </div>
+      )}
+      <div className="row-list" style={{ marginBottom: 8 }}>
+        {fallbacks.map((m, i) => {
+          const d = describe(m);
+          return (
+            <div key={`${m}:${i}`} className="row gap-2" style={{ padding: "6px 0", alignItems: "center" }}>
+              <span className="faint" style={{ width: 24 }}>{i + 1}.</span>
+              <span className="mono" style={{ minWidth: 0, flex: 1 }}>{m}</span>
+              <span className="tag">{d.provider}</span>
+              <span className="hint" style={{ fontSize: "var(--t-sm)", width: 180, textAlign: "right" }}>
+                {d.ctx} ctx{d.notes ? ` · ${d.notes}` : ""}
+              </span>
+              <button
+                className="btn ghost sm"
+                disabled={!editable || i === 0}
+                onClick={async () => {
+                  const next = [...fallbacks];
+                  [next[i - 1], next[i]] = [next[i]!, next[i - 1]!];
+                  await setConfigPath("llm.fallbacks", next.map((x) => ({ model: x })));
+                }}
+                title="move up"
+              >
+                ↑
+              </button>
+              <button
+                className="btn ghost sm"
+                disabled={!editable || i === fallbacks.length - 1}
+                onClick={async () => {
+                  const next = [...fallbacks];
+                  [next[i + 1], next[i]] = [next[i]!, next[i + 1]!];
+                  await setConfigPath("llm.fallbacks", next.map((x) => ({ model: x })));
+                }}
+                title="move down"
+              >
+                ↓
+              </button>
+              <button
+                className="btn ghost sm"
+                disabled={!editable}
+                onClick={async () => {
+                  const next = fallbacks.filter((_, j) => j !== i);
+                  await setConfigPath("llm.fallbacks", next.map((x) => ({ model: x })));
+                }}
+              >
+                <Icon name="x" />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <ModelPicker
+        models={models}
+        excluded={fallbackExcluded}
+        disabled={!editable}
+        buttonLabel="add fallback"
+        onPick={(id) => void addFallback(id)}
+      />
+
+      <div className="section-label" style={{ marginTop: 20, marginBottom: 6 }}>
+        all available models
+      </div>
       <div className="hint" style={{ marginBottom: 6 }}>
-        what the gateway thinks it can call right now — primary + fallbacks merged with the
-        catalog of known models.
+        models the gateway can currently route — the catalog filtered to providers you've
+        configured, plus your primary + fallbacks.
       </div>
-      <div className="row-list">
-        {models.length === 0 && <div className="hint">no models — wire a provider first.</div>}
-        {models.map((m) => (
-          <div key={m} className="row gap-2" style={{ padding: "4px 0", fontSize: "var(--t-sm)" }}>
-            <span className="mono">{m}</span>
+      {grouped.length === 0 && <div className="hint">no models — wire a provider first.</div>}
+      {grouped.map(([provider, list]) => (
+        <div key={provider} style={{ marginBottom: 12 }}>
+          <div
+            className="row gap-2"
+            style={{ alignItems: "center", marginBottom: 4 }}
+          >
+            <span className="section-label">{provider}</span>
+            <span className="tag">{list.length}</span>
           </div>
-        ))}
-      </div>
+          {list.map((m) => (
+            <div
+              key={m.id}
+              className="row gap-2"
+              style={{
+                padding: "4px 0",
+                fontSize: "var(--t-sm)",
+                alignItems: "center",
+              }}
+            >
+              <span className="mono" style={{ flex: 1 }}>{m.id}</span>
+              <span className="faint" style={{ width: 220 }}>{m.displayName}</span>
+              <span className="faint mono" style={{ width: 70, textAlign: "right" }}>
+                {fmtContextWindow(m.contextWindow)} ctx
+              </span>
+              <span className="faint" style={{ width: 160, textAlign: "right" }}>
+                {m.notes ?? ""}
+              </span>
+            </div>
+          ))}
+        </div>
+      ))}
     </Card>
   );
 }

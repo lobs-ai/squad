@@ -24,15 +24,18 @@ export interface ModelInfo {
 
 export const MODEL_CATALOG: Record<string, ModelInfo[]> = {
   anthropic: [
-    { id: "anthropic/claude-opus-4-5",          displayName: "Claude Opus 4.5",     provider: "anthropic", contextWindow: 200_000, notes: "flagship" },
-    { id: "anthropic/claude-sonnet-4-5",        displayName: "Claude Sonnet 4.5",   provider: "anthropic", contextWindow: 200_000, notes: "default" },
-    { id: "anthropic/claude-haiku-4-5",         displayName: "Claude Haiku 4.5",    provider: "anthropic", contextWindow: 200_000, notes: "fast + cheap" },
+    { id: "anthropic/claude-opus-4-7",            displayName: "Claude Opus 4.7",   provider: "anthropic", contextWindow: 1_000_000, notes: "flagship · 1M context" },
+    { id: "anthropic/claude-sonnet-4-6",          displayName: "Claude Sonnet 4.6", provider: "anthropic", contextWindow: 200_000, notes: "default" },
+    { id: "anthropic/claude-haiku-4-5",           displayName: "Claude Haiku 4.5",  provider: "anthropic", contextWindow: 200_000, notes: "fast + cheap" },
     { id: "anthropic/claude-3-5-sonnet-20241022", displayName: "Claude 3.5 Sonnet", provider: "anthropic", contextWindow: 200_000 },
   ],
+  // Same Anthropic models, routed via the Claude Code CLI subprocess so auth
+  // comes from `claude setup-token` (OAuth) instead of an API key. The model
+  // IDs are the bare Anthropic IDs — Claude Code resolves them the same way.
   "claude-cli": [
-    { id: "claude-cli/claude-opus-4-5",   displayName: "Claude Opus 4.5 (CLI / OAuth)",   provider: "claude-cli", contextWindow: 200_000, notes: "via claude setup-token" },
-    { id: "claude-cli/claude-sonnet-4-5", displayName: "Claude Sonnet 4.5 (CLI / OAuth)", provider: "claude-cli", contextWindow: 200_000, notes: "via claude setup-token" },
-    { id: "claude-cli/claude-haiku-4-5",  displayName: "Claude Haiku 4.5 (CLI / OAuth)",  provider: "claude-cli", contextWindow: 200_000, notes: "via claude setup-token" },
+    { id: "claude-cli/claude-opus-4-7",   displayName: "Claude Opus 4.7",   provider: "claude-cli", contextWindow: 1_000_000, notes: "flagship · 1M context" },
+    { id: "claude-cli/claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", provider: "claude-cli", contextWindow: 200_000, notes: "default" },
+    { id: "claude-cli/claude-haiku-4-5",  displayName: "Claude Haiku 4.5",  provider: "claude-cli", contextWindow: 200_000, notes: "fast + cheap" },
   ],
   openai: [
     { id: "openai/gpt-4o",        displayName: "GPT-4o",      provider: "openai", contextWindow: 128_000, notes: "flagship" },
@@ -60,8 +63,11 @@ export const MODEL_CATALOG: Record<string, ModelInfo[]> = {
   xai: [
     { id: "xai/grok-2-latest", displayName: "Grok 2", provider: "xai", contextWindow: 131_072 },
   ],
+  minimax: [
+    { id: "minimax/minimax-m2.7", displayName: "MiniMax M2.7", provider: "minimax", contextWindow: 200_000, notes: "reasoning" },
+  ],
   openrouter: [
-    { id: "openrouter/anthropic/claude-sonnet-4-5", displayName: "Claude Sonnet 4.5 (via OpenRouter)", provider: "openrouter", contextWindow: 200_000 },
+    { id: "openrouter/anthropic/claude-sonnet-4-6", displayName: "Claude Sonnet 4.6 (via OpenRouter)", provider: "openrouter", contextWindow: 200_000 },
     { id: "openrouter/openai/gpt-4o",               displayName: "GPT-4o (via OpenRouter)",            provider: "openrouter", contextWindow: 128_000 },
     { id: "openrouter/meta-llama/llama-3.3-70b-instruct", displayName: "Llama 3.3 70B (via OpenRouter)", provider: "openrouter", contextWindow: 128_000 },
   ],
@@ -79,7 +85,7 @@ export const MODEL_CATALOG: Record<string, ModelInfo[]> = {
  * had only wired Anthropic. That's misleading: the dashboard then offers
  * models the gateway can't reach.
  *
- * If a provider isn't in the catalog (e.g. a custom `minimax` provider), no
+ * If a provider isn't in the catalog (e.g. a custom proxy), no
  * catalog rows show up for it — that's the right call. Use {@link augmentWithExtras}
  * at the call site to splice in models that the gateway *does* know it can
  * reach (the configured primary + fallback chain) even when the catalog
@@ -100,7 +106,7 @@ export function allModels(): ModelInfo[] {
 /**
  * Splice synthetic ModelInfo entries for any `extraIds` not already covered
  * by `models`. Provider is parsed from the leading `provider/` segment of
- * the model id (e.g. `minimax/minimax-m2.7` → provider `minimax`).
+ * the model id (e.g. `acme/acme-fast` → provider `acme`).
  *
  * The synthetic entry uses a 0 contextWindow as a sentinel — the dashboard
  * shows that as "—". Real catalog entries always carry a real number.

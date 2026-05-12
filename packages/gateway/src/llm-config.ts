@@ -27,6 +27,17 @@ export interface ProviderConfig {
   oauth_token?: string;
   /** Env var to read the OAuth token from. Defaults to CLAUDE_CODE_OAUTH_TOKEN. */
   oauth_token_env?: string;
+  /**
+   * For the `claude-cli` provider: override for which Claude Code built-ins
+   * the spawned subprocess can see. Maps to the CLI's `--tools` flag.
+   * Defaults to undefined — the client derives the list from each turn's
+   * `params.tools` via SQUAD_TO_CC_TOOL_MAP, and built-ins not on that
+   * list (TodoWrite, Skill, etc.) stay invisible so they can't shadow
+   * squad's own tools. Set to `"*"` to enable Claude Code's full toolbox,
+   * `""` to disable all built-ins unconditionally, or a comma-separated
+   * list of CC tool names for a custom whitelist.
+   */
+  allowed_tools?: string;
 }
 
 /**
@@ -105,6 +116,7 @@ export function resolveProviderConfig(
 ): ResolveProviderConfigResult {
   const keys: KeyConfig = {};
   const baseUrls: Partial<Record<Provider, string>> = {};
+  const providerOptions: NonNullable<ClientConfig["providerOptions"]> = {};
   const resolved: string[] = [];
   const missingKeys: ResolveProviderConfigResult["missingKeys"] = [];
   const keyPools: ResolvedKeyPools = {};
@@ -117,6 +129,9 @@ export function resolveProviderConfig(
     // resolve API keys so the rotating-client + fallback-chain code paths
     // (which read from `keys[provider].keys[0].key`) work unchanged.
     if (provider === "claude-cli") {
+      if (cfg.allowed_tools !== undefined) {
+        providerOptions["claude-cli"] = { allowedTools: cfg.allowed_tools };
+      }
       const tokenEnv = cfg.oauth_token_env ?? "CLAUDE_CODE_OAUTH_TOKEN";
       const token = cfg.oauth_token ?? process.env[tokenEnv];
       if (token && token.trim().length > 0) {
@@ -189,7 +204,11 @@ export function resolveProviderConfig(
   }
 
   return {
-    clientConfig: { keys, baseUrls },
+    clientConfig: {
+      keys,
+      baseUrls,
+      ...(Object.keys(providerOptions).length > 0 ? { providerOptions } : {}),
+    },
     resolved,
     missingKeys,
     keyPools,

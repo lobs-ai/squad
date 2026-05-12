@@ -121,7 +121,7 @@ const DEFAULT_CONFIG_TEMPLATE = {
   },
   chat: { delivery: "interrupt" },
   llm: {
-    primary: { model: "anthropic/claude-sonnet-4-5" },
+    primary: { model: "anthropic/claude-sonnet-4-6" },
     fallbacks: [],
     providers: { anthropic: { api_key_env: "ANTHROPIC_API_KEY" } },
   },

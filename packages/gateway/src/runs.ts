@@ -8,7 +8,7 @@ import {
   formatGroupIndexForPrompt,
   PROMPT_SLOTS,
 } from "@squad/tools";
-import type { LLMClient } from "@squad/llm";
+import { parseModelString, type LLMClient } from "@squad/llm";
 import type { ContentBlock, MessageRecord } from "@squad/protocol";
 import type { SessionStore } from "./db/sessions.js";
 import type { MessageStore } from "./db/messages.js";
@@ -28,6 +28,7 @@ import {
   registerActivePersister,
   unregisterActivePersister,
 } from "./run-persistence.js";
+import { runWithAgentContext } from "./agent-context.js";
 
 function textBlocks(content: ContentBlock[] | string): ContentBlock[] {
   if (typeof content === "string") return [{ type: "text", text: content }];
@@ -322,11 +323,22 @@ export async function runChatTurn(
           )
         : [];
     const startupWarnings = [...baseStartupWarnings, ...fragmentStartupWarnings];
+    // Provider routing for this turn — used by the prompt builder to drop
+    // sections Claude Code's own system prompt already covers. Parsing can
+    // throw on bare/unknown model ids; in that case we just omit the
+    // provider hint and the builder falls back to the full guidance.
+    let provider: string | undefined;
+    try {
+      provider = parseModelString(options.model).provider;
+    } catch {
+      provider = undefined;
+    }
     const systemPrompt =
       options.systemPrompt ??
       buildSquadSystemPrompt({
         workspaceDir: options.cwd,
         coreFiles: loadCoreFiles(options.cwd),
+        ...(provider ? { provider } : {}),
         memoryEager,
         memoryRetrieval,
         ...(toolGroupsIndex ? { toolGroupsIndex } : {}),
@@ -403,10 +415,18 @@ export async function runChatTurn(
       },
     };
 
+    // Thread sessionId/taskId through AsyncLocalStorage so callbacks
+    // captured at gateway boot (notably the claude-cli MCP bridge
+    // executor) can pass them into tool meta. Without this, ask_user
+    // and other session-scoped tools throw on every CLI-routed call.
+    const runWithAgentCtx = (): Promise<AgentResult> =>
+      runWithAgentContext({ sessionId: options.sessionId, taskId: runId }, () =>
+        runAgent(spec),
+      );
     if (deps.promptContextStore && renderForPrompt) {
-      result = await deps.promptContextStore.runWithRender(renderForPrompt, () => runAgent(spec));
+      result = await deps.promptContextStore.runWithRender(renderForPrompt, runWithAgentCtx);
     } else {
-      result = await runAgent(spec);
+      result = await runWithAgentCtx();
     }
   } catch (err) {
     // Persist whatever made it onto Session._ref() before the throw so the

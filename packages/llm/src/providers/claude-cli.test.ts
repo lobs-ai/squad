@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { EventEmitter, Readable, Writable } from "node:stream";
+import { readFileSync } from "node:fs";
+import { connect } from "node:net";
 import type { ChildProcess } from "node:child_process";
 import { ClaudeCliClient, __INTERNAL } from "./claude-cli.js";
 import type { SpawnFn } from "./claude-cli.js";
@@ -16,6 +18,8 @@ function makeFakeSpawn(opts: {
   exitCode?: number;
   exitDelayMs?: number;
   spawnError?: NodeJS.ErrnoException;
+  /** When true, the child does not auto-emit `close`. Tests trigger it via `release()`. */
+  holdOpen?: boolean;
 }): {
   fn: SpawnFn;
   calls: Array<{
@@ -24,7 +28,20 @@ function makeFakeSpawn(opts: {
     env: NodeJS.ProcessEnv;
     cwd: string;
     stdin: string;
+    /** Parsed contents of `--mcp-config <path>` captured at spawn time, before bridge cleanup. */
+    mcpConfig?: { mcpServers?: Record<string, { command: string; args: string[] }> };
   }>;
+  /**
+   * Populated synchronously when spawn is invoked — gives the test access
+   * to args + mcp config before the (potentially short-lived) bridge has
+   * been torn down by the call's `finally` cleanup.
+   */
+  liveCalls: Array<{
+    args: string[];
+    mcpConfig?: { mcpServers?: Record<string, { command: string; args: string[] }> };
+  }>;
+  /** Release any pending child(ren) — fires their `close` event. No-op for non-holdOpen spawns. */
+  release: () => void;
 } {
   const calls: Array<{
     binary: string;
@@ -32,7 +49,13 @@ function makeFakeSpawn(opts: {
     env: NodeJS.ProcessEnv;
     cwd: string;
     stdin: string;
+    mcpConfig?: { mcpServers?: Record<string, { command: string; args: string[] }> };
   }> = [];
+  const liveCalls: Array<{
+    args: string[];
+    mcpConfig?: { mcpServers?: Record<string, { command: string; args: string[] }> };
+  }> = [];
+  const pending = new Set<() => void>();
 
   const fn = ((binary: string, args: readonly string[], options: Record<string, unknown>) => {
     const child = new EventEmitter() as unknown as ChildProcess & EventEmitter;
@@ -56,6 +79,21 @@ function makeFakeSpawn(opts: {
       /* no-op in tests */
     };
 
+    // Capture metadata that the bridge cleanup will later wipe (mcp.json).
+    // Has to happen synchronously here so it survives the finally-block
+    // `bridge.cleanup()` that runs as soon as the call resolves.
+    let mcpConfig: { mcpServers?: Record<string, { command: string; args: string[] }> } | undefined;
+    const cfgIdx = args.indexOf("--mcp-config");
+    if (cfgIdx >= 0) {
+      const path = args[cfgIdx + 1];
+      try {
+        mcpConfig = JSON.parse(readFileSync(path!, "utf8")) as typeof mcpConfig;
+      } catch {
+        /* mcp.json not yet written or already gone */
+      }
+    }
+    liveCalls.push({ args: [...args], ...(mcpConfig ? { mcpConfig } : {}) });
+
     queueMicrotask(() => {
       if (opts.spawnError) {
         child.emit("error", opts.spawnError);
@@ -74,9 +112,14 @@ function makeFakeSpawn(opts: {
           env: (options.env as NodeJS.ProcessEnv) ?? {},
           cwd: (options.cwd as string) ?? "",
           stdin: stdinPayload,
+          ...(mcpConfig ? { mcpConfig } : {}),
         });
         child.emit("close", opts.exitCode ?? 0);
       };
+      if (opts.holdOpen) {
+        pending.add(fire);
+        return;
+      }
       if (opts.exitDelayMs && opts.exitDelayMs > 0) {
         setTimeout(fire, opts.exitDelayMs);
         return;
@@ -97,7 +140,12 @@ function makeFakeSpawn(opts: {
     return child;
   }) as unknown as SpawnFn;
 
-  return { fn, calls };
+  const release = (): void => {
+    for (const f of pending) f();
+    pending.clear();
+  };
+
+  return { fn, calls, liveCalls, release };
 }
 
 const STREAM_DELTAS = [
@@ -189,6 +237,9 @@ describe("ClaudeCliClient", () => {
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("tok-xyz");
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+    // Required for `bypassPermissions` to work when the squad gateway
+    // runs as root (the default inside the docker image).
+    expect(env.IS_SANDBOX).toBe("1");
   });
 
   it("renders multi-turn history as a Human/Assistant transcript", async () => {
@@ -210,7 +261,7 @@ describe("ClaudeCliClient", () => {
     );
   });
 
-  it("locks built-in tools off by default via --allowedTools", async () => {
+  it("disables every built-in (--tools \"\") when params.tools is empty and no override", async () => {
     const { fn, calls } = makeFakeSpawn({ stdoutLines: STREAM_DELTAS });
     const client = new ClaudeCliClient({ oauthToken: "tok-xyz" }, fn);
     await client.createMessage({
@@ -221,9 +272,217 @@ describe("ClaudeCliClient", () => {
       maxTokens: 100,
     });
     const args = calls[0]!.args;
-    const idx = args.indexOf("--allowedTools");
+    const idx = args.indexOf("--tools");
     expect(idx).toBeGreaterThan(-1);
-    expect(args[idx + 1]).toBe(__INTERNAL.NO_TOOLS_PATTERN);
+    expect(args[idx + 1]).toBe("");
+    // Nothing to permission, so no --permission-mode flag.
+    expect(args).not.toContain("--permission-mode");
+    // And no `--allowedTools` legacy whitelist anywhere.
+    expect(args).not.toContain("--allowedTools");
+  });
+
+  it("maps params.tools to a single --tools list via SQUAD_TO_CC_TOOL_MAP", async () => {
+    const { fn, calls } = makeFakeSpawn({ stdoutLines: STREAM_DELTAS });
+    const client = new ClaudeCliClient({ oauthToken: "tok-xyz" }, fn);
+    await client.createMessage({
+      model: "claude-sonnet-4-5",
+      system: "",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [
+        { name: "read", description: "", input_schema: { type: "object" } },
+        { name: "write", description: "", input_schema: { type: "object" } },
+        { name: "exec", description: "", input_schema: { type: "object" } },
+        { name: "web_search", description: "", input_schema: { type: "object" } },
+      ],
+      maxTokens: 100,
+    });
+    const args = calls[0]!.args;
+    const idx = args.indexOf("--tools");
+    expect(idx).toBeGreaterThan(-1);
+    const enabled = args[idx + 1]!.split(",").sort();
+    expect(enabled).toEqual(["Bash", "Read", "WebSearch", "Write"]);
+    expect(args).toContain("--permission-mode");
+    expect(args[args.indexOf("--permission-mode") + 1]).toBe("bypassPermissions");
+  });
+
+  it("blocks built-ins (--tools \"\") when none of params.tools map to CC and no MCP executor", async () => {
+    const { fn, calls } = makeFakeSpawn({ stdoutLines: STREAM_DELTAS });
+    const client = new ClaudeCliClient({ oauthToken: "tok-xyz" }, fn);
+    await client.createMessage({
+      model: "claude-sonnet-4-5",
+      system: "",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [
+        { name: "create_task", description: "", input_schema: { type: "object" } },
+        { name: "send_email", description: "", input_schema: { type: "object" } },
+      ],
+      maxTokens: 100,
+    });
+    const args = calls[0]!.args;
+    expect(args[args.indexOf("--tools") + 1]).toBe("");
+    expect(args).not.toContain("--permission-mode");
+  });
+
+  it("explicit allowedTools override beats params.tools (\"*\" → --tools default)", async () => {
+    const { fn, calls } = makeFakeSpawn({ stdoutLines: STREAM_DELTAS });
+    const client = new ClaudeCliClient(
+      { oauthToken: "tok-xyz", allowedTools: "*" },
+      fn,
+    );
+    await client.createMessage({
+      model: "claude-sonnet-4-5",
+      system: "",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [{ name: "read", description: "", input_schema: { type: "object" } }],
+      maxTokens: 100,
+    });
+    const args = calls[0]!.args;
+    expect(args[args.indexOf("--tools") + 1]).toBe("default");
+  });
+
+  it("does not append any tool-related instructions to the system prompt", async () => {
+    // The CLI's --tools flag controls availability at the protocol level,
+    // so we no longer need to scold the model with "X is DISABLED" text.
+    // params.system passes through verbatim.
+    const { fn, calls } = makeFakeSpawn({ stdoutLines: STREAM_DELTAS });
+    const client = new ClaudeCliClient({ oauthToken: "tok-xyz" }, fn);
+    await client.createMessage({
+      model: "claude-sonnet-4-5",
+      system: "You are helpful.",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [],
+      maxTokens: 100,
+    });
+    const args = calls[0]!.args;
+    const idx = args.indexOf("--append-system-prompt");
+    expect(idx).toBeGreaterThan(-1);
+    expect(args[idx + 1]).toBe("You are helpful.");
+  });
+
+  it("opts into tools when allowedTools='*' and sets bypassPermissions", async () => {
+    const { fn, calls } = makeFakeSpawn({ stdoutLines: STREAM_DELTAS });
+    const client = new ClaudeCliClient(
+      { oauthToken: "tok-xyz", allowedTools: "*" },
+      fn,
+    );
+    await client.createMessage({
+      model: "claude-sonnet-4-5",
+      system: "do stuff",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [],
+      maxTokens: 100,
+    });
+    const args = calls[0]!.args;
+    expect(args[args.indexOf("--tools") + 1]).toBe("default");
+    expect(args).toContain("--permission-mode");
+    expect(args[args.indexOf("--permission-mode") + 1]).toBe("bypassPermissions");
+    expect(args[args.indexOf("--append-system-prompt") + 1]).toBe("do stuff");
+  });
+
+  const TOOL_STREAM_LINES = [
+    `{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool_1","name":"Read"}}}`,
+    `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":"}}}`,
+    `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\\"/etc/hosts\\"}"}}}`,
+    `{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+    `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_1","content":"127.0.0.1 localhost"}]}}`,
+    `{"type":"result","result":"done","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}`,
+  ];
+
+  it("surfaces CLI tool activity as structured onToolEvent calls when supplied", async () => {
+    // The native model path. With onToolEvent wired, tool_use / tool_result
+    // become structured events the runner can broadcast as chat.tool_call /
+    // chat.tool_result — same channel a native model would feed.
+    const { fn } = makeFakeSpawn({ stdoutLines: TOOL_STREAM_LINES });
+    const client = new ClaudeCliClient(
+      { oauthToken: "tok-xyz", allowedTools: "*" },
+      fn,
+    );
+    const events: Array<Record<string, unknown>> = [];
+    const chunks: string[] = [];
+    const res = await client.streamMessage(
+      {
+        model: "claude-sonnet-4-5",
+        system: "",
+        messages: [{ role: "user", content: "read /etc/hosts" }],
+        tools: [],
+        maxTokens: 100,
+        onToolEvent: (ev) => events.push(ev as unknown as Record<string, unknown>),
+      },
+      (t) => chunks.push(t),
+    );
+    expect(events).toEqual([
+      {
+        type: "tool_start",
+        toolName: "read", // CC's "Read" → squad's "read"
+        toolInput: { path: "/etc/hosts" },
+        toolUseId: "tool_1",
+      },
+      {
+        type: "tool_result",
+        toolName: "read",
+        toolUseId: "tool_1",
+        result: "127.0.0.1 localhost",
+      },
+    ]);
+    // Inline markers should NOT also leak into the text stream when the
+    // caller is consuming events structurally.
+    expect(chunks.join("")).not.toMatch(/\[→/);
+    expect(chunks.join("")).not.toMatch(/\[←/);
+    expect(res.content).toEqual([{ type: "text", text: "done" }]);
+  });
+
+  it("falls back to inline [→ name: input] markers when onToolEvent is absent", async () => {
+    const { fn } = makeFakeSpawn({ stdoutLines: TOOL_STREAM_LINES });
+    const client = new ClaudeCliClient(
+      { oauthToken: "tok-xyz", allowedTools: "*" },
+      fn,
+    );
+    const chunks: string[] = [];
+    const res = await client.streamMessage(
+      {
+        model: "claude-sonnet-4-5",
+        system: "",
+        messages: [{ role: "user", content: "read /etc/hosts" }],
+        tools: [],
+        maxTokens: 100,
+      },
+      (t) => chunks.push(t),
+    );
+    const joined = chunks.join("");
+    // Markers display the squad-namespaced name so plain-text consumers
+    // see "read" rather than "Read".
+    expect(joined).toMatch(/\[→ read: \/etc\/hosts\]/);
+    expect(joined).toMatch(/\[← read: 127\.0\.0\.1 localhost\]/);
+    expect(res.content).toEqual([{ type: "text", text: "done" }]);
+  });
+
+  it("strips the mcp__squad__ prefix when reporting MCP-bridged tool events", async () => {
+    const lines = [
+      `{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool_2","name":"mcp__squad__create_task"}}}`,
+      `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"subject\\":\\"x\\"}"}}}`,
+      `{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+      `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_2","content":"ok"}]}}`,
+      `{"type":"result","result":"done","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}`,
+    ];
+    const { fn } = makeFakeSpawn({ stdoutLines: lines });
+    const client = new ClaudeCliClient(
+      { oauthToken: "tok-xyz", allowedTools: "*" },
+      fn,
+    );
+    const events: Array<Record<string, unknown>> = [];
+    await client.streamMessage(
+      {
+        model: "claude-sonnet-4-5",
+        system: "",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [],
+        maxTokens: 100,
+        onToolEvent: (ev) => events.push(ev as unknown as Record<string, unknown>),
+      },
+      () => {},
+    );
+    expect(events[0]).toMatchObject({ type: "tool_start", toolName: "create_task" });
+    expect(events[1]).toMatchObject({ type: "tool_result", toolName: "create_task" });
   });
 
   it("surfaces ENOENT with an install hint", async () => {
@@ -273,6 +532,186 @@ describe("ClaudeCliClient", () => {
         maxTokens: 100,
       }),
     ).rejects.toMatchObject({ status: 408 });
+  });
+});
+
+describe("ClaudeCliClient MCP bridge (stage 2)", () => {
+  it("spins up an MCP bridge for unmapped tools when executeTool is provided", async () => {
+    const { fn, calls } = makeFakeSpawn({ stdoutLines: STREAM_DELTAS });
+    const client = new ClaudeCliClient(
+      {
+        oauthToken: "tok-xyz",
+        executeTool: async () => "ok",
+      },
+      fn,
+    );
+    await client.createMessage({
+      model: "claude-sonnet-4-5",
+      system: "",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [
+        { name: "read", description: "", input_schema: { type: "object" } }, // mapped
+        { name: "create_task", description: "", input_schema: { type: "object" } }, // unmapped
+      ],
+      maxTokens: 100,
+    });
+    const args = calls[0]!.args;
+    // Mapped tool flows into --tools; unmapped tools route through MCP.
+    expect(args[args.indexOf("--tools") + 1]).toBe("Read");
+    expect(args).toContain("--mcp-config");
+    // mcp.json was captured at spawn time (before the finally-block cleanup
+    // removed the temp dir).
+    const cfg = calls[0]!.mcpConfig;
+    expect(cfg?.mcpServers?.squad?.command).toBe("node");
+    expect(cfg?.mcpServers?.squad?.args?.[0]).toMatch(/bridge\.mjs$/);
+  });
+
+  it("routes ls and code_search through MCP rather than mapping to Bash/Grep", async () => {
+    // ls and code_search look adjacent to Bash/Grep but aren't 1:1 — we
+    // route them through squad's executor instead of silently widening
+    // the agent's capabilities to full Bash / Grep.
+    const { fn, calls } = makeFakeSpawn({ stdoutLines: STREAM_DELTAS });
+    const client = new ClaudeCliClient(
+      { oauthToken: "tok-xyz", executeTool: async () => "ok" },
+      fn,
+    );
+    await client.createMessage({
+      model: "claude-sonnet-4-5",
+      system: "",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [
+        { name: "ls", description: "", input_schema: { type: "object" } },
+        { name: "code_search", description: "", input_schema: { type: "object" } },
+      ],
+      maxTokens: 100,
+    });
+    const args = calls[0]!.args;
+    // No CC built-ins enabled — ls/code_search take the MCP path instead.
+    expect(args[args.indexOf("--tools") + 1]).toBe("");
+    expect(args).toContain("--mcp-config");
+    const tools = calls[0]!.mcpConfig?.mcpServers?.squad?.args?.[0];
+    expect(tools).toMatch(/bridge\.mjs$/);
+  });
+
+  it("skips the MCP bridge when no executeTool is configured", async () => {
+    const { fn, calls } = makeFakeSpawn({ stdoutLines: STREAM_DELTAS });
+    const client = new ClaudeCliClient({ oauthToken: "tok-xyz" }, fn);
+    await client.createMessage({
+      model: "claude-sonnet-4-5",
+      system: "",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [
+        { name: "read", description: "", input_schema: { type: "object" } }, // mapped
+        { name: "create_task", description: "", input_schema: { type: "object" } }, // unmapped, dropped
+      ],
+      maxTokens: 100,
+    });
+    const args = calls[0]!.args;
+    expect(args).not.toContain("--mcp-config");
+    expect(args[args.indexOf("--tools") + 1]).toBe("Read");
+  });
+
+  it("MCP server connection round-trips initialize/tools/list/tools/call", async () => {
+    // The fake spawn is held open so the bridge stays alive while the
+    // test drives the JSON-RPC protocol over the Unix socket.
+    const executorCalls: Array<{ name: string; params: Record<string, unknown> }> = [];
+    const { fn, liveCalls, release } = makeFakeSpawn({
+      stdoutLines: STREAM_DELTAS,
+      holdOpen: true,
+    });
+
+    const client = new ClaudeCliClient(
+      {
+        oauthToken: "tok-xyz",
+        executeTool: async (name, params) => {
+          executorCalls.push({ name, params });
+          return `result for ${name}`;
+        },
+      },
+      fn,
+    );
+
+    const callPromise = client.createMessage({
+      model: "claude-sonnet-4-5",
+      system: "",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [
+        {
+          name: "create_task",
+          description: "Create a new task",
+          input_schema: { type: "object", properties: { title: { type: "string" } } },
+        },
+      ],
+      maxTokens: 100,
+    });
+
+    // Wait until spawn fires and the fake captures the live mcp.json.
+    for (let attempt = 0; attempt < 50 && liveCalls.length === 0; attempt++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const cfg = liveCalls[0]?.mcpConfig;
+    const socketPath = cfg?.mcpServers?.squad?.args?.[1];
+    if (!socketPath) {
+      release();
+      await callPromise;
+      throw new Error("bridge socket path not exposed by fake spawn");
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const sock = connect(socketPath!);
+      let buffer = "";
+      const responses: Record<string, unknown>[] = [];
+      sock.setEncoding("utf8");
+      sock.on("data", (chunk: string) => {
+        buffer += chunk;
+        let nl: number;
+        while ((nl = buffer.indexOf("\n")) !== -1) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (!line) continue;
+          responses.push(JSON.parse(line));
+          if (responses.length === 3) {
+            sock.end();
+            try {
+              expect(
+                (responses[0] as { result?: { serverInfo?: { name?: string } } }).result
+                  ?.serverInfo?.name,
+              ).toBe("squad-mcp-bridge");
+              const listed =
+                (responses[1] as { result?: { tools?: Array<{ name: string }> } }).result
+                  ?.tools ?? [];
+              expect(listed.map((t) => t.name)).toEqual(["create_task"]);
+              const callRes = responses[2] as {
+                result?: { content?: Array<{ text?: string }> };
+              };
+              expect(callRes.result?.content?.[0]?.text).toBe("result for create_task");
+              expect(executorCalls).toEqual([
+                { name: "create_task", params: { title: "ship it" } },
+              ]);
+              resolve();
+            } catch (e) {
+              reject(e);
+            }
+          }
+        }
+      });
+      sock.on("error", reject);
+      sock.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" })}\n`);
+      sock.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" })}\n`);
+      sock.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: { name: "create_task", arguments: { title: "ship it" } },
+        })}\n`,
+      );
+    });
+
+    // Let the held-open child close so createMessage resolves and the
+    // bridge cleanup runs.
+    release();
+    await callPromise;
   });
 });
 

@@ -13,7 +13,7 @@ export default definePlugin({
     api.subagents.register({
       name: "code-reviewer",
       description: "Read-only review of a diff with file:line callouts.",
-      model: "claude-sonnet-4-5",
+      model: "claude-sonnet-4-6",
       tools: ["read_file", "list_tasks", "create_task", "update_task"],
       systemPrompt: [
         "You are a careful code reviewer. Read-only tools only.",

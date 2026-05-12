@@ -296,8 +296,11 @@ export function createClient(model: string, config?: ClientConfig): LLMClient {
 
   // ── Claude Code CLI (subprocess; OAuth via `claude setup-token`) ─────────
   if (provider === "claude-cli") {
+    const opts = config?.providerOptions?.["claude-cli"];
     return new ClaudeCliClient({
       oauthToken: getKey("claude-cli") ?? process.env.CLAUDE_CODE_OAUTH_TOKEN,
+      ...(opts?.allowedTools !== undefined ? { allowedTools: opts.allowedTools } : {}),
+      ...(opts?.executeTool !== undefined ? { executeTool: opts.executeTool } : {}),
     });
   }
 

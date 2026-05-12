@@ -118,6 +118,36 @@ export interface ThinkingAdaptive {
 /** Thinking configuration for a request. */
 export type ThinkingConfig = ThinkingEnabled | ThinkingAdaptive;
 
+// ── Tool Events ───────────────────────────────────────────────────────────────
+
+/**
+ * A tool-call event surfaced *by* an LLM call. Used by providers that run
+ * their own internal agent loop (notably `claude-cli`, which delegates the
+ * loop to the Claude Code subprocess) to report tool activity back to the
+ * caller in real time — letting consumers wire those events to the same
+ * progress/broadcast channel a native model's tool_use blocks would.
+ *
+ * Providers whose response already contains `tool_use` blocks (Anthropic,
+ * OpenAI, etc.) do NOT emit these — the agent loop's own dispatcher fires
+ * the equivalent progress events when it executes the blocks.
+ */
+export interface ToolEvent {
+  type: "tool_start" | "tool_result";
+  /** Tool name in the caller's namespace (e.g. squad's `read`, not `Read`). */
+  toolName: string;
+  /** Parsed input JSON. Only present on `tool_start`. */
+  toolInput?: Record<string, unknown>;
+  /**
+   * The provider-side tool-use id. Pairs `tool_start` with its matching
+   * `tool_result` so consumers can correlate without fragile name matching.
+   */
+  toolUseId?: string;
+  /** Textual result. Only present on `tool_result`. */
+  result?: string;
+  /** True if the provider flagged the result as an error. */
+  isError?: boolean;
+}
+
 // ── Request Params ────────────────────────────────────────────────────────────
 
 /** Parameters for a single LLM call. */
@@ -137,6 +167,15 @@ export interface CreateMessageParams {
    * Ignored for non-Anthropic providers.
    */
   thinking?: ThinkingConfig;
+  /**
+   * Optional hook for per-tool-call progress from providers that own their
+   * own agent loop. Native chat-completion providers (Anthropic, OpenAI,
+   * etc.) ignore this — their tool calls surface as `tool_use` blocks in
+   * `LLMResponse.content` and the caller's dispatcher handles them. The
+   * `claude-cli` provider uses it to surface the CLI's internal tool
+   * activity, so squad's runner can broadcast it like a native tool call.
+   */
+  onToolEvent?: (event: ToolEvent) => void;
 }
 
 // ── Client Interface ──────────────────────────────────────────────────────────
@@ -315,4 +354,29 @@ export interface ClientConfig {
    * Useful for proxies, local models, or custom deployments.
    */
   baseUrls?: Partial<Record<Provider, string>>;
+  /**
+   * Per-provider extra options that don't fit `keys` or `baseUrls`. Only
+   * specific providers consume entries here.
+   */
+  providerOptions?: {
+    /**
+     * Options for the Claude Code CLI subprocess.
+     *
+     * - `allowedTools`: pattern passed to the CLI's `--allowedTools` flag.
+     *   When set, takes precedence over per-call `params.tools` mapping.
+     *   Useful as an escape hatch (e.g. `"*"` to allow Claude Code's full
+     *   toolbox unconditionally).
+     * - `executeTool`: callback the gateway provides so squad tools that
+     *   don't map to a Claude Code built-in can still run, via a per-call
+     *   in-process MCP bridge. Given a tool name and JSON input, returns
+     *   the textual result. Wired to `toolRegistry.execute` by the gateway.
+     */
+    "claude-cli"?: {
+      allowedTools?: string;
+      executeTool?: (
+        name: string,
+        params: Record<string, unknown>,
+      ) => Promise<string>;
+    };
+  };
 }

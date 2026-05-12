@@ -666,7 +666,7 @@ Routines are a v1 feature because "run this every morning" is one of the highest
   },
 
   "llm": {
-    "primary": { "model": "anthropic/claude-sonnet-4-5" },
+    "primary": { "model": "anthropic/claude-sonnet-4-6" },
     "fallbacks": [
       { "model": "openai/gpt-4o" },
       { "model": "google/gemini-2.0-flash" }

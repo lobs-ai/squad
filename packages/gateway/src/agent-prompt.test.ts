@@ -99,4 +99,41 @@ describe("buildSquadSystemPrompt", () => {
     });
     expect(prompt).not.toContain("<tool_groups>");
   });
+
+  it("emits the full squad tool guidance for non-claude-cli providers", () => {
+    const prompt = buildSquadSystemPrompt({
+      workspaceDir: "/w",
+      coreFiles: { soul: "", user: "", memory: "" },
+      provider: "anthropic",
+    });
+    // Full squad-flavored guidance — the file-handling rule and the
+    // "tools in a drawer" line are unique to the non-CLI branch.
+    expect(prompt).toContain("filesystem");
+    expect(prompt).toContain("read/write/edit/ls");
+    expect(prompt).toContain("Treat them like tools sitting in a drawer");
+  });
+
+  it("trims squad tool guidance when provider is claude-cli", () => {
+    const prompt = buildSquadSystemPrompt({
+      workspaceDir: "/w",
+      coreFiles: { soul: "", user: "", memory: "" },
+      provider: "claude-cli",
+    });
+    // The redundant squad-flavored guidance is gone…
+    expect(prompt).not.toContain("read/write/edit/ls");
+    expect(prompt).not.toContain("Treat them like tools sitting in a drawer");
+    // …but the squad-specific bits (ask_user, lazy tool groups,
+    // describe_tool_group, mcp__squad__*) are still present.
+    expect(prompt).toContain("ask_user");
+    expect(prompt).toContain("describe_tool_group");
+    expect(prompt).toContain("mcp__squad__*");
+  });
+
+  it("defaults to the full guidance when provider is undefined", () => {
+    const prompt = buildSquadSystemPrompt({
+      workspaceDir: "/w",
+      coreFiles: { soul: "", user: "", memory: "" },
+    });
+    expect(prompt).toContain("read/write/edit/ls");
+  });
 });

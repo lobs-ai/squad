@@ -22,20 +22,20 @@ describe("listAvailableModels", () => {
   });
 
   it("ignores providers the catalog has never heard of", () => {
-    // A custom `minimax` provider returns nothing from the catalog. Use
+    // A custom provider not in the catalog returns nothing. Use
     // augmentWithExtras to splice the configured model in.
-    expect(listAvailableModels(["minimax"])).toEqual([]);
+    expect(listAvailableModels(["acme-proxy"])).toEqual([]);
   });
 });
 
 describe("augmentWithExtras", () => {
   it("synthesizes ModelInfo entries for ids the catalog doesn't carry", () => {
-    const out = augmentWithExtras([], ["minimax/minimax-m2.7"]);
+    const out = augmentWithExtras([], ["acme-proxy/acme-fast"]);
     expect(out).toEqual([
       expect.objectContaining({
-        id: "minimax/minimax-m2.7",
-        displayName: "minimax-m2.7",
-        provider: "minimax",
+        id: "acme-proxy/acme-fast",
+        displayName: "acme-fast",
+        provider: "acme-proxy",
         contextWindow: 0,
         notes: "configured",
       }),
@@ -44,15 +44,15 @@ describe("augmentWithExtras", () => {
 
   it("doesn't duplicate ids already present", () => {
     const base = listAvailableModels(["anthropic"]);
-    const out = augmentWithExtras(base, [base[0]!.id, "minimax/minimax-m2.7"]);
+    const out = augmentWithExtras(base, [base[0]!.id, "acme-proxy/acme-fast"]);
     const ids = out.map((m) => m.id);
     expect(new Set(ids).size).toBe(ids.length); // no duplicates
-    expect(out.find((m) => m.id === "minimax/minimax-m2.7")).toBeDefined();
+    expect(out.find((m) => m.id === "acme-proxy/acme-fast")).toBeDefined();
   });
 
   it("ignores empty / falsy ids", () => {
-    const out = augmentWithExtras([], ["", undefined as unknown as string, "minimax/x"]);
-    expect(out.map((m) => m.id)).toEqual(["minimax/x"]);
+    const out = augmentWithExtras([], ["", undefined as unknown as string, "acme-proxy/x"]);
+    expect(out.map((m) => m.id)).toEqual(["acme-proxy/x"]);
   });
 });
 
