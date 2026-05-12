@@ -456,6 +456,61 @@ describe("ClaudeCliClient", () => {
     expect(res.content).toEqual([{ type: "text", text: "done" }]);
   });
 
+  it("streams CLI extended-thinking deltas inline so the reasoning shows up before each tool call", async () => {
+    // The user sees *why* the CLI is about to call a tool — the model's
+    // pre-call narrative is forwarded through onChunk just like a regular
+    // model's streamed reply, and the aggregated reasoning lands in
+    // LLMResponse.thinkingContent for any consumer that wants it as a
+    // separate field.
+    const lines = [
+      `{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}`,
+      `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"I should read /etc/hosts "}}}`,
+      `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"to answer this."}}}`,
+      `{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+      `{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tool_1","name":"Read"}}}`,
+      `{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":\\"/etc/hosts\\"}"}}}`,
+      `{"type":"stream_event","event":{"type":"content_block_stop","index":1}}`,
+      `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_1","content":"127.0.0.1 localhost"}]}}`,
+      `{"type":"result","result":"hosts maps localhost to 127.0.0.1","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}`,
+    ];
+    const { fn } = makeFakeSpawn({ stdoutLines: lines });
+    const client = new ClaudeCliClient(
+      { oauthToken: "tok-xyz", allowedTools: "*" },
+      fn,
+    );
+    const chunks: string[] = [];
+    const events: Array<Record<string, unknown>> = [];
+    const res = await client.streamMessage(
+      {
+        model: "claude-sonnet-4-5",
+        system: "",
+        messages: [{ role: "user", content: "what's in /etc/hosts?" }],
+        tools: [],
+        maxTokens: 100,
+        onToolEvent: (ev) => events.push(ev as unknown as Record<string, unknown>),
+      },
+      (t) => chunks.push(t),
+    );
+    // Reasoning is streamed and arrives BEFORE the tool_start event in the
+    // observable order — exactly what a UI would render as "thinking text,
+    // then tool card."
+    const reasoningChunks = chunks.filter((c) =>
+      c.includes("I should read") || c.includes("to answer this"),
+    );
+    expect(reasoningChunks.length).toBeGreaterThan(0);
+    expect(chunks.join("")).toContain("I should read /etc/hosts to answer this.");
+    // Aggregated thinking surfaces on the response for any consumer that
+    // wants it without parsing the stream.
+    expect(res.thinkingContent).toBe("I should read /etc/hosts to answer this.");
+    // The final assistant content is just the answer — thinking does NOT
+    // leak into the persisted assistant message text.
+    expect(res.content).toEqual([
+      { type: "text", text: "hosts maps localhost to 127.0.0.1" },
+    ]);
+    // Tool event still fires as before.
+    expect(events.some((e) => e.type === "tool_start")).toBe(true);
+  });
+
   it("strips the mcp__squad__ prefix when reporting MCP-bridged tool events", async () => {
     const lines = [
       `{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool_2","name":"mcp__squad__create_task"}}}`,

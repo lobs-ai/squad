@@ -220,6 +220,7 @@ interface CliStreamInner {
   delta?: {
     type?: string;
     text?: string;
+    thinking?: string;
     partial_json?: string;
   };
 }
@@ -740,6 +741,26 @@ function runCli(
         ) {
           deltaText += inner.delta.text;
           onChunk(inner.delta.text);
+        }
+
+        // Extended-thinking deltas — the model's reasoning, emitted right
+        // before each tool call. Stream them through onChunk so the user
+        // can see *why* a tool is being called (right before the tool-call
+        // card appears in the UI), and aggregate into `thinkingContent`
+        // for any consumer that wants the reasoning separately. We do NOT
+        // add this to `deltaText` (= persisted assistant text) — replaying
+        // verbose narration back as prior-turn context would drag every
+        // future call toward over-explaining.
+        if (
+          inner.type === "content_block_delta" &&
+          inner.delta?.type === "thinking_delta" &&
+          typeof inner.delta.thinking === "string"
+        ) {
+          const t = inner.delta.thinking;
+          if (t.length > 0) {
+            thinkingContent = (thinkingContent ?? "") + t;
+            onChunk(t);
+          }
         }
         return;
       }
