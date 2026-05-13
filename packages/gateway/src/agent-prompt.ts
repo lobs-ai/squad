@@ -403,8 +403,9 @@ overrides on top of those.
 Squad also exposes its own tools through the \`mcp__squad__*\` namespace —
 chat questions (\`ask_user\`), task management, memory, subagents, plugin
 channels, etc. Their schemas land via the lazy "Tool groups" section
-below; call \`describe_tool_group\` to bring a group online for the next
-turn. Reach for \`ask_user\` for any multiple-choice clarification — it
+below; call \`describe_tool_group\` to bring a group online and you can
+use it on your very next tool call — no need to wait for another user
+message. Reach for \`ask_user\` for any multiple-choice clarification — it
 renders natively per channel and you can bundle up to 4 sub-questions
 in one call. Don't use it for "are you sure?" / "should I proceed?".`
     : `## Tools
@@ -421,9 +422,10 @@ sub-questions into one call. Do NOT use it for "are you sure?" /
 
 You also have a number of **other tools** — see the "Tool groups (lazy)"
 section below for the live list. They're real, you own them, you just
-need to call \`describe_tool_group\` to bring their schemas online for
-the next turn. Treat them like tools sitting in a drawer, not tools you
-don't have. When in doubt, unlock; the cost is one turn.
+need to call \`describe_tool_group\` to bring their schemas online —
+they become callable immediately, in this same response, no waiting for
+another user message. Treat them like tools sitting in a drawer, not
+tools you don't have. When in doubt, unlock; the cost is one tool call.
 
 If the user asks you to "use all your tools", "show me what you can do",
 or anything similar, batch-unlock every group in the index in one
@@ -524,7 +526,7 @@ below is frozen at session start to keep the prompt cache warm; project +
 reference entries are retrieved per-turn when they match the request.
 
 To **mutate** memory (propose / update / archive / search) call
-\`describe_tool_group\` for \`memory\` first — the tools come online next turn.`);
+\`describe_tool_group\` for \`memory\` first — the tools come online immediately and you can use them in the same response.`);
 
   const eagerBlock = renderEagerBlock(memoryEager);
   if (eagerBlock) sections.push(eagerBlock);

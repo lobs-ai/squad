@@ -858,6 +858,148 @@ describe("ClaudeCliClient MCP bridge (stage 2)", () => {
     release();
     await callPromise;
   });
+
+  // Lets `describe_tool_group` make its newly-unlocked tools callable on
+  // the very next iteration of the CLI's internal loop. The bridge must:
+  //   (1) advertise capabilities.tools.listChanged: true at init,
+  //   (2) re-query getTools() on every tools/list (not snapshot at start),
+  //   (3) emit notifications/tools/list_changed after a tools/call when
+  //       the supplied refresh callback reports the set changed.
+  it("emits notifications/tools/list_changed when getActiveTools widens", async () => {
+    const { fn, liveCalls, release } = makeFakeSpawn({
+      stdoutLines: STREAM_DELTAS,
+      holdOpen: true,
+    });
+
+    // The "live" tool set the gateway would compute from session state.
+    // Starts as just the meta tool; the simulated tools/call below
+    // "unlocks" the tasks group by widening this list.
+    let activeTools: import("../types.js").ToolDefinition[] = [
+      { name: "describe_tool_group", description: "", input_schema: { type: "object" } },
+    ];
+
+    const client = new ClaudeCliClient(
+      {
+        oauthToken: "tok-xyz",
+        executeTool: async (name) => {
+          if (name === "describe_tool_group") {
+            activeTools = [
+              { name: "describe_tool_group", description: "", input_schema: { type: "object" } },
+              { name: "list_tasks", description: "", input_schema: { type: "object" } },
+              { name: "create_task", description: "", input_schema: { type: "object" } },
+            ];
+          }
+          return "ok";
+        },
+        getActiveTools: () => activeTools,
+      },
+      fn,
+    );
+
+    const callPromise = client.createMessage({
+      model: "claude-sonnet-4-5",
+      system: "",
+      messages: [{ role: "user", content: "hi" }],
+      // Bridge's initial mcpTools — only describe_tool_group is in scope
+      // at call start; everything else has to come online via the refresh.
+      tools: [
+        { name: "describe_tool_group", description: "", input_schema: { type: "object" } },
+      ],
+      maxTokens: 100,
+    });
+
+    for (let attempt = 0; attempt < 50 && liveCalls.length === 0; attempt++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const socketPath = liveCalls[0]?.mcpConfig?.mcpServers?.squad?.args?.[1];
+    if (!socketPath) {
+      release();
+      await callPromise;
+      throw new Error("bridge socket path not exposed by fake spawn");
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const sock = connect(socketPath);
+      sock.setEncoding("utf8");
+      let buffer = "";
+      const frames: Record<string, unknown>[] = [];
+      let phase: "before" | "after" = "before";
+      let listChangedSeen = false;
+      let firstListNames: string[] = [];
+      let secondListNames: string[] = [];
+
+      sock.on("data", (chunk: string) => {
+        buffer += chunk;
+        let nl: number;
+        while ((nl = buffer.indexOf("\n")) !== -1) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (!line) continue;
+          const frame = JSON.parse(line) as Record<string, unknown>;
+          frames.push(frame);
+
+          if (frame.method === "notifications/tools/list_changed") {
+            listChangedSeen = true;
+            // Re-fetch tools/list to confirm the new set is visible.
+            sock.write(
+              `${JSON.stringify({ jsonrpc: "2.0", id: 99, method: "tools/list" })}\n`,
+            );
+            phase = "after";
+            return;
+          }
+
+          if (frame.id === 1) {
+            // initialize response
+            const caps = (frame.result as { capabilities?: { tools?: { listChanged?: boolean } } })
+              ?.capabilities;
+            try {
+              expect(caps?.tools?.listChanged).toBe(true);
+            } catch (e) {
+              reject(e);
+              return;
+            }
+          }
+
+          if (frame.id === 2) {
+            firstListNames = (
+              (frame.result as { tools?: Array<{ name: string }> }).tools ?? []
+            ).map((t) => t.name);
+            sock.write(
+              `${JSON.stringify({
+                jsonrpc: "2.0",
+                id: 3,
+                method: "tools/call",
+                params: { name: "describe_tool_group", arguments: { groups: "tasks" } },
+              })}\n`,
+            );
+          }
+
+          if (frame.id === 99 && phase === "after") {
+            secondListNames = (
+              (frame.result as { tools?: Array<{ name: string }> }).tools ?? []
+            ).map((t) => t.name);
+            sock.end();
+            try {
+              expect(listChangedSeen).toBe(true);
+              expect(firstListNames).toEqual(["describe_tool_group"]);
+              expect(secondListNames.sort()).toEqual(
+                ["create_task", "describe_tool_group", "list_tasks"].sort(),
+              );
+              resolve();
+            } catch (e) {
+              reject(e);
+            }
+          }
+        }
+      });
+      sock.on("error", reject);
+      sock.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" })}\n`);
+      sock.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" })}\n`);
+    });
+
+    release();
+    await callPromise;
+  });
 });
 
 describe("ClaudeCliClient internals", () => {

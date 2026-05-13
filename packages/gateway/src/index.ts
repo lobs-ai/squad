@@ -499,6 +499,20 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
             throw new Error(msg);
           }
         },
+        // Lets the MCP bridge refresh its tool catalog mid-run when the
+        // model unlocks a lazy group via `describe_tool_group`. Resolves
+        // the live session, expands its unlocked groups against the
+        // ToolGroupRegistry, and returns the matching ToolDefinitions
+        // straight from the live registry — so plugin-contributed tools
+        // unlock without any extra wiring.
+        getActiveTools: () => {
+          const ctx = currentAgentContext();
+          if (!ctx) return undefined;
+          const unlocked = sessions.getUnlockedGroups(ctx.sessionId);
+          const names = new Set<string>(toolGroups.activeToolNames(unlocked));
+          names.add("describe_tool_group");
+          return toolRegistry.getDefinitions([...names]);
+        },
       },
     };
   }

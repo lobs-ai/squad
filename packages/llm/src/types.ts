@@ -377,6 +377,20 @@ export interface ClientConfig {
         name: string,
         params: Record<string, unknown>,
       ) => Promise<string>;
+      /**
+       * Returns the squad tools currently in scope for the active session.
+       * Called after every MCP `tools/call` so the bridge can detect
+       * dynamic catalog changes — when this returns a list that differs
+       * from what the bridge previously advertised, the bridge sends a
+       * `notifications/tools/list_changed` and the CLI re-fetches
+       * `tools/list`. Lets `describe_tool_group` make its unlocked tools
+       * callable inside the same CLI run instead of forcing the user to
+       * send another message just to refresh the catalog.
+       *
+       * Return `undefined` to opt out — the bridge then falls back to the
+       * static per-call snapshot built from `params.tools`.
+       */
+      getActiveTools?: () => ToolDefinition[] | undefined;
     };
   };
 }

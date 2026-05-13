@@ -301,6 +301,7 @@ export function createClient(model: string, config?: ClientConfig): LLMClient {
       oauthToken: getKey("claude-cli") ?? process.env.CLAUDE_CODE_OAUTH_TOKEN,
       ...(opts?.allowedTools !== undefined ? { allowedTools: opts.allowedTools } : {}),
       ...(opts?.executeTool !== undefined ? { executeTool: opts.executeTool } : {}),
+      ...(opts?.getActiveTools !== undefined ? { getActiveTools: opts.getActiveTools } : {}),
     });
   }
 

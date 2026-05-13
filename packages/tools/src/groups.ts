@@ -93,7 +93,9 @@ export function formatGroupIndexForPrompt(lazyGroups: readonly ToolGroup[]): str
     "You have these tools — they're real and available. Their schemas are",
     "kept out of the prompt this turn to save context, that's all. To make",
     "them callable, invoke `describe_tool_group` with one or more group",
-    "names; the schemas come online next turn.",
+    "names; the schemas come online immediately and you can call them on",
+    "your very next tool call — no need to wait for the user to send",
+    "another message.",
     "",
     "- **One group:** `describe_tool_group({groups: \"cron\"})`",
     "- **Several at once:** `describe_tool_group({groups: [\"cron\", \"tasks\"]})`",
@@ -103,8 +105,9 @@ export function formatGroupIndexForPrompt(lazyGroups: readonly ToolGroup[]): str
     `  \`describe_tool_group({groups: ${JSON.stringify(allNames)}})\`.`,
     "",
     "Never tell the user you don't have a tool when its group is listed",
-    "here. Unlock it and use it. When in doubt, unlock — the cost is one",
-    "turn, the cost of *not* unlocking is failing the user's request.",
+    "here. Unlock it and use it in the same response. When in doubt,",
+    "unlock — the cost is one tool call, the cost of *not* unlocking is",
+    "failing the user's request.",
     "",
     "<tool_groups>",
   ];
@@ -135,11 +138,12 @@ export class DescribeToolGroupTool extends BaseTool<DescribeInput> {
   readonly name = "describe_tool_group";
   readonly description = [
     "Load guidance and unlock tools for one or more lazy tool groups.",
-    "The unlocked tools become callable on the next turn — this turn you",
-    "only get the guidance text. Pass a single name or an array of names",
-    "from the <tool_groups> index in the system prompt; batch-unlock by",
-    "passing an array. If the user asks you to use, list, or demonstrate",
-    "all your tools, pass every group name from the index in one call.",
+    "The unlocked tools become callable immediately — keep going in this",
+    "same response, you do NOT need to wait for the user to send another",
+    "message. Pass a single name or an array of names from the",
+    "<tool_groups> index in the system prompt; batch-unlock by passing an",
+    "array. If the user asks you to use, list, or demonstrate all your",
+    "tools, pass every group name from the index in one call.",
   ].join("\n");
   readonly inputSchema = {
     type: "object" as const,
@@ -206,7 +210,7 @@ export class DescribeToolGroupTool extends BaseTool<DescribeInput> {
     }
 
     sections.push(
-      `_Unlocked: ${unlocked.join(", ")}. Tools become callable on the next turn._`,
+      `_Unlocked: ${unlocked.join(", ")}. Tools are callable now — keep going in this same response._`,
     );
     if (skipped.length > 0) sections.push(`_Skipped: ${skipped.join(", ")}._`);
 

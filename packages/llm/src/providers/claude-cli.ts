@@ -195,6 +195,16 @@ export interface ClaudeCliClientOptions {
    * Typically wired to `toolRegistry.execute` by the gateway.
    */
   executeTool?: SquadToolExecutor;
+  /**
+   * Returns the squad tools currently in scope for the active session.
+   * Called after every MCP `tools/call` so the bridge can detect dynamic
+   * catalog changes (e.g. describe_tool_group unlocking a lazy group):
+   * when the result differs from what the bridge currently advertises,
+   * the bridge sends `notifications/tools/list_changed` and the CLI
+   * re-queries `tools/list` mid-run. Without this, the unlocked tools
+   * stay invisible to the CLI until the next gateway turn.
+   */
+  getActiveTools?: () => ToolDefinition[] | undefined;
 }
 
 /**
@@ -303,14 +313,19 @@ sock.pipe(process.stdout);
 `;
 
 /**
- * Run the MCP JSON-RPC protocol on a stream pair, exposing the given tool
- * defs and routing `tools/call` requests through `executor`. Designed to be
- * invoked on each accepted connection of a per-call Unix socket — short
- * lifetime, no shared state.
+ * Run the MCP JSON-RPC protocol on a stream pair, exposing the tools
+ * returned by `getTools` (called fresh on every `tools/list`) and routing
+ * `tools/call` requests through `executor`. Designed to be invoked on
+ * each accepted connection of a per-call Unix socket — short lifetime,
+ * no shared state.
+ *
+ * The connection advertises `tools.listChanged: true`, so the bridge can
+ * send `notifications/tools/list_changed` later when the underlying tool
+ * set grows (e.g. an unlocked tool group) and the CLI will re-fetch.
  */
 function runMcpServerOnConnection(
   socket: Socket,
-  tools: ToolDefinition[],
+  getTools: () => ToolDefinition[],
   executor: SquadToolExecutor,
 ): void {
   let buffer = "";
@@ -346,7 +361,7 @@ function runMcpServerOnConnection(
         id,
         result: {
           protocolVersion: "2024-11-05",
-          capabilities: { tools: { listChanged: false } },
+          capabilities: { tools: { listChanged: true } },
           serverInfo: { name: "squad-mcp-bridge", version: "0.0.0" },
         },
       });
@@ -359,7 +374,7 @@ function runMcpServerOnConnection(
         jsonrpc: "2.0",
         id,
         result: {
-          tools: tools.map((t) => ({
+          tools: getTools().map((t) => ({
             name: t.name,
             description: t.description,
             inputSchema: t.input_schema,
@@ -422,9 +437,22 @@ interface BridgeResources {
  * provided tool set + executor. The agent loop is one-shot so we expect
  * at most one connection per call, but the server happily handles more.
  */
+/**
+ * `refreshTools`, when supplied, runs after every successful
+ * `tools/call`. It is expected to:
+ *  1. recompute the current tool set,
+ *  2. update whatever closure `getTools` reads,
+ *  3. return `true` iff the set just changed.
+ *
+ * On `true` the bridge fans `notifications/tools/list_changed` out to
+ * every connected client so the CLI re-queries `tools/list`. This is how
+ * `describe_tool_group` makes its unlocked tools callable within the
+ * same CLI run instead of after the next gateway turn.
+ */
 function setupMcpBridge(
-  tools: ToolDefinition[],
+  getTools: () => ToolDefinition[],
   executor: SquadToolExecutor,
+  refreshTools: (() => boolean) | undefined,
   onError: (err: Error) => void,
 ): BridgeResources {
   const tempDir = mkdtempSync(join(tmpdir(), "squad-mcp-"));
@@ -446,6 +474,31 @@ function setupMcpBridge(
     "utf8",
   );
 
+  const connections = new Set<Socket>();
+  const broadcastListChanged = (): void => {
+    const frame =
+      JSON.stringify({ jsonrpc: "2.0", method: "notifications/tools/list_changed" }) + "\n";
+    for (const conn of connections) {
+      try {
+        conn.write(frame);
+      } catch {
+        /* best-effort — client may have dropped */
+      }
+    }
+  };
+
+  const executorWithListRefresh: SquadToolExecutor = refreshTools
+    ? async (name, params) => {
+        const result = await executor(name, params);
+        try {
+          if (refreshTools()) broadcastListChanged();
+        } catch {
+          /* a bad refresh callback must not break the tool result */
+        }
+        return result;
+      }
+    : executor;
+
   // The bridge's client is the spawned `claude` subprocess, so its socket
   // connections come from outside this process's async context and Node
   // does not propagate AsyncLocalStorage across that boundary. The gateway
@@ -453,9 +506,11 @@ function setupMcpBridge(
   // `sessionId` to tool meta — without binding, that read returns
   // `undefined` and any tool that gates on sessionId (notably
   // describe_tool_group → sessions.unlockGroup) silently no-ops.
-  const boundExecutor = AsyncResource.bind(executor);
+  const boundExecutor = AsyncResource.bind(executorWithListRefresh);
   const socketServer = createServer((conn) => {
-    runMcpServerOnConnection(conn, tools, boundExecutor);
+    connections.add(conn);
+    conn.on("close", () => connections.delete(conn));
+    runMcpServerOnConnection(conn, getTools, boundExecutor);
   });
   socketServer.on("error", (err) => onError(err));
   socketServer.listen(socketPath);
@@ -466,6 +521,14 @@ function setupMcpBridge(
     } catch {
       /* ignore */
     }
+    for (const conn of connections) {
+      try {
+        conn.destroy();
+      } catch {
+        /* ignore */
+      }
+    }
+    connections.clear();
     try {
       rmSync(tempDir, { recursive: true, force: true });
     } catch {
@@ -949,6 +1012,9 @@ export class ClaudeCliClient implements LLMClient {
   private readonly timeoutMs: number;
   private readonly spawnFn: SpawnFn;
   private readonly executor: SquadToolExecutor | undefined;
+  private readonly activeToolsGetter:
+    | (() => ToolDefinition[] | undefined)
+    | undefined;
 
   constructor(options: ClaudeCliClientOptions = {}, spawnFn: SpawnFn = spawn) {
     this.oauthToken = options.oauthToken;
@@ -958,6 +1024,7 @@ export class ClaudeCliClient implements LLMClient {
     this.timeoutMs = options.timeoutMs ?? 10 * 60 * 1000;
     this.spawnFn = spawnFn;
     this.executor = options.executeTool;
+    this.activeToolsGetter = options.getActiveTools;
   }
 
   /**
@@ -1039,11 +1106,36 @@ export class ClaudeCliClient implements LLMClient {
 
     let bridge: BridgeResources | null = null;
     if (mcpTools.length > 0 && this.executor) {
-      bridge = setupMcpBridge(mcpTools, this.executor, (err) => {
-        // Log via stderr — the gateway scrapes child stderr already, so
-        // the error surfaces in the same channel as other CLI diagnostics.
-        process.stderr.write(`squad-mcp-bridge: ${err.message}\n`);
-      });
+      // Hold the bridge's MCP tool set in a mutable ref so the
+      // `getActiveTools` callback can grow it mid-run (e.g. when the
+      // model unlocks a lazy tool group via `describe_tool_group`) and
+      // the next `tools/list` reflects the change.
+      const mcpToolsRef: { current: ToolDefinition[] } = { current: mcpTools };
+      const getter = this.activeToolsGetter;
+      const refreshTools = getter
+        ? (): boolean => {
+            const all = getter();
+            if (!all) return false;
+            const next = all.filter((t) => !SQUAD_TO_CC_TOOL_MAP[t.name]);
+            const prev = mcpToolsRef.current;
+            if (prev.length === next.length) {
+              const prevNames = new Set(prev.map((t) => t.name));
+              if (next.every((t) => prevNames.has(t.name))) return false;
+            }
+            mcpToolsRef.current = next;
+            return true;
+          }
+        : undefined;
+      bridge = setupMcpBridge(
+        () => mcpToolsRef.current,
+        this.executor,
+        refreshTools,
+        (err) => {
+          // Log via stderr — the gateway scrapes child stderr already, so
+          // the error surfaces in the same channel as other CLI diagnostics.
+          process.stderr.write(`squad-mcp-bridge: ${err.message}\n`);
+        },
+      );
     }
 
     // The model can actually do something this turn iff some built-in is
