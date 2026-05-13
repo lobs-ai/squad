@@ -124,6 +124,13 @@ export interface PluginHostDeps {
    * each plugin.
    */
   runtime: () => PluginRuntimeInfo;
+  /**
+   * Resolve a bare specifier (e.g. `"@squad/plugin-google-auth"`) to an
+   * absolute file path. Used by `loadMany` to discover an installed plugin's
+   * manifest before importing. Defaults to Node's resolver scoped to this
+   * file; tests stub it to point at fixture plugins.
+   */
+  resolveModule?: (specifier: string) => string;
 }
 
 export interface LoadedPlugin {
@@ -195,7 +202,7 @@ export class PluginHost {
         ? entryPath
         : resolvePath(process.cwd(), entryPath)
       : null;
-    const manifest = absolute ? loadManifestNear(absolute) : null;
+    const manifest = absolute ? loadManifestNear(absolute)?.manifest ?? null : null;
 
     // Validate `requires` before importing, so missing prerequisites surface
     // a clear error rather than a cryptic runtime crash from inside the plugin.
@@ -351,6 +358,119 @@ export class PluginHost {
     );
     this.deps.onPluginChanged?.(this.toRecord(entry));
     return entry;
+  }
+
+  /**
+   * Load a batch of plugin entries in dependency order.
+   *
+   * Behavior:
+   *  - Reads each entry's manifest up front (handles bare specifiers too).
+   *  - Auto-loads any `requires` plugin that's installed but not listed in
+   *    `entries`. Plugins added this way receive an empty config.
+   *  - Topologically sorts by `requires` so dependencies always load first.
+   *  - Detects cycles: each plugin in a cycle is recorded as a failure with
+   *    a message naming the cycle (`A → B → A`). The rest of the graph still
+   *    loads.
+   *  - Unresolvable deps (declared in `requires`, not in the batch, not
+   *    installed) are not auto-added; the existing pre-flight check in
+   *    `load()` then fails the dependent plugin with its own clear error.
+   *
+   * Returns the same `{ source, error }` shape the gateway boot loop used to
+   * collect into `pluginLoadFailures`.
+   */
+  async loadMany(
+    entries: ReadonlyArray<string | { path: string; config?: Record<string, unknown> }>,
+  ): Promise<Array<{ source: string; error: string }>> {
+    const failures: Array<{ source: string; error: string }> = [];
+
+    const plan: PluginPlanEntry[] = entries.map((e) => {
+      const path = typeof e === "string" ? e : e.path;
+      const config: Record<string, unknown> =
+        typeof e === "string" ? {} : ((e.config ?? {}) as Record<string, unknown>);
+      const found = readManifestForEntry(path);
+      return { path, config, manifest: found?.manifest ?? null, autoLoaded: false };
+    });
+
+    // Index by manifest id so we can detect when a `requires` is already in
+    // the batch versus needs auto-discovery.
+    const byManifestId = new Map<string, PluginPlanEntry>();
+    for (const p of plan) if (p.manifest) byManifestId.set(p.manifest.id, p);
+
+    // Auto-discover installed-but-unlisted deps. Walk a queue so we pick up
+    // transitive auto-loads (auth → drive → some-shared-thing).
+    const resolveModule =
+      this.deps.resolveModule ?? createRequire(import.meta.url).resolve.bind(createRequire(import.meta.url));
+    const queue: PluginPlanEntry[] = plan.filter((p) => p.manifest !== null);
+    while (queue.length > 0) {
+      const p = queue.shift()!;
+      if (!p.manifest) continue;
+      for (const req of p.manifest.requires) {
+        const reqId = parseRequiresId(req);
+        if (byManifestId.has(reqId)) continue;
+        const resolved = tryResolvePluginById(reqId, resolveModule);
+        if (!resolved) continue; // existing load()-time check will surface this
+        const autoEntry: PluginPlanEntry = {
+          path: resolved.entry,
+          config: {},
+          manifest: resolved.manifest,
+          autoLoaded: true,
+        };
+        plan.push(autoEntry);
+        byManifestId.set(resolved.manifest.id, autoEntry);
+        queue.push(autoEntry);
+        this.deps.logger.info(
+          { id: resolved.manifest.id, requiredBy: p.manifest.id },
+          "plugin auto-loaded to satisfy requires",
+        );
+      }
+    }
+
+    // Build the keyed plan used by the sort. Entries without a manifest get a
+    // synthetic id so they still appear in `order`; they have no declared deps
+    // and so always sort cleanly to the front.
+    const idToEntry = new Map<string, PluginPlanEntry>();
+    const idOf = (p: PluginPlanEntry, i: number): string =>
+      p.manifest?.id ?? `__nomanifest:${i}:${p.path}`;
+    plan.forEach((p, i) => idToEntry.set(idOf(p, i), p));
+
+    const { order, unresolved, cyclePath } = topoSortPlugins(idToEntry);
+
+    // Fail every plugin that couldn't be scheduled. The unresolved set
+    // includes both members of a cycle and anything transitively pointing at
+    // one — they all share the same failure mode (their deps will never
+    // resolve), so flag them all.
+    const unresolvedSet = new Set(unresolved);
+    for (const id of unresolved) {
+      const p = idToEntry.get(id);
+      if (!p) continue;
+      const cycle = cyclePath.get(id);
+      const message = cycle
+        ? `plugin "${p.manifest?.id ?? p.path}" is part of a requires cycle: ${cycle.join(" → ")}`
+        : `plugin "${p.manifest?.id ?? p.path}" cannot load: depends on a plugin in a requires cycle`;
+      const err = new PluginLoadError({
+        code: "register_failed",
+        pluginSource: p.path,
+        ...(p.manifest ? { pluginId: p.manifest.id } : {}),
+        message,
+      });
+      this.recordFailure(err, p.config, p.manifest?.id);
+      failures.push({ source: p.path, error: message });
+    }
+
+    for (const id of order) {
+      if (unresolvedSet.has(id)) continue; // belt + suspenders; topo skipped these
+      const p = idToEntry.get(id);
+      if (!p) continue;
+      try {
+        await this.load(p.path, p.config);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.deps.logger.error({ err, pluginPath: p.path }, "failed to load plugin");
+        failures.push({ source: p.path, error: msg });
+      }
+    }
+
+    return failures;
   }
 
   /**
@@ -688,7 +808,7 @@ export class PluginHost {
  * the entry's own directory and one parent — any deeper and we'd be picking
  * up unrelated manifests in monorepos. Returns null when nothing is found.
  */
-function loadManifestNear(entryAbs: string): PluginManifest | null {
+function loadManifestNear(entryAbs: string): { manifest: PluginManifest; dir: string } | null {
   const candidates = [
     join(dirname(entryAbs), "squad.plugin.json"),
     join(dirname(dirname(entryAbs)), "squad.plugin.json"),
@@ -697,11 +817,163 @@ function loadManifestNear(entryAbs: string): PluginManifest | null {
     if (!existsSync(c)) continue;
     try {
       const raw = JSON.parse(readFileSync(c, "utf8"));
-      return parsePluginManifest(raw);
+      return { manifest: parsePluginManifest(raw), dir: dirname(c) };
     } catch (err) {
       moduleLog.warn({ err, path: c }, "plugin manifest exists but failed to parse");
       return null;
     }
   }
   return null;
+}
+
+/**
+ * Strip the version range off a `requires` entry. `"@squad/foo@^1"` → `"@squad/foo"`,
+ * `"@squad/foo"` → `"@squad/foo"`. Matches the parsing in `satisfiesRequires`.
+ */
+function parseRequiresId(req: string): string {
+  const at = req.lastIndexOf("@");
+  if (at <= 0) return req;
+  return req.slice(0, at);
+}
+
+/**
+ * Resolve a plugin entry path to its manifest. Handles absolute paths, relative
+ * paths, and bare specifiers — for bare specifiers, uses Node's module resolver
+ * to find the package on disk so we can read the manifest before importing.
+ * Returns null when no manifest is found (back-compat for unannotated plugins).
+ */
+function readManifestForEntry(entryPath: string): { manifest: PluginManifest; dir: string } | null {
+  const looksLikePath =
+    isAbsolute(entryPath) ||
+    entryPath.startsWith("./") ||
+    entryPath.startsWith("../");
+  let absolute: string | null = null;
+  if (looksLikePath) {
+    absolute = isAbsolute(entryPath) ? entryPath : resolvePath(process.cwd(), entryPath);
+  } else {
+    try {
+      const require_ = createRequire(import.meta.url);
+      absolute = require_.resolve(entryPath);
+    } catch {
+      return null;
+    }
+  }
+  return loadManifestNear(absolute);
+}
+
+/**
+ * Locate an installed plugin package by its declared id (e.g.
+ * `"@squad/plugin-google-auth"`) and compute the entry path the host should
+ * import. Used to auto-load a `requires` entry that's installed but not
+ * explicitly listed in `config.plugins`. Returns null when the package can't
+ * be resolved or has no manifest.
+ */
+function tryResolvePluginById(
+  id: string,
+  resolver: (specifier: string) => string,
+): { entry: string; manifest: PluginManifest } | null {
+  let resolved: string;
+  try {
+    resolved = resolver(id);
+  } catch {
+    return null;
+  }
+  const found = loadManifestNear(resolved);
+  if (!found) return null;
+  if (found.manifest.id !== id) return null;
+  return { entry: join(found.dir, found.manifest.entry), manifest: found.manifest };
+}
+
+interface PluginPlanEntry {
+  path: string;
+  config: Record<string, unknown>;
+  manifest: PluginManifest | null;
+  autoLoaded: boolean;
+}
+
+/**
+ * Topologically sort plugin entries by their `requires` declarations.
+ * Returns `order` (ids in load order) plus `unresolved` (ids that couldn't be
+ * scheduled because they sit on a dependency cycle). Plugins without a
+ * manifest have no declared deps, so they always sort cleanly.
+ */
+function topoSortPlugins(
+  byId: Map<string, PluginPlanEntry>,
+): { order: string[]; unresolved: string[]; cyclePath: Map<string, string[]> } {
+  // For each id, the set of dep-ids that are ALSO in `byId` (out-of-graph deps
+  // get handled by the existing validation in load()).
+  const deps = new Map<string, Set<string>>();
+  for (const [id, entry] of byId) {
+    const set = new Set<string>();
+    if (entry.manifest) {
+      for (const req of entry.manifest.requires) {
+        const reqId = parseRequiresId(req);
+        if (byId.has(reqId)) set.add(reqId);
+      }
+    }
+    deps.set(id, set);
+  }
+
+  // Kahn's algorithm: nodes with no remaining deps go first.
+  const order: string[] = [];
+  const remaining = new Set(byId.keys());
+  const remainingDeps = new Map<string, Set<string>>();
+  for (const [id, set] of deps) remainingDeps.set(id, new Set(set));
+  while (remaining.size > 0) {
+    const ready: string[] = [];
+    for (const id of remaining) {
+      if (remainingDeps.get(id)!.size === 0) ready.push(id);
+    }
+    if (ready.length === 0) break; // remaining nodes form / depend on a cycle
+    // Sort by original insertion order so the load sequence is stable.
+    ready.sort((a, b) =>
+      Array.from(byId.keys()).indexOf(a) - Array.from(byId.keys()).indexOf(b),
+    );
+    for (const id of ready) {
+      order.push(id);
+      remaining.delete(id);
+      for (const [, set] of remainingDeps) set.delete(id);
+    }
+  }
+
+  // For each unresolved id, find a concrete cycle path so the error message
+  // names the offending plugins instead of a generic "cycle detected".
+  const cyclePath = new Map<string, string[]>();
+  for (const id of remaining) {
+    const path = findCycleFrom(id, deps);
+    if (path) cyclePath.set(id, path);
+  }
+
+  return { order, unresolved: Array.from(remaining), cyclePath };
+}
+
+/**
+ * DFS that returns a back-edge cycle reachable from `start`, or null if none.
+ * Uses tri-color marking: WHITE = unvisited, GRAY = on the active stack, BLACK
+ * = fully explored. A GRAY-hit while traversing is the cycle.
+ */
+function findCycleFrom(start: string, deps: Map<string, Set<string>>): string[] | null {
+  const WHITE = 0, GRAY = 1, BLACK = 2;
+  const color = new Map<string, number>();
+  const stack: string[] = [];
+
+  function dfs(node: string): string[] | null {
+    color.set(node, GRAY);
+    stack.push(node);
+    for (const d of deps.get(node) ?? []) {
+      const c = color.get(d) ?? WHITE;
+      if (c === GRAY) {
+        const i = stack.indexOf(d);
+        return stack.slice(i).concat(d);
+      }
+      if (c === WHITE) {
+        const found = dfs(d);
+        if (found) return found;
+      }
+    }
+    stack.pop();
+    color.set(node, BLACK);
+    return null;
+  }
+  return dfs(start);
 }

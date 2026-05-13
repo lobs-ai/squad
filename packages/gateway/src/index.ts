@@ -1047,22 +1047,11 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   });
 
   // Plugin / MCP load failures are surfaced to the doctor so the agent can
-  // diagnose them post-boot instead of relying on a log scrape.
+  // diagnose them post-boot instead of relying on a log scrape. loadMany
+  // handles dependency ordering (`requires`), auto-discovers installed deps
+  // that the user didn't explicitly list, and fails cycle members cleanly.
   const pluginLoadFailures: Array<{ source: string; error: string }> = [];
-  for (const entry of config.plugins) {
-    const pluginPath = typeof entry === "string" ? entry : entry.path;
-    const pluginConfig =
-      typeof entry === "string" ? {} : (entry.config as Record<string, unknown>);
-    try {
-      await plugins.load(pluginPath, pluginConfig);
-    } catch (err) {
-      logger.error({ err, pluginPath }, "failed to load plugin");
-      pluginLoadFailures.push({
-        source: pluginPath,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
+  pluginLoadFailures.push(...(await plugins.loadMany(config.plugins)));
 
   // After plugins finish loading, register their channels in the registry
   // and adopt their routines into the dashboard-visible routine store.

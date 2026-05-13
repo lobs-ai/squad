@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ToolRegistry, ToolGroupRegistry } from "@squad/tools";
@@ -271,6 +271,137 @@ describe("PluginHost", () => {
     delete (deps as Partial<PluginHostDeps>).registerHttpRoute;
     const host = new PluginHost(deps);
     await expect(host.load(path)).rejects.toThrow(/no HTTP server attached/);
+  });
+
+  describe("loadMany dependency ordering", () => {
+    // Each plugin lives in its own subdir with a sibling squad.plugin.json
+    // so loadManifestNear picks up the right manifest per entry.
+    function writeManifestedPlugin(
+      dir: string,
+      id: string,
+      requires: string[],
+      body: string,
+    ): string {
+      const sub = join(tmp, dir);
+      mkdirSync(sub, { recursive: true });
+      writeFileSync(join(sub, "entry.mjs"), body);
+      writeFileSync(
+        join(sub, "squad.plugin.json"),
+        JSON.stringify({
+          id,
+          name: id,
+          version: "0.0.1",
+          entry: "./entry.mjs",
+          exposes: ["skill"],
+          requires,
+        }),
+      );
+      return join(sub, "entry.mjs");
+    }
+
+    function recorderPlugin(id: string): string {
+      return `globalThis.__loadOrder = globalThis.__loadOrder ?? [];
+        export default {
+          id: "${id}", name: "${id}", version: "0.0.1", kinds: ["skill"],
+          register(api) {
+            globalThis.__loadOrder.push("${id}");
+            api.skills.register({ name: "${id}", systemPromptFragment: "x" });
+          },
+        };`;
+    }
+
+    beforeEach(() => {
+      (globalThis as Record<string, unknown>).__loadOrder = [];
+    });
+
+    it("loads dependencies before dependents even when listed in reverse order", async () => {
+      const a = writeManifestedPlugin("dep-a", "dep.a", [], recorderPlugin("dep.a"));
+      const b = writeManifestedPlugin("dep-b", "dep.b", ["dep.a"], recorderPlugin("dep.b"));
+      const c = writeManifestedPlugin("dep-c", "dep.c", ["dep.b"], recorderPlugin("dep.c"));
+      const host = new PluginHost(makeDeps());
+      const failures = await host.loadMany([c, b, a]);
+      expect(failures).toEqual([]);
+      expect((globalThis as Record<string, unknown>).__loadOrder).toEqual([
+        "dep.a",
+        "dep.b",
+        "dep.c",
+      ]);
+    });
+
+    it("preserves config-order for plugins that don't depend on each other", async () => {
+      const a = writeManifestedPlugin("indep-a", "indep.a", [], recorderPlugin("indep.a"));
+      const b = writeManifestedPlugin("indep-b", "indep.b", [], recorderPlugin("indep.b"));
+      const host = new PluginHost(makeDeps());
+      await host.loadMany([b, a]);
+      expect((globalThis as Record<string, unknown>).__loadOrder).toEqual([
+        "indep.b",
+        "indep.a",
+      ]);
+    });
+
+    it("fails both members of a requires cycle and still loads unrelated plugins", async () => {
+      const a = writeManifestedPlugin("cyc-a", "cyc.a", ["cyc.b"], recorderPlugin("cyc.a"));
+      const b = writeManifestedPlugin("cyc-b", "cyc.b", ["cyc.a"], recorderPlugin("cyc.b"));
+      const ok = writeManifestedPlugin("cyc-ok", "cyc.ok", [], recorderPlugin("cyc.ok"));
+      const host = new PluginHost(makeDeps());
+      const failures = await host.loadMany([a, b, ok]);
+      expect(failures.length).toBe(2);
+      const messages = failures.map((f) => f.error).join("\n");
+      expect(messages).toMatch(/cyc\.a/);
+      expect(messages).toMatch(/cyc\.b/);
+      expect(messages).toMatch(/cycle/i);
+      // Unrelated plugin still loaded.
+      expect((globalThis as Record<string, unknown>).__loadOrder).toEqual(["cyc.ok"]);
+      expect(host.list().map((d) => d.id)).toEqual(["cyc.ok"]);
+      // Cycle members appear as failed records.
+      const failedIds = host.failedRecords().map((r) => r.id).sort();
+      expect(failedIds).toEqual(["cyc.a", "cyc.b"]);
+    });
+
+    it("auto-loads an installed dependency that's not in the entry list", async () => {
+      const dep = writeManifestedPlugin(
+        "auto-dep",
+        "auto.dep",
+        [],
+        recorderPlugin("auto.dep"),
+      );
+      const user = writeManifestedPlugin(
+        "auto-user",
+        "auto.user",
+        ["auto.dep"],
+        recorderPlugin("auto.user"),
+      );
+      // resolveModule maps the bare id to the dep's entry file — same shape
+      // createRequire().resolve() would produce in production.
+      const resolveModule = (specifier: string) => {
+        if (specifier === "auto.dep") return dep;
+        throw new Error(`cannot resolve ${specifier}`);
+      };
+      const host = new PluginHost(makeDeps({ resolveModule }));
+      const failures = await host.loadMany([user]);
+      expect(failures).toEqual([]);
+      expect((globalThis as Record<string, unknown>).__loadOrder).toEqual([
+        "auto.dep",
+        "auto.user",
+      ]);
+    });
+
+    it("fails the dependent plugin when a required plugin is neither listed nor installed", async () => {
+      const user = writeManifestedPlugin(
+        "miss-user",
+        "miss.user",
+        ["miss.dep"],
+        recorderPlugin("miss.user"),
+      );
+      const resolveModule = (specifier: string) => {
+        throw new Error(`cannot resolve ${specifier}`);
+      };
+      const host = new PluginHost(makeDeps({ resolveModule }));
+      const failures = await host.loadMany([user]);
+      expect(failures).toHaveLength(1);
+      expect(failures[0]?.error).toMatch(/requires "miss\.dep" which is not loaded/);
+      expect((globalThis as Record<string, unknown>).__loadOrder).toEqual([]);
+    });
   });
 
   it("setEnabled / setConfig / reload notify onPluginChanged", async () => {
