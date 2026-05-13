@@ -327,6 +327,7 @@ function runMcpServerOnConnection(
   socket: Socket,
   getTools: () => ToolDefinition[],
   executor: SquadToolExecutor,
+  onToolsListServed?: () => void,
 ): void {
   let buffer = "";
   const write = (msg: Record<string, unknown>): void => {
@@ -381,6 +382,12 @@ function runMcpServerOnConnection(
           })),
         },
       });
+      // Signal that the CLI has just re-pulled the catalog. The bridge
+      // uses this to gate `tools/call` responses that triggered a
+      // `list_changed` — see setupMcpBridge — so the model's next
+      // assistant turn is built against the refreshed tool set instead
+      // of racing the notification.
+      onToolsListServed?.();
       return;
     }
 
@@ -487,13 +494,48 @@ function setupMcpBridge(
     }
   };
 
+  // Resolvers waiting for the CLI's next `tools/list`. The CLI processes
+  // `notifications/tools/list_changed` asynchronously, so without gating
+  // here the bridge's `tools/call` response races the refresh: the model
+  // sees the tool_result first, builds its next API call against the
+  // *stale* catalog, and Claude Code rejects the unlocked tool with
+  // "No such tool available". Holding the response until tools/list
+  // arrives (capped by a short timeout) makes the catalog refresh
+  // happen-before the next assistant turn.
+  let toolsListWaiters: Array<() => void> = [];
+  const onToolsListServed = (): void => {
+    const waiters = toolsListWaiters;
+    toolsListWaiters = [];
+    for (const w of waiters) w();
+  };
+  const TOOLS_LIST_WAIT_MS = 1500;
+  const waitForToolsListRefresh = (): Promise<void> =>
+    new Promise<void>((resolve) => {
+      let done = false;
+      const finish = (): void => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(finish, TOOLS_LIST_WAIT_MS);
+      toolsListWaiters.push(finish);
+    });
+
   const executorWithListRefresh: SquadToolExecutor = refreshTools
     ? async (name, params) => {
         const result = await executor(name, params);
+        let triggered = false;
         try {
-          if (refreshTools()) broadcastListChanged();
+          triggered = refreshTools();
+          if (triggered) broadcastListChanged();
         } catch {
           /* a bad refresh callback must not break the tool result */
+        }
+        if (triggered) {
+          // Wait for the CLI to actually re-pull tools/list (or time out)
+          // before letting the tool result reach the model.
+          await waitForToolsListRefresh();
         }
         return result;
       }
@@ -510,7 +552,7 @@ function setupMcpBridge(
   const socketServer = createServer((conn) => {
     connections.add(conn);
     conn.on("close", () => connections.delete(conn));
-    runMcpServerOnConnection(conn, getTools, boundExecutor);
+    runMcpServerOnConnection(conn, getTools, boundExecutor, onToolsListServed);
   });
   socketServer.on("error", (err) => onError(err));
   socketServer.listen(socketPath);

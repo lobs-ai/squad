@@ -922,8 +922,8 @@ describe("ClaudeCliClient MCP bridge (stage 2)", () => {
       const sock = connect(socketPath);
       sock.setEncoding("utf8");
       let buffer = "";
-      const frames: Record<string, unknown>[] = [];
-      let phase: "before" | "after" = "before";
+      // Frame-arrival order, tagged for ordering asserts below.
+      const order: string[] = [];
       let listChangedSeen = false;
       let firstListNames: string[] = [];
       let secondListNames: string[] = [];
@@ -936,20 +936,17 @@ describe("ClaudeCliClient MCP bridge (stage 2)", () => {
           buffer = buffer.slice(nl + 1);
           if (!line) continue;
           const frame = JSON.parse(line) as Record<string, unknown>;
-          frames.push(frame);
 
           if (frame.method === "notifications/tools/list_changed") {
             listChangedSeen = true;
-            // Re-fetch tools/list to confirm the new set is visible.
+            order.push("notification");
             sock.write(
               `${JSON.stringify({ jsonrpc: "2.0", id: 99, method: "tools/list" })}\n`,
             );
-            phase = "after";
             return;
           }
 
           if (frame.id === 1) {
-            // initialize response
             const caps = (frame.result as { capabilities?: { tools?: { listChanged?: boolean } } })
               ?.capabilities;
             try {
@@ -958,6 +955,7 @@ describe("ClaudeCliClient MCP bridge (stage 2)", () => {
               reject(e);
               return;
             }
+            continue;
           }
 
           if (frame.id === 2) {
@@ -972,18 +970,35 @@ describe("ClaudeCliClient MCP bridge (stage 2)", () => {
                 params: { name: "describe_tool_group", arguments: { groups: "tasks" } },
               })}\n`,
             );
+            continue;
           }
 
-          if (frame.id === 99 && phase === "after") {
+          if (frame.id === 3) {
+            order.push("toolsCallResponse");
+          }
+
+          if (frame.id === 99) {
+            order.push("toolsListResponse");
             secondListNames = (
               (frame.result as { tools?: Array<{ name: string }> }).tools ?? []
             ).map((t) => t.name);
+          }
+
+          if (order.includes("toolsCallResponse") && order.includes("toolsListResponse")) {
             sock.end();
             try {
               expect(listChangedSeen).toBe(true);
               expect(firstListNames).toEqual(["describe_tool_group"]);
               expect(secondListNames.sort()).toEqual(
                 ["create_task", "describe_tool_group", "list_tasks"].sort(),
+              );
+              // The whole point of the gating: the model only sees the
+              // describe_tool_group result *after* the CLI has been
+              // served the refreshed catalog. Otherwise the next API
+              // call races the refresh and Claude Code rejects the
+              // unlocked tool with "No such tool available".
+              expect(order.indexOf("toolsListResponse")).toBeLessThan(
+                order.indexOf("toolsCallResponse"),
               );
               resolve();
             } catch (e) {
