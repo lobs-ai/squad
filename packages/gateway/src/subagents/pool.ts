@@ -539,11 +539,16 @@ export class SubagentPool {
             runId,
             name: update.toolName,
             input: update.toolInput ?? {},
+            ...(update.toolUseId ? { llmToolUseId: update.toolUseId } : {}),
           });
-          const toolCallId = record?.id ?? update.toolUseId ?? update.toolName;
           if (record && update.toolUseId) {
             toolCallIdByUseId.set(update.toolUseId, record.id);
           }
+          // Broadcast with the LLM-side tool_use id when available so the
+          // dashboard can dedup against tool_use blocks in persisted
+          // messages (same fix as runs.ts).
+          const toolCallId =
+            update.toolUseId ?? record?.id ?? update.toolName;
           this.deps.broadcast.publish(`chat.tool_call/${sessionId}`, {
             sessionId,
             runId,
@@ -558,15 +563,15 @@ export class SubagentPool {
             input: update.toolInput ?? {},
           });
         } else if (update.type === "tool_result" && update.toolName) {
-          const toolCallId = update.toolUseId
+          const recordId = update.toolUseId
             ? toolCallIdByUseId.get(update.toolUseId)
             : undefined;
           const isError = update.isError === true;
-          if (toolCallId) {
-            this.deps.toolCalls?.complete(toolCallId, update.result ?? null, isError);
+          if (recordId) {
+            this.deps.toolCalls?.complete(recordId, update.result ?? null, isError);
             if (update.toolUseId) toolCallIdByUseId.delete(update.toolUseId);
           }
-          const broadcastId = toolCallId ?? update.toolUseId ?? "";
+          const broadcastId = update.toolUseId ?? recordId ?? "";
           this.deps.broadcast.publish(`chat.tool_result/${sessionId}`, {
             sessionId,
             runId,

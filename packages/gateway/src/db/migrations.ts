@@ -244,6 +244,22 @@ const migrations: Migration[] = [
       FROM messages m;
     `,
   },
+  {
+    // Lets us correlate persisted tool_calls rows to the LLM-side tool_use
+    // block id that triggered them. Needed so the dashboard can dedup
+    // tool_calls fetched on session load against tool_use blocks already
+    // rendered from persisted messages — and so claude-cli's tool calls
+    // (which never appear as tool_use blocks in any message, because the
+    // CLI runs its own internal loop) can still be rendered after refresh
+    // by looking them up here. Nullable: legacy rows from before this
+    // migration have no LLM-side id.
+    id: 13,
+    name: "tool_calls_llm_use_id",
+    up: `
+      ALTER TABLE tool_calls ADD COLUMN llm_tool_use_id TEXT;
+      CREATE INDEX idx_tool_calls_llm_use_id ON tool_calls(llm_tool_use_id);
+    `,
+  },
 ];
 
 export function runMigrations(db: DatabaseHandle): void {

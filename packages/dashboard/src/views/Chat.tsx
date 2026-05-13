@@ -67,10 +67,16 @@ export function Chat(): JSX.Element {
     models,
     chatError,
     clearChatError,
+    connectionStatus,
   } = useGateway();
   const branding = useBranding();
   const [drawer, setDrawer] = useState<Drawer>(null);
-  const [composer, setComposer] = useState("");
+  // Persist per-session so a refresh (or a brief reconnect that remounts
+  // the page) doesn't drop whatever the user was typing. Keyed on the
+  // session id so multiple chats keep independent drafts.
+  const composerKey = activeSession ? `squad-composer-${activeSession.id}` : "squad-composer-none";
+  const [composer, setComposerRaw] = usePersistedState(composerKey, "");
+  const setComposer = setComposerRaw as (v: string) => void;
   const [sending, setSending] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -170,6 +176,10 @@ export function Chat(): JSX.Element {
 
   const submit = async (): Promise<void> => {
     if (!composer.trim() || sending) return;
+    // Don't even try while the socket is down — the request would reject
+    // with "not connected" and the user would just see a generic error
+    // banner. The disconnected banner already tells them why.
+    if (connectionStatus !== "open") return;
     setSending(true);
     try {
       await sendChat(composer);
@@ -391,6 +401,28 @@ export function Chat(): JSX.Element {
           </div>
         </div>
         <div ref={transcriptRef} className="grow" style={{ overflow: "auto", padding: "16px 24px" }}>
+          {connectionStatus !== "open" && (
+            <div
+              style={{
+                marginBottom: 16,
+                padding: 10,
+                borderRadius: 4,
+                border: "1px solid color-mix(in oklab, var(--warn) 45%, var(--border))",
+                background: "color-mix(in oklab, var(--warn) 8%, var(--bg))",
+                fontSize: "var(--t-sm)",
+              }}
+            >
+              <div className="row gap-2">
+                <Icon name="warn" size={12} style={{ color: "var(--warn)" }} />
+                <span className="strong" style={{ color: "var(--warn)" }}>
+                  {connectionStatus === "reconnecting" ? "reconnecting…" : "disconnected"}
+                </span>
+                <span className="hint">
+                  your draft is saved — hit send once the gateway is back.
+                </span>
+              </div>
+            </div>
+          )}
           {chatError && (
             <div
               style={{
@@ -470,8 +502,17 @@ export function Chat(): JSX.Element {
             <div className="row gap-2" style={{ marginTop: 6 }}>
               <span className="hint">⌘↵ to send</span>
               <span className="spacer" />
-              <button type="submit" className="btn primary sm" disabled={sending || !composer.trim()}>
-                {sending ? "sending…" : "send"}
+              <button
+                type="submit"
+                className="btn primary sm"
+                disabled={sending || !composer.trim() || connectionStatus !== "open"}
+                title={connectionStatus !== "open" ? "waiting for gateway connection" : undefined}
+              >
+                {sending
+                  ? "sending…"
+                  : connectionStatus === "reconnecting"
+                    ? "reconnecting…"
+                    : "send"}
               </button>
             </div>
           </form>

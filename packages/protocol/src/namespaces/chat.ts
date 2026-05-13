@@ -63,6 +63,35 @@ export const chatHistoryParams = z.object({
 });
 export const chatHistoryResult = z.object({ messages: z.array(messageRecordSchema) });
 
+// chat.tool_calls — persisted tool-call audit trail for a session. The
+// dashboard fetches this on session load to hydrate its in-memory liveTools
+// after a refresh. Native models also persist tool_use blocks in their
+// assistant messages, so those are deduplicated client-side by matching
+// `llmToolUseId` against the `tool_use.id` in the message stream. For
+// providers that run their own agent loop (claude-cli), this is the only
+// place tool activity is recoverable post-refresh.
+export const toolCallRecordSchema = z.object({
+  id: z.string(),
+  sessionId: z.string(),
+  runId: z.string(),
+  name: z.string(),
+  input: z.unknown(),
+  result: z.unknown(),
+  isError: z.boolean(),
+  status: z.enum(["pending", "approved", "denied", "completed", "failed"]),
+  createdAt: z.string(),
+  llmToolUseId: z.string().optional(),
+});
+export type ToolCallRecord = z.infer<typeof toolCallRecordSchema>;
+
+export const chatToolCallsParams = z.object({
+  sessionId: z.string(),
+  limit: z.number().int().positive().max(1000).default(500),
+});
+export const chatToolCallsResult = z.object({
+  toolCalls: z.array(toolCallRecordSchema),
+});
+
 // chat.cancel — request that the active run for `sessionId` stop at the next
 // safe checkpoint (between LLM turns / tool batches). The agent loop honors
 // the signal cooperatively; in-flight tool calls finish first.
@@ -77,6 +106,7 @@ export const chatCancelResult = z.object({
 export const chatMethods = {
   "chat.send": { params: chatSendParams, result: chatSendResult },
   "chat.history": { params: chatHistoryParams, result: chatHistoryResult },
+  "chat.tool_calls": { params: chatToolCallsParams, result: chatToolCallsResult },
   "chat.cancel": { params: chatCancelParams, result: chatCancelResult },
 } as const;
 

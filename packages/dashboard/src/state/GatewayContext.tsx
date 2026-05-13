@@ -8,7 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { BrowserProtocolClient } from "../protocol-client.js";
+import { BrowserProtocolClient, type ConnectionStatus } from "../protocol-client.js";
 import type {
   ApprovalRecord,
   Execution,
@@ -159,6 +159,12 @@ export interface ActivityItem {
 
 export interface GatewayState {
   client: BrowserProtocolClient;
+  /**
+   * Live WebSocket status. "open" is the steady state; "reconnecting" means
+   * the socket dropped and the client is retrying with backoff — the Chat
+   * banner reads this to tell the user why their send button is greyed out.
+   */
+  connectionStatus: ConnectionStatus;
   squad: SquadIdentity | null;
   branding: Branding;
   peers: PeerRecord[];
@@ -456,6 +462,9 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
   const [chatError, setChatError] = useState<{ message: string; at: string } | null>(null);
   const [subagentTree, setSubagentTree] = useState<SubagentTreeNode | null>(null);
   const [unreadLogErrors, setUnreadLogErrors] = useState<number>(0);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>(
+    () => client.getStatus(),
+  );
   const subscribedRef = useRef<Set<string>>(new Set());
 
   const refreshSessions = useCallback(async () => {
@@ -721,6 +730,64 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     refreshFullConfig,
   ]);
 
+  // Track the live WebSocket status and re-sync after a reconnect. The
+  // client replays subscriptions itself, so we only need to repull the
+  // resting state that may have diverged while the socket was down
+  // (active session messages, pending Q/A, etc.). Without this a
+  // mid-disconnect agent reply would land but never make it to the UI,
+  // since the client missed those event frames entirely.
+  useEffect(() => {
+    let prev: ConnectionStatus = client.getStatus();
+    const off = client.onConnectionChange((status) => {
+      setConnectionStatus(status);
+      if (status === "open" && prev === "reconnecting") {
+        // Reset the typing indicator — any in-flight run may have completed
+        // (or errored) while we were offline; the refetch below restores truth.
+        setAwaitingResponse(false);
+        setStreaming("");
+        void refreshSessions();
+        void refreshPending();
+      }
+      prev = status;
+    });
+    return off;
+  }, [client, refreshSessions, refreshPending]);
+
+  // When the socket reconnects, repull the active session's transcript +
+  // tasks so anything the agent emitted while we were offline shows up. We
+  // key this on activeSessionId so switching sessions while disconnected
+  // still hydrates the right one once we're back online.
+  useEffect(() => {
+    if (connectionStatus !== "open") return;
+    if (!activeSessionId) return;
+    let cancelled = false;
+    void (async () => {
+      const [hist, taskList] = await Promise.all([
+        tryRequest(
+          () => client.request("chat.history", { sessionId: activeSessionId, limit: 200 }),
+          null as null | { messages: MessageRecord[] },
+        ),
+        tryRequest(
+          () =>
+            client
+              .request("tasks.list", { sessionId: activeSessionId, includeDeleted: false })
+              .then((r) => r.tasks as Task[]),
+          null as Task[] | null,
+        ),
+      ]);
+      if (cancelled) return;
+      if (hist) setMessages(hist.messages);
+      if (taskList) setTasks(taskList);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // We deliberately only refire on a status transition to "open", not on
+    // activeSessionId changes — the per-session loader effect already
+    // handles those.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionStatus]);
+
   // Periodic health refresh — drives uptime + session counts in the status bar.
   useEffect(() => {
     const t = setInterval(() => {
@@ -790,7 +857,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
     setSessionApprovals([]);
     let cancelled = false;
     void (async () => {
-      const [hist, taskList] = await Promise.all([
+      const [hist, taskList, toolCallsRes] = await Promise.all([
         tryRequest(
           () => client.request("chat.history", { sessionId: activeSessionId, limit: 200 }),
           { messages: [] as MessageRecord[] },
@@ -802,10 +869,47 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
               .then((r) => r.tasks as Task[]),
           [] as Task[],
         ),
+        // Hydrate persisted tool-call audit trail so refresh doesn't drop
+        // tool activity from providers that ran their own internal loop
+        // (claude-cli). Native models' tool_use blocks land in messages
+        // and render from there; buildRows dedups via llmToolUseId.
+        tryRequest(
+          () =>
+            client.request("chat.tool_calls", {
+              sessionId: activeSessionId,
+              limit: 500,
+            }),
+          { toolCalls: [] as Array<import("@squad/protocol").ToolCallRecord> },
+        ),
       ]);
       if (cancelled) return;
       setMessages(hist.messages);
       setTasks(taskList);
+      // Flatten persisted tool calls into the live-event timeline. Each
+      // record becomes a call event plus (if completed) a result event,
+      // keyed by the LLM-side tool_use id so buildRows' seenToolUseIds
+      // dedup catches anything already in a persisted assistant message.
+      const hydrated: LiveToolEvent[] = [];
+      for (const tc of toolCallsRes.toolCalls) {
+        const id = tc.llmToolUseId ?? tc.id;
+        hydrated.push({
+          kind: "call",
+          toolCallId: id,
+          name: tc.name,
+          input: tc.input,
+          at: tc.createdAt,
+        });
+        if (tc.status === "completed" || tc.status === "failed") {
+          hydrated.push({
+            kind: "result",
+            toolCallId: id,
+            result: tc.result,
+            isError: tc.isError,
+            at: tc.createdAt,
+          });
+        }
+      }
+      setLiveTools(hydrated);
     })();
     void refreshSessionQuestions(activeSessionId);
     void refreshSessionApprovals(activeSessionId);
@@ -1252,6 +1356,7 @@ export function GatewayProvider({ client, children }: ProviderProps): JSX.Elemen
 
   const value: GatewayState = {
     client,
+    connectionStatus,
     squad,
     branding,
     peers,

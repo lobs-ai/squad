@@ -386,28 +386,38 @@ export async function runChatTurn(
             runId,
             name: update.toolName,
             input: update.toolInput ?? {},
+            ...(update.toolUseId ? { llmToolUseId: update.toolUseId } : {}),
           });
           if (update.toolUseId) toolCallIdByUseId.set(update.toolUseId, record.id);
+          // Broadcast with the LLM-side tool_use id when available so the
+          // dashboard's dedup logic can match it against `tool_use.id`
+          // blocks already rendered from persisted assistant messages.
+          // Fall back to the row UUID for tool calls without an LLM-side
+          // id (defensive — shouldn't happen for normal LLM-driven runs).
+          const broadcastId = update.toolUseId ?? record.id;
           deps.broadcast.publish(`chat.tool_call/${options.sessionId}`, {
             sessionId: options.sessionId,
             runId,
-            toolCallId: record.id,
+            toolCallId: broadcastId,
             name: update.toolName,
             input: update.toolInput ?? {},
           });
         } else if (update.type === "tool_result" && update.toolName) {
-          const toolCallId = update.toolUseId
+          const recordId = update.toolUseId
             ? toolCallIdByUseId.get(update.toolUseId)
             : undefined;
           const isError = update.isError === true;
-          if (toolCallId) {
-            deps.toolCalls.complete(toolCallId, update.result ?? null, isError);
+          if (recordId) {
+            deps.toolCalls.complete(recordId, update.result ?? null, isError);
             if (update.toolUseId) toolCallIdByUseId.delete(update.toolUseId);
           }
+          // Mirror the call event: prefer the LLM-side id so call/result
+          // pair up by the same key the dashboard uses for dedup.
+          const broadcastId = update.toolUseId ?? recordId ?? "";
           deps.broadcast.publish(`chat.tool_result/${options.sessionId}`, {
             sessionId: options.sessionId,
             runId,
-            toolCallId: toolCallId ?? "",
+            toolCallId: broadcastId,
             result: update.result,
             ...(isError ? { isError: true } : {}),
           });

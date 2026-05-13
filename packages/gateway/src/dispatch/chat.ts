@@ -177,6 +177,11 @@ export function registerChatMethods(dispatcher: Dispatcher, deps: ChatDeps): voi
     return { messages };
   });
 
+  dispatcher.register("chat.tool_calls", async (params) => {
+    const toolCalls = deps.toolCalls.listForSession(params.sessionId, params.limit);
+    return { toolCalls };
+  });
+
   dispatcher.register("chat.cancel", async (params) => {
     const session = deps.sessions.tryGet(params.sessionId);
     if (!session) {
