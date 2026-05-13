@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, resolve as resolvePath, isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type {

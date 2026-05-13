@@ -1512,12 +1512,15 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
       }
     }
     await mcpRegistry.stopAll();
+    logger.info({}, "mcp registry stopped");
     await handle.close();
+    logger.info({}, "http handle closed");
     try {
       await memcoreInstance.close();
     } catch (err) {
       logger.error({ err }, "memcore failed to close");
     }
+    logger.info({}, "memcore closed");
     db.close();
     logger.info({}, "gateway closed");
   };

@@ -351,16 +351,6 @@ export function Chat(): JSX.Element {
           <span className="spacer" />
           <span className="hint">started {fmtAgo(activeSession.createdAt)}</span>
           <div className="row gap-1">
-            {isRunning && (
-              <button
-                className="btn sm danger"
-                onClick={() => void stop()}
-                disabled={stopping}
-                title="Stop the current agent run (cooperative — finishes any in-flight tool call first)"
-              >
-                <Icon name="x" size={11} /> {stopping ? "stopping…" : "stop"}
-              </button>
-            )}
             <button
               className="btn sm"
               onClick={() => void startSession({})}
@@ -502,6 +492,17 @@ export function Chat(): JSX.Element {
             <div className="row gap-2" style={{ marginTop: 6 }}>
               <span className="hint">⌘↵ to send</span>
               <span className="spacer" />
+              {isRunning && (
+                <button
+                  type="button"
+                  className="btn sm danger"
+                  onClick={() => void stop()}
+                  disabled={stopping}
+                  title="Stop the current agent run (cooperative — finishes any in-flight tool call first)"
+                >
+                  <Icon name="x" size={11} /> {stopping ? "stopping…" : "stop"}
+                </button>
+              )}
               <button
                 type="submit"
                 className="btn primary sm"
