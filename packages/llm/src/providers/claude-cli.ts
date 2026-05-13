@@ -1146,19 +1146,43 @@ export class ClaudeCliClient implements LLMClient {
     //   3. No built-ins (empty `--tools ""`) — pure text completion mode.
     const { ccBuiltinSpec, mcpTools } = this.classifyTools(params);
 
+    // Decide the bridge's initial MCP tool set. Preference order:
+    //   1. `getActiveTools()` — the gateway-supplied view of *every* squad
+    //      tool currently in scope for this session (lazy groups included).
+    //      Used in preference to params.tools because Claude Code does not
+    //      reliably wire mid-run `tools/list_changed` refreshes into the
+    //      model-facing dispatch catalog: a tool added after the CLI started
+    //      is callable in the deferred/ToolSearch path but rejected on
+    //      direct dispatch with "No such tool available". Front-loading the
+    //      full catalog removes the race entirely — lazy unlock then only
+    //      gates which tools the system prompt *mentions*, not which are
+    //      registered.
+    //   2. `mcpTools` from `classifyTools(params)` — the legacy snapshot,
+    //      used when the gateway didn't wire `getActiveTools` (tests, ad-hoc
+    //      clients).
+    const getter = this.activeToolsGetter;
+    const buildBridgeTools = (): ToolDefinition[] => {
+      if (getter) {
+        const all = getter();
+        if (all && all.length > 0) {
+          return all.filter((t) => !SQUAD_TO_CC_TOOL_MAP[t.name]);
+        }
+      }
+      return mcpTools;
+    };
+    const initialBridgeTools = buildBridgeTools();
+
     let bridge: BridgeResources | null = null;
-    if (mcpTools.length > 0 && this.executor) {
-      // Hold the bridge's MCP tool set in a mutable ref so the
-      // `getActiveTools` callback can grow it mid-run (e.g. when the
-      // model unlocks a lazy tool group via `describe_tool_group`) and
-      // the next `tools/list` reflects the change.
-      const mcpToolsRef: { current: ToolDefinition[] } = { current: mcpTools };
-      const getter = this.activeToolsGetter;
+    if (initialBridgeTools.length > 0 && this.executor) {
+      // Hold the bridge's MCP tool set in a mutable ref. With the full
+      // catalog seeded at start it rarely needs to change, but plugin
+      // loads / unloads can still widen or narrow the set mid-run, and
+      // `refreshTools` + `notifications/tools/list_changed` cover that
+      // case as a defence-in-depth path.
+      const mcpToolsRef: { current: ToolDefinition[] } = { current: initialBridgeTools };
       const refreshTools = getter
         ? (): boolean => {
-            const all = getter();
-            if (!all) return false;
-            const next = all.filter((t) => !SQUAD_TO_CC_TOOL_MAP[t.name]);
+            const next = buildBridgeTools();
             const prev = mcpToolsRef.current;
             if (prev.length === next.length) {
               const prevNames = new Set(prev.map((t) => t.name));

@@ -859,39 +859,31 @@ describe("ClaudeCliClient MCP bridge (stage 2)", () => {
     await callPromise;
   });
 
-  // Lets `describe_tool_group` make its newly-unlocked tools callable on
-  // the very next iteration of the CLI's internal loop. The bridge must:
-  //   (1) advertise capabilities.tools.listChanged: true at init,
-  //   (2) re-query getTools() on every tools/list (not snapshot at start),
-  //   (3) emit notifications/tools/list_changed after a tools/call when
-  //       the supplied refresh callback reports the set changed.
-  it("emits notifications/tools/list_changed when getActiveTools widens", async () => {
+  // Regression: when `getActiveTools` is supplied the bridge must seed
+  // its initial `tools/list` from it (the full squad catalog), not from
+  // `params.tools` (the active/unlocked subset). Without this, lazy
+  // groups are absent from the catalog at session start and Claude Code
+  // rejects them with "No such tool available" the first time the model
+  // tries to use one — `notifications/tools/list_changed` mid-run does
+  // not get them into the active dispatch catalog in time.
+  it("seeds the bridge's initial tools/list from getActiveTools, not params.tools", async () => {
     const { fn, liveCalls, release } = makeFakeSpawn({
       stdoutLines: STREAM_DELTAS,
       holdOpen: true,
     });
 
-    // The "live" tool set the gateway would compute from session state.
-    // Starts as just the meta tool; the simulated tools/call below
-    // "unlocks" the tasks group by widening this list.
-    let activeTools: import("../types.js").ToolDefinition[] = [
+    const fullCatalog: import("../types.js").ToolDefinition[] = [
       { name: "describe_tool_group", description: "", input_schema: { type: "object" } },
+      { name: "list_tasks", description: "", input_schema: { type: "object" } },
+      { name: "create_task", description: "", input_schema: { type: "object" } },
+      { name: "list_cron_jobs", description: "", input_schema: { type: "object" } },
     ];
 
     const client = new ClaudeCliClient(
       {
         oauthToken: "tok-xyz",
-        executeTool: async (name) => {
-          if (name === "describe_tool_group") {
-            activeTools = [
-              { name: "describe_tool_group", description: "", input_schema: { type: "object" } },
-              { name: "list_tasks", description: "", input_schema: { type: "object" } },
-              { name: "create_task", description: "", input_schema: { type: "object" } },
-            ];
-          }
-          return "ok";
-        },
-        getActiveTools: () => activeTools,
+        executeTool: async () => "ok",
+        getActiveTools: () => fullCatalog,
       },
       fn,
     );
@@ -900,8 +892,9 @@ describe("ClaudeCliClient MCP bridge (stage 2)", () => {
       model: "claude-sonnet-4-5",
       system: "",
       messages: [{ role: "user", content: "hi" }],
-      // Bridge's initial mcpTools — only describe_tool_group is in scope
-      // at call start; everything else has to come online via the refresh.
+      // `params.tools` deliberately only carries the unlocked subset —
+      // that's the runner's gateway-side view. The bridge should ignore
+      // this in favour of the full catalog from `getActiveTools`.
       tools: [
         { name: "describe_tool_group", description: "", input_schema: { type: "object" } },
       ],
@@ -922,11 +915,6 @@ describe("ClaudeCliClient MCP bridge (stage 2)", () => {
       const sock = connect(socketPath);
       sock.setEncoding("utf8");
       let buffer = "";
-      // Frame-arrival order, tagged for ordering asserts below.
-      const order: string[] = [];
-      let listChangedSeen = false;
-      let firstListNames: string[] = [];
-      let secondListNames: string[] = [];
 
       sock.on("data", (chunk: string) => {
         buffer += chunk;
@@ -937,68 +925,14 @@ describe("ClaudeCliClient MCP bridge (stage 2)", () => {
           if (!line) continue;
           const frame = JSON.parse(line) as Record<string, unknown>;
 
-          if (frame.method === "notifications/tools/list_changed") {
-            listChangedSeen = true;
-            order.push("notification");
-            sock.write(
-              `${JSON.stringify({ jsonrpc: "2.0", id: 99, method: "tools/list" })}\n`,
-            );
-            return;
-          }
-
-          if (frame.id === 1) {
-            const caps = (frame.result as { capabilities?: { tools?: { listChanged?: boolean } } })
-              ?.capabilities;
-            try {
-              expect(caps?.tools?.listChanged).toBe(true);
-            } catch (e) {
-              reject(e);
-              return;
-            }
-            continue;
-          }
-
           if (frame.id === 2) {
-            firstListNames = (
+            const initialNames = (
               (frame.result as { tools?: Array<{ name: string }> }).tools ?? []
             ).map((t) => t.name);
-            sock.write(
-              `${JSON.stringify({
-                jsonrpc: "2.0",
-                id: 3,
-                method: "tools/call",
-                params: { name: "describe_tool_group", arguments: { groups: "tasks" } },
-              })}\n`,
-            );
-            continue;
-          }
-
-          if (frame.id === 3) {
-            order.push("toolsCallResponse");
-          }
-
-          if (frame.id === 99) {
-            order.push("toolsListResponse");
-            secondListNames = (
-              (frame.result as { tools?: Array<{ name: string }> }).tools ?? []
-            ).map((t) => t.name);
-          }
-
-          if (order.includes("toolsCallResponse") && order.includes("toolsListResponse")) {
             sock.end();
             try {
-              expect(listChangedSeen).toBe(true);
-              expect(firstListNames).toEqual(["describe_tool_group"]);
-              expect(secondListNames.sort()).toEqual(
-                ["create_task", "describe_tool_group", "list_tasks"].sort(),
-              );
-              // The whole point of the gating: the model only sees the
-              // describe_tool_group result *after* the CLI has been
-              // served the refreshed catalog. Otherwise the next API
-              // call races the refresh and Claude Code rejects the
-              // unlocked tool with "No such tool available".
-              expect(order.indexOf("toolsListResponse")).toBeLessThan(
-                order.indexOf("toolsCallResponse"),
+              expect(initialNames.sort()).toEqual(
+                ["create_task", "describe_tool_group", "list_cron_jobs", "list_tasks"].sort(),
               );
               resolve();
             } catch (e) {

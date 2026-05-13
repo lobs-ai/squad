@@ -90,12 +90,11 @@ export function formatGroupIndexForPrompt(lazyGroups: readonly ToolGroup[]): str
   const lines: string[] = [
     "## Tool groups (lazy)",
     "",
-    "You have these tools — they're real and available. Their schemas are",
-    "kept out of the prompt this turn to save context, that's all. To make",
-    "them callable, invoke `describe_tool_group` with one or more group",
-    "names; the schemas come online immediately and you can call them on",
-    "your very next tool call — no need to wait for the user to send",
-    "another message.",
+    "These groups are real and the tools are already registered — you can",
+    "call them at any time. What's lazy is the *guidance*: per-group usage",
+    "notes are kept out of this system prompt to save tokens. Call",
+    "`describe_tool_group` for a group before using its tools so you have",
+    "the conventions and gotchas in front of you.",
     "",
     "- **One group:** `describe_tool_group({groups: \"cron\"})`",
     "- **Several at once:** `describe_tool_group({groups: [\"cron\", \"tasks\"]})`",
@@ -105,9 +104,7 @@ export function formatGroupIndexForPrompt(lazyGroups: readonly ToolGroup[]): str
     `  \`describe_tool_group({groups: ${JSON.stringify(allNames)}})\`.`,
     "",
     "Never tell the user you don't have a tool when its group is listed",
-    "here. Unlock it and use it in the same response. When in doubt,",
-    "unlock — the cost is one tool call, the cost of *not* unlocking is",
-    "failing the user's request.",
+    "here — read the guidance and use it in the same response.",
     "",
     "<tool_groups>",
   ];
@@ -137,13 +134,13 @@ export type UnlockCallback = (
 export class DescribeToolGroupTool extends BaseTool<DescribeInput> {
   readonly name = "describe_tool_group";
   readonly description = [
-    "Load guidance and unlock tools for one or more lazy tool groups.",
-    "The unlocked tools become callable immediately — keep going in this",
-    "same response, you do NOT need to wait for the user to send another",
-    "message. Pass a single name or an array of names from the",
-    "<tool_groups> index in the system prompt; batch-unlock by passing an",
-    "array. If the user asks you to use, list, or demonstrate all your",
-    "tools, pass every group name from the index in one call.",
+    "Load guidance for one or more lazy tool groups. The tools themselves",
+    "are already registered and callable — this returns the usage notes,",
+    "important caveats, and parameter conventions you need before",
+    "invoking them. Pass a single name or an array of names from the",
+    "<tool_groups> index; batch-load by passing an array. If the user",
+    "asks you to use, list, or demonstrate all your tools, pass every",
+    "group name from the index in one call.",
   ].join("\n");
   readonly inputSchema = {
     type: "object" as const,
@@ -210,7 +207,7 @@ export class DescribeToolGroupTool extends BaseTool<DescribeInput> {
     }
 
     sections.push(
-      `_Unlocked: ${unlocked.join(", ")}. Tools are callable now — keep going in this same response._`,
+      `_Loaded guidance for: ${unlocked.join(", ")}. The tools were always callable; you now have the usage notes — go ahead and use them._`,
     );
     if (skipped.length > 0) sections.push(`_Skipped: ${skipped.join(", ")}._`);
 

@@ -110,7 +110,7 @@ describe("buildSquadSystemPrompt", () => {
     // "tools in a drawer" line are unique to the non-CLI branch.
     expect(prompt).toContain("filesystem");
     expect(prompt).toContain("read/write/edit/ls");
-    expect(prompt).toContain("Treat them like tools sitting in a drawer");
+    expect(prompt).toContain("tools sitting in a drawer");
   });
 
   it("trims squad tool guidance when provider is claude-cli", () => {

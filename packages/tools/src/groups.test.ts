@@ -82,7 +82,7 @@ describe("DescribeToolGroupTool", () => {
     const text = typeof result === "string" ? result : result.result;
     expect(text).toContain("Pick cron / interval / once.");
     expect(text).toContain("Create tasks for >3 step plans.");
-    expect(text).toContain("Unlocked: cron, tasks");
+    expect(text).toContain("Loaded guidance for: cron, tasks");
   });
 
   it("accepts a string instead of array for a single group", async () => {

@@ -499,20 +499,29 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
             throw new Error(msg);
           }
         },
-        // Lets the MCP bridge refresh its tool catalog mid-run when the
-        // model unlocks a lazy group via `describe_tool_group`. Resolves
-        // the live session, expands its unlocked groups against the
-        // ToolGroupRegistry, and returns the matching ToolDefinitions
-        // straight from the live registry — so plugin-contributed tools
-        // unlock without any extra wiring.
-        getActiveTools: () => {
-          const ctx = currentAgentContext();
-          if (!ctx) return undefined;
-          const unlocked = sessions.getUnlockedGroups(ctx.sessionId);
-          const names = new Set<string>(toolGroups.activeToolNames(unlocked));
-          names.add("describe_tool_group");
-          return toolRegistry.getDefinitions([...names]);
-        },
+        // Seeds the MCP bridge with the *full* squad tool catalog.
+        //
+        // We tried two narrower designs first: (a) seed only the unlocked
+        // groups and have the bridge re-derive on each turn, and (b)
+        // expand the catalog mid-run via `notifications/tools/list_changed`
+        // when `describe_tool_group` unlocked a group. Both fail against
+        // Claude Code's MCP client: a tool that wasn't in the bridge's
+        // initial `tools/list` is rejected at dispatch with "No such tool
+        // available" no matter how promptly `list_changed` fires
+        // afterward — apparently Claude Code's list-changed handler
+        // refreshes its deferred/ToolSearch cache, not the active
+        // dispatch catalog the model targets directly.
+        //
+        // Front-loading every registered squad tool removes the race
+        // entirely: Claude Code knows the tool exists from session
+        // start, dispatch always succeeds, and lazy-unlock degrades into
+        // exactly what `describe_tool_group` already does well —
+        // providing on-demand *guidance* without bloating the system
+        // prompt. The MCP schemas (~10K tokens for a fully-loaded
+        // gateway) do still ride in every claude-cli API call, but
+        // that's a one-time cost the user can pay for unlock-and-use in
+        // the same response.
+        getActiveTools: () => toolRegistry.getDefinitions(),
       },
     };
   }
