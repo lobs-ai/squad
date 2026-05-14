@@ -11,6 +11,7 @@ import { discordGroup } from "./index.js";
 
 function stubBackend(): DiscordBackend {
   return {
+    openDm: vi.fn(async (userId: string) => ({ channelId: `dm:${userId}` })),
     send: vi.fn(async () => ({ messageId: "m1" })),
     reply: vi.fn(async () => ({ messageId: "m2" })),
     editMessage: vi.fn(async () => ({ messageId: "m3" })),

@@ -138,6 +138,12 @@ export interface PostWebhookOptions {
 
 export interface DiscordBackend {
   // ── messages ────────────────────────────────────────────────────────────
+  /**
+   * Opens (or returns the existing) DM channel with a user. Idempotent on
+   * the Discord side — POST /users/@me/channels with the same recipient_id
+   * returns the same channel.
+   */
+  openDm(userId: string): Promise<{ channelId: string }>;
   send(channelId: string, content: string): Promise<{ messageId: string }>;
   reply(
     channelId: string,

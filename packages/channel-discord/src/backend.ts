@@ -124,13 +124,62 @@ export class CarbonDiscordBackend implements DiscordBackend {
     return this.resolveBot().client.rest;
   }
 
+  /** userId → DM channelId, memoised so we don't reopen on every send. */
+  private readonly dmChannelByUser = new Map<string, string>();
+
+  async openDm(userId: string): Promise<{ channelId: string }> {
+    const cached = this.dmChannelByUser.get(userId);
+    if (cached) return { channelId: cached };
+    const r = (await this.rest.post(`/users/@me/channels`, {
+      body: { recipient_id: userId },
+    })) as ApiChannel;
+    this.dmChannelByUser.set(userId, r.id);
+    return { channelId: r.id };
+  }
+
+  /**
+   * Runs `op(channelId)`. If it fails with an error that looks like the id
+   * isn't a channel the bot can see (Missing Access / Unknown Channel), try
+   * treating `channelId` as a user id, open a DM, and retry against the DM
+   * channel. The retry's failure (or the DM-open failure) propagates the
+   * *original* error so callers still see the real problem when the id was
+   * genuinely just a bad channel.
+   */
+  private async withDmFallback<T>(
+    channelId: string,
+    op: (cid: string) => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await op(channelId);
+    } catch (err) {
+      if (!looksLikeChannelInaccessible(err)) throw err;
+      let dmChannelId: string;
+      try {
+        dmChannelId = (await this.openDm(channelId)).channelId;
+      } catch {
+        throw err;
+      }
+      this.logger?.info(
+        { userId: channelId, dmChannelId },
+        "discord backend: retrying message send against opened DM channel",
+      );
+      try {
+        return await op(dmChannelId);
+      } catch {
+        throw err;
+      }
+    }
+  }
+
   // ── messages ────────────────────────────────────────────────────────────
 
   async send(channelId: string, content: string): Promise<{ messageId: string }> {
-    const r = (await this.rest.post(`/channels/${channelId}/messages`, {
-      body: { content },
-    })) as ApiMessage;
-    return { messageId: r.id };
+    return this.withDmFallback(channelId, async (cid) => {
+      const r = (await this.rest.post(`/channels/${cid}/messages`, {
+        body: { content },
+      })) as ApiMessage;
+      return { messageId: r.id };
+    });
   }
 
   async reply(
@@ -138,10 +187,12 @@ export class CarbonDiscordBackend implements DiscordBackend {
     messageId: string,
     content: string,
   ): Promise<{ messageId: string }> {
-    const r = (await this.rest.post(`/channels/${channelId}/messages`, {
-      body: { content, message_reference: { message_id: messageId } },
-    })) as ApiMessage;
-    return { messageId: r.id };
+    return this.withDmFallback(channelId, async (cid) => {
+      const r = (await this.rest.post(`/channels/${cid}/messages`, {
+        body: { content, message_reference: { message_id: messageId } },
+      })) as ApiMessage;
+      return { messageId: r.id };
+    });
   }
 
   async editMessage(
@@ -212,10 +263,12 @@ export class CarbonDiscordBackend implements DiscordBackend {
     channelId: string,
     embed: DiscordEmbedInput,
   ): Promise<{ messageId: string }> {
-    const r = (await this.rest.post(`/channels/${channelId}/messages`, {
-      body: { embeds: [toApiEmbed(embed)] },
-    })) as ApiMessage;
-    return { messageId: r.id };
+    return this.withDmFallback(channelId, async (cid) => {
+      const r = (await this.rest.post(`/channels/${cid}/messages`, {
+        body: { embeds: [toApiEmbed(embed)] },
+      })) as ApiMessage;
+      return { messageId: r.id };
+    });
   }
 
   // ── reactions ───────────────────────────────────────────────────────────
@@ -535,4 +588,21 @@ function isNotFound(err: unknown): boolean {
   if (obj.status === 404 || obj.statusCode === 404) return true;
   const msg = err instanceof Error ? err.message : "";
   return /\b404\b/.test(msg);
+}
+
+/**
+ * Heuristic for "the id passed as a channel is not actually a channel the bot
+ * can post into" — the cue we use to retry as a DM. Matches Discord error
+ * codes 50001 (Missing Access) and 10003 (Unknown Channel), plus HTTP 403/404
+ * shapes as a fallback for clients that don't surface the JSON code.
+ */
+function looksLikeChannelInaccessible(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const obj = err as Record<string, unknown>;
+  const code = obj.discordCode ?? obj.code;
+  if (code === 50001 || code === 10003) return true;
+  const status = obj.status ?? obj.statusCode;
+  if (status === 403 || status === 404) return true;
+  const msg = err instanceof Error ? err.message : "";
+  return /Missing Access|Unknown Channel\b/i.test(msg);
 }
