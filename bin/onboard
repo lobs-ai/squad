@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Run the interactive setup wizard for a squad. Thin wrapper around
+# scripts/setup.mjs so the wizard stays available without the global CLI.
+#
+# Usage:
+#   bin/onboard                  # set up the 'default' squad
+#   bin/onboard --squad <name>   # set up a named squad
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+exec node "$REPO_ROOT/scripts/setup.mjs" "$@"

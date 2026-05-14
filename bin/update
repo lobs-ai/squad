@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Pull the latest squad source on the current branch and re-install the global
-# binary. Counterpart to scripts/install.sh — same machinery, but starts with
-# a `git fetch + ff pull` so the user gets new code, not just a rebuild.
+# binary. Counterpart to bin/install — same machinery, but starts with a
+# `git fetch + ff pull` so the user gets new code, not just a rebuild.
 #
 # Usage:
-#   scripts/update.sh           # fetch, ff-only pull, reinstall
-#   scripts/update.sh --check   # fetch only, list new commits, no changes
-#   scripts/update.sh --force   # autostash dirty working tree through the pull
+#   bin/update           # fetch, ff-only pull, reinstall
+#   bin/update --check   # fetch only, list new commits, no changes
+#   bin/update --force   # autostash dirty working tree through the pull
 
 set -euo pipefail
 
@@ -27,7 +27,7 @@ done
 
 if [ ! -d .git ]; then
   echo "✗ $REPO_ROOT is not a git checkout — can't self-update." >&2
-  echo "  reinstall manually: cd $REPO_ROOT && scripts/install.sh" >&2
+  echo "  reinstall manually: cd $REPO_ROOT && bin/install" >&2
   exit 1
 fi
 
@@ -80,6 +80,6 @@ after="$(git rev-parse HEAD)"
 echo "  $(git rev-parse --short "$before") → $(git rev-parse --short "$after")"
 
 echo "→ reinstalling"
-"$SCRIPT_DIR/install.sh"
+"$SCRIPT_DIR/install"
 
 echo "✓ updated to $(git rev-parse --short "$after")"

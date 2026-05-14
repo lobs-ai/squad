@@ -7,7 +7,7 @@ import { roleColor } from "../ui/skin.js";
 
 /**
  * Find the repo root (dir containing pnpm-workspace.yaml) so we can shell out
- * to scripts/start.sh, stop.sh, status.sh from a globally-installed binary.
+ * to the bin/ entry scripts from a globally-installed binary.
  */
 function findRepoRoot(): string {
   // When installed via `pnpm link --global` the binary lives in
@@ -24,9 +24,9 @@ function findRepoRoot(): string {
   );
 }
 
-function runScript(name: string, args: string[]): Promise<number> {
+function runBin(name: string, args: string[]): Promise<number> {
   const root = findRepoRoot();
-  const path = join(root, "scripts", name);
+  const path = join(root, "bin", name);
   if (!existsSync(path)) throw new Error(`missing script: ${path}`);
   return new Promise((resolveP) => {
     const child = spawn(path, args, { stdio: "inherit", cwd: root });
@@ -35,22 +35,22 @@ function runScript(name: string, args: string[]): Promise<number> {
 }
 
 export async function startGateway(args: string[]): Promise<void> {
-  const code = await runScript("start.sh", args);
+  const code = await runBin("squad", ["start", ...args]);
   if (code !== 0) process.exitCode = code;
 }
 
 export async function stopGateway(): Promise<void> {
-  const code = await runScript("stop.sh", []);
+  const code = await runBin("squad", ["stop"]);
   if (code !== 0) process.exitCode = code;
 }
 
 export async function restartGateway(args: string[]): Promise<void> {
-  const code = await runScript("restart.sh", args);
+  const code = await runBin("squad", ["restart", ...args]);
   if (code !== 0) process.exitCode = code;
 }
 
 export async function runUpdate(args: string[]): Promise<void> {
-  const code = await runScript("update.sh", args);
+  const code = await runBin("update", args);
   if (code !== 0) process.exitCode = code;
 }
 
@@ -130,10 +130,10 @@ export async function gatewayLogs(args: string[]): Promise<void> {
   }
 
   const root = findRepoRoot();
-  const path = join(root, "scripts", "status.sh");
+  const path = join(root, "bin", "squad");
   if (!existsSync(path)) throw new Error(`missing script: ${path}`);
 
-  const child = spawn(path, ["logs", ...flags], {
+  const child = spawn(path, ["status", "logs", ...flags], {
     cwd: root,
     stdio: ["inherit", "pipe", "inherit"],
   });
@@ -174,16 +174,10 @@ export async function gatewayLogs(args: string[]): Promise<void> {
 }
 
 /**
- * Run the onboarding wizard (scripts/setup.mjs) in the current terminal.
+ * Run the onboarding wizard (bin/onboard) in the current terminal.
  * Inherits stdio so the user can interact with its prompts.
  */
 export async function runOnboard(args: string[]): Promise<void> {
-  const root = findRepoRoot();
-  const script = join(root, "scripts", "setup.mjs");
-  if (!existsSync(script)) throw new Error(`missing: ${script}`);
-  const code = await new Promise<number>((resolveP) => {
-    const child = spawn("node", [script, ...args], { stdio: "inherit", cwd: root });
-    child.on("exit", (c) => resolveP(c ?? 0));
-  });
+  const code = await runBin("onboard", args);
   if (code !== 0) process.exitCode = code;
 }

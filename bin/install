@@ -3,8 +3,8 @@
 # `squad` binary globally, and verify it's on PATH.
 #
 # Usage:
-#   scripts/install.sh            # install
-#   scripts/install.sh --uninstall  # remove the global link
+#   bin/install               # install
+#   bin/install --uninstall   # remove the global link
 
 set -euo pipefail
 
@@ -72,7 +72,7 @@ fi
 ensure_pnpm
 ensure_pnpm_bin_dir
 
-"$SCRIPT_DIR/sync-memcore.sh"
+"$REPO_ROOT/scripts/sync-memcore.sh"
 
 if [ ! -d node_modules ] || [ pnpm-lock.yaml -nt node_modules ]; then
   echo "→ pnpm install"

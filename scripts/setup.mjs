@@ -1318,7 +1318,7 @@ async function main() {
   console.log(`
 ${bold("Next steps")}
 
-  ${green("Install CLI:")}  scripts/install.sh                  ${dim("# once; global 'squad' binary")}
+  ${green("Install CLI:")}  bin/install                         ${dim("# once; global 'squad' binary")}
   ${green("Start:")}        squad mgr start ${SQUAD_NAME}${" ".repeat(Math.max(0, 20 - SQUAD_NAME.length))}${dim("# docker compose up -d squad-" + SQUAD_NAME)}
   ${green("Chat:")}         squad repl                          ${dim("# or: squad chat 'hello'")}
   ${green("Dashboard:")}    http://localhost:${hostPort}/${" ".repeat(Math.max(0, 18 - String(hostPort).length))}${dim("# bearer token: " + ENV_PATH)}
@@ -1326,7 +1326,7 @@ ${bold("Next steps")}
   Add another squad: ${bold(`squad mgr create <name>`)} ${dim("(or re-run with --squad <name>)")}
   See all squads:    ${bold("squad mgr ls")}
 
-Re-run ${bold("squad onboard")} (or ${bold("node scripts/setup.mjs --squad " + SQUAD_NAME)}) any time to fill in a skipped step or rotate a value.
+Re-run ${bold("squad onboard")} (or ${bold("bin/onboard --squad " + SQUAD_NAME)}) any time to fill in a skipped step or rotate a value.
 `);
   rl.close();
 }

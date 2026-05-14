@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Single lifecycle entry for the squad workspace. Subcommands are thin shims
+# around `squad mgr ...` (the globally-installed CLI built from
+# packages/client-cli) so day-to-day muscle memory stays:
+#
+#   bin/squad start [--build]   start every registered squad as docker containers
+#   bin/squad stop              stop every registered squad
+#   bin/squad restart           stop + rebuild + start (always rebuilds)
+#   bin/squad status [logs]     list squads; `logs` follows the single squad
+#
+# Additional entry points live alongside in bin/: install, update, onboard.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=../scripts/_bootstrap.sh
+. "$REPO_ROOT/scripts/_bootstrap.sh"
+
+usage() {
+  cat <<EOF
+Usage: bin/squad <command> [args]
+
+Commands:
+  start [--build]   start every registered squad (runs the onboarding wizard
+                    first if no squads are registered). --build rebuilds the
+                    docker image before starting.
+  stop              stop every registered squad.
+  restart           stop, rebuild, and start every registered squad. Always
+                    rebuilds — use 'squad mgr restart' for an in-place restart.
+  status [logs]     list squads + running status. 'logs' follows the only
+                    squad (multi-squad: pick one with 'squad mgr logs <name>').
+  help              show this message.
+
+Related entry points (separate scripts in bin/):
+  bin/install       link the global 'squad' binary onto your PATH.
+  bin/update        git-pull this checkout and reinstall.
+  bin/onboard       run the interactive setup wizard for a squad.
+EOF
+}
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+  start)
+    if ! mgr_registered; then
+      echo "→ no squads registered. Running onboarding wizard."
+      node "$REPO_ROOT/scripts/setup.mjs"
+    fi
+    cli="$(ensure_mgr_cli)"
+    # Map --build (the user-preference flag) to mgr's --rebuild.
+    extra=()
+    for a in "$@"; do
+      case "$a" in
+        --build) extra+=(--rebuild) ;;
+        *)       extra+=("$a") ;;
+      esac
+    done
+    exec $cli mgr start --all "${extra[@]}"
+    ;;
+
+  stop)
+    if ! mgr_registered; then
+      echo "→ no squads registered. Nothing to stop."
+      exit 0
+    fi
+    cli="$(ensure_mgr_cli)"
+    exec $cli mgr stop --all
+    ;;
+
+  restart)
+    # By preference, restart always rebuilds (equivalent to stop + start --build).
+    if ! mgr_registered; then
+      echo "→ no squads registered. Nothing to restart."
+      exit 0
+    fi
+    cli="$(ensure_mgr_cli)"
+    $cli mgr stop --all
+    exec $cli mgr start --all --rebuild "$@"
+    ;;
+
+  status)
+    sub="${1:-}"
+    if ! mgr_registered; then
+      echo "status: no squads registered. Run 'bin/onboard' to create one."
+      exit 0
+    fi
+    cli="$(ensure_mgr_cli)"
+    if [ "$sub" = "logs" ]; then
+      only="$(node -e "const r=JSON.parse(require('fs').readFileSync('$REGISTRY_FILE','utf8'));console.log((r.squads||[]).length===1?r.squads[0].name:'')" 2>/dev/null || true)"
+      if [ -n "$only" ]; then
+        exec $cli mgr logs "$only" -f
+      fi
+      echo "multiple squads registered. Pick one: squad mgr logs <name> -f" >&2
+      exec $cli mgr ls
+    fi
+    exec $cli mgr ls
+    ;;
+
+  help|-h|--help|"")
+    usage
+    ;;
+
+  *)
+    echo "✗ unknown command: $cmd" >&2
+    echo >&2
+    usage >&2
+    exit 2
+    ;;
+esac
