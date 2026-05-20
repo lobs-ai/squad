@@ -116,6 +116,9 @@ importers:
 
   packages/client-cli:
     dependencies:
+      '@squad/llm':
+        specifier: workspace:*
+        version: link:../llm
       '@squad/protocol':
         specifier: workspace:*
         version: link:../protocol
@@ -129,9 +132,6 @@ importers:
       '@squad/gateway':
         specifier: workspace:*
         version: link:../gateway
-      '@squad/llm':
-        specifier: workspace:*
-        version: link:../llm
       '@squad/tools':
         specifier: workspace:*
         version: link:../tools

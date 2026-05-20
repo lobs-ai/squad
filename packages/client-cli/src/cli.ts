@@ -31,6 +31,11 @@ import {
   testKey,
 } from "./commands/key.js";
 import {
+  runCodexAuthLogin,
+  runCodexAuthStatus,
+  runCodexAuthRefresh,
+} from "./commands/codex-auth.js";
+import {
   listPlugins,
   enablePlugin,
   disablePlugin,
@@ -102,6 +107,11 @@ function helpText(): string {
     `    ${K("plugins setup")} ${D("<id>")}            ${D("open a chat where the agent walks you through setup")}`,
     `    ${K("plugins install")} ${D("<id> [--yes]")}  ${D("prompt for required config + secrets, write config.json, load plugin")}`,
     `    ${K("plugins uninstall")} ${D("<id>")}        ${D("remove from config + auth.tokens + secrets, unload")}`,
+    "",
+    `  ${H("OpenAI Codex (ChatGPT subscription)")} ${D("— OAuth login for the openai-codex provider")}`,
+    `    ${K("codex-auth login")}    ${D("[-o path] [--no-browser]")}  ${D("browser-based PKCE login; writes creds JSON")}`,
+    `    ${K("codex-auth status")}   ${D("[-o path]")}                ${D("show cached credentials + expiry")}`,
+    `    ${K("codex-auth refresh")}  ${D("[-o path]")}                ${D("force a token refresh now")}`,
     "",
     `  ${H("SSH keys")} ${D("— docker/data/ssh/; agents git-push with these")}`,
     `    ${K("key wizard")}                  ${D("interactive generate + paste-to-GitHub")}`,
@@ -402,6 +412,30 @@ async function main(): Promise<void> {
           return;
         default:
           throw new Error(`unknown: key ${sub}`);
+      }
+    }
+
+    case "codex-auth": {
+      const sub = argv.shift() ?? "login";
+      const output = popFlag(argv, "--output") ?? popFlag(argv, "-o");
+      const noBrowser = hasFlag(argv, "--no-browser");
+      switch (sub) {
+        case "login":
+          await runCodexAuthLogin({
+            ...(output ? { output } : {}),
+            ...(noBrowser ? { noBrowser: true } : {}),
+          });
+          return;
+        case "status":
+          await runCodexAuthStatus({ ...(output ? { output } : {}) });
+          return;
+        case "refresh":
+          await runCodexAuthRefresh({ ...(output ? { output } : {}) });
+          return;
+        default:
+          throw new Error(
+            `unknown: codex-auth ${sub} (expected: login | status | refresh)`,
+          );
       }
     }
 

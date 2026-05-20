@@ -21,13 +21,13 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
+    "@squad/llm": "workspace:*",
     "@squad/protocol": "workspace:*",
     "ws": "^8.18.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@squad/gateway": "workspace:*",
-    "@squad/llm": "workspace:*",
     "@squad/tools": "workspace:*",
     "@types/ws": "^8.5.12",
     "typescript": "^5.6.0",

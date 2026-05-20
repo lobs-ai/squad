@@ -17,6 +17,7 @@
 import { AnthropicClient } from "./providers/anthropic.js";
 import { OpenAIClient } from "./providers/openai.js";
 import { ClaudeCliClient } from "./providers/claude-cli.js";
+import { OpenAICodexClient } from "./providers/openai-codex.js";
 import {
   buildCompatibleClient,
   stripOpenRouterPrefix,
@@ -306,10 +307,29 @@ export function createClient(model: string, config?: ClientConfig): LLMClient {
   }
 
   // ── OpenAI (native SDK) ───────────────────────────────────────────────────
-  if (provider === "openai" || provider === "openai-codex") {
+  if (provider === "openai") {
     return new OpenAIClient({
       apiKey: getKey("openai") ?? process.env.OPENAI_API_KEY,
       baseURL: getBaseUrl("openai"),
+    });
+  }
+
+  // ── OpenAI Codex (ChatGPT subscription, OAuth) ───────────────────────────
+  if (provider === "openai-codex") {
+    const opts = config?.providerOptions?.["openai-codex"];
+    if (!opts?.tokenProvider) {
+      throw new Error(
+        `Provider "openai-codex" requires providerOptions["openai-codex"].tokenProvider. ` +
+          `Wire it via the gateway's llm-config (set providers.openai-codex.refresh_token_env in config.json) ` +
+          `or instantiate OpenAICodexClient directly.`,
+      );
+    }
+    return new OpenAICodexClient({
+      tokenProvider: opts.tokenProvider,
+      ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
+      ...(getBaseUrl("openai-codex") !== undefined
+        ? { baseUrl: getBaseUrl("openai-codex") as string }
+        : {}),
     });
   }
 

@@ -5,6 +5,24 @@ export { OpenAIClient } from "./providers/openai.js";
 export { ClaudeCliClient } from "./providers/claude-cli.js";
 export type { ClaudeCliClientOptions } from "./providers/claude-cli.js";
 export {
+  OpenAICodexClient,
+  CodexProviderError,
+} from "./providers/openai-codex.js";
+export type {
+  OpenAICodexClientOptions,
+  CodexTokenProvider,
+} from "./providers/openai-codex.js";
+export { CodexAuthService } from "./providers/openai-codex-auth.js";
+export type { CodexAuthOptions } from "./providers/openai-codex-auth.js";
+export {
+  loginOpenAICodex,
+  refreshOpenAICodexToken,
+  CodexAuthError,
+  getAccountIdFromJwt,
+  getExpiryFromJwt,
+} from "./oauth/openai-codex-login.js";
+export type { CodexCredentials } from "./oauth/openai-codex-login.js";
+export {
   buildCompatibleClient,
   stripOpenRouterPrefix,
   KNOWN_ENDPOINTS,

@@ -1,4 +1,11 @@
-import { LOCAL_PROVIDERS, type ClientConfig, type KeyConfig, type Provider } from "@squad/llm";
+import { join, isAbsolute } from "node:path";
+import {
+  LOCAL_PROVIDERS,
+  CodexAuthService,
+  type ClientConfig,
+  type KeyConfig,
+  type Provider,
+} from "@squad/llm";
 
 export interface KeyEntryConfig {
   key?: string;
@@ -38,6 +45,25 @@ export interface ProviderConfig {
    * list of CC tool names for a custom whitelist.
    */
   allowed_tools?: string;
+  /**
+   * For the `openai-codex` provider: long-lived OAuth refresh token
+   * produced by `squad codex-auth login`. Treated like an API key —
+   * resolved literally first, then via `refresh_token_env`. The provider
+   * uses the refresh token to mint short-lived access tokens at runtime
+   * and caches them under `<data_dir>/codex-creds.json`.
+   *
+   * Squad never reads `~/.codex/auth.json`. Per-deployment isolation: each
+   * squad container can authenticate as a different ChatGPT account.
+   */
+  refresh_token?: string;
+  /** Env var to read the refresh token from. Defaults to OPENAI_CODEX_REFRESH_TOKEN. */
+  refresh_token_env?: string;
+  /**
+   * Override for the on-disk credentials cache path. Defaults to
+   * `<data_dir>/codex-creds.json` — pick this only if you need to point at
+   * a volume-mounted secret file outside the standard data dir.
+   */
+  creds_path?: string;
 }
 
 /**
@@ -123,6 +149,32 @@ export function resolveProviderConfig(
 
   for (const [provider, cfg] of Object.entries(providers)) {
     if (cfg.base_url) baseUrls[provider as Provider] = cfg.base_url;
+
+    // The openai-codex provider authenticates via an OAuth refresh
+    // token. We don't put the refresh token in the `keys` pool: it isn't
+    // a request-time credential (the gateway exchanges it for an access
+    // token at boot), so it goes through `providerOptions` instead. The
+    // gateway constructs the `CodexAuthService` itself in `index.ts`
+    // because that's where `data_dir` lives — this resolver just reports
+    // whether the refresh token is set.
+    if (provider === "openai-codex") {
+      const tokenEnv = cfg.refresh_token_env ?? "OPENAI_CODEX_REFRESH_TOKEN";
+      const token = cfg.refresh_token ?? process.env[tokenEnv];
+      if (token && token.trim().length > 0) {
+        resolved.push(provider);
+      } else {
+        missingKeys.push({
+          provider,
+          envVar: tokenEnv,
+          reason: cfg.refresh_token
+            ? "refresh_token was empty"
+            : process.env[tokenEnv] == null
+              ? `run \`squad codex-auth login\` on your host and set ${tokenEnv}=… or providers.${provider}.refresh_token in config.json`
+              : "env var was empty",
+        });
+      }
+      continue;
+    }
 
     // The claude-cli provider authenticates via an OAuth token from
     // `claude setup-token`, not an API key. Resolve it the same way we
@@ -213,4 +265,33 @@ export function resolveProviderConfig(
     missingKeys,
     keyPools,
   };
+}
+
+/**
+ * Construct a `CodexAuthService` from `providers.openai-codex` config.
+ *
+ * Returns `null` when no refresh token is configured — callers should
+ * skip wiring the provider in that case (a config without a refresh
+ * token already shows up in `resolveProviderConfig`'s `missingKeys`).
+ *
+ * The auth service persists access tokens to `<data_dir>/codex-creds.json`
+ * (or to `creds_path` when set). Use an absolute path for `creds_path` to
+ * point at a volume-mounted secret file; relative paths are resolved
+ * against the data directory so docker-compose `data_dir` overrides
+ * carry through.
+ */
+export function buildCodexAuthService(
+  cfg: ProviderConfig | undefined,
+  dataDir: string,
+): CodexAuthService | null {
+  if (!cfg) return null;
+  const tokenEnv = cfg.refresh_token_env ?? "OPENAI_CODEX_REFRESH_TOKEN";
+  const refreshToken = cfg.refresh_token ?? process.env[tokenEnv];
+  if (!refreshToken || refreshToken.trim().length === 0) return null;
+  const credsPath = cfg.creds_path
+    ? isAbsolute(cfg.creds_path)
+      ? cfg.creds_path
+      : join(dataDir, cfg.creds_path)
+    : join(dataDir, "codex-creds.json");
+  return new CodexAuthService({ credsPath, refreshToken });
 }

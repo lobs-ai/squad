@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { resolveProviderConfig } from "./llm-config.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { resolveProviderConfig, buildCodexAuthService } from "./llm-config.js";
 
 describe("resolveProviderConfig", () => {
   const savedEnv = { ...process.env };
@@ -10,6 +13,7 @@ describe("resolveProviderConfig", () => {
       if (k.endsWith("_API_KEY")) delete process.env[k];
     }
     delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    delete process.env.OPENAI_CODEX_REFRESH_TOKEN;
   });
   afterEach(() => {
     process.env = { ...savedEnv };
@@ -97,5 +101,77 @@ describe("resolveProviderConfig", () => {
     expect(r.missingKeys[0]?.provider).toBe("claude-cli");
     expect(r.missingKeys[0]?.envVar).toBe("CLAUDE_CODE_OAUTH_TOKEN");
     expect(r.missingKeys[0]?.reason).toMatch(/claude setup-token/);
+  });
+
+  // ── openai-codex ────────────────────────────────────────────────────────
+
+  it("resolves openai-codex from OPENAI_CODEX_REFRESH_TOKEN by default", () => {
+    process.env["OPENAI_CODEX_REFRESH_TOKEN"] = "rt_default";
+    const r = resolveProviderConfig({ "openai-codex": {} });
+    expect(r.resolved).toEqual(["openai-codex"]);
+    expect(r.missingKeys).toEqual([]);
+    // The refresh token is NOT put into the keys pool — it travels via
+    // providerOptions on the live CodexAuthService instead.
+    expect(r.clientConfig.keys?.["openai-codex"]).toBeUndefined();
+  });
+
+  it("resolves openai-codex from a custom refresh_token_env", () => {
+    process.env["MY_CODEX_TOKEN"] = "rt_custom";
+    const r = resolveProviderConfig({
+      "openai-codex": { refresh_token_env: "MY_CODEX_TOKEN" },
+    });
+    expect(r.resolved).toEqual(["openai-codex"]);
+  });
+
+  it("flags openai-codex with a codex-auth hint when missing", () => {
+    const r = resolveProviderConfig({ "openai-codex": {} });
+    expect(r.resolved).toEqual([]);
+    expect(r.missingKeys[0]?.provider).toBe("openai-codex");
+    expect(r.missingKeys[0]?.envVar).toBe("OPENAI_CODEX_REFRESH_TOKEN");
+    expect(r.missingKeys[0]?.reason).toMatch(/squad codex-auth login/);
+  });
+});
+
+describe("buildCodexAuthService", () => {
+  const savedEnv = { ...process.env };
+  let tmp: string;
+  beforeEach(() => {
+    delete process.env.OPENAI_CODEX_REFRESH_TOKEN;
+    tmp = mkdtempSync(join(tmpdir(), "codex-cfg-"));
+  });
+  afterEach(() => {
+    process.env = { ...savedEnv };
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("returns null when no refresh token is configured", () => {
+    expect(buildCodexAuthService({}, tmp)).toBeNull();
+  });
+
+  it("returns null when given undefined", () => {
+    expect(buildCodexAuthService(undefined, tmp)).toBeNull();
+  });
+
+  it("constructs a service with the default cache path under data_dir", () => {
+    const svc = buildCodexAuthService({ refresh_token: "rt_lit" }, tmp);
+    expect(svc).not.toBeNull();
+    expect(svc!.credsPath).toBe(join(tmp, "codex-creds.json"));
+  });
+
+  it("resolves a relative creds_path against data_dir", () => {
+    const svc = buildCodexAuthService(
+      { refresh_token: "rt_lit", creds_path: "subdir/creds.json" },
+      tmp,
+    );
+    expect(svc!.credsPath).toBe(join(tmp, "subdir/creds.json"));
+  });
+
+  it("honours an absolute creds_path verbatim", () => {
+    const abs = join(tmp, "elsewhere", "creds.json");
+    const svc = buildCodexAuthService(
+      { refresh_token: "rt_lit", creds_path: abs },
+      "/should/be/ignored",
+    );
+    expect(svc!.credsPath).toBe(abs);
   });
 });

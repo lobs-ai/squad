@@ -44,6 +44,14 @@ export const MODEL_CATALOG: Record<string, ModelInfo[]> = {
     { id: "openai/o1",            displayName: "o1",          provider: "openai", contextWindow: 200_000, notes: "reasoning" },
     { id: "openai/o3-mini",       displayName: "o3-mini",     provider: "openai", contextWindow: 200_000, notes: "reasoning, cheap" },
   ],
+  // Same models, served through the ChatGPT subscription's Codex endpoint
+  // (chatgpt.com/backend-api/codex/responses) — auth is OAuth via
+  // `squad codex-auth login`, not an API key.
+  "openai-codex": [
+    { id: "openai-codex/gpt-5-codex",        displayName: "GPT-5 Codex",        provider: "openai-codex", contextWindow: 400_000, notes: "subscription · flagship" },
+    { id: "openai-codex/gpt-5",              displayName: "GPT-5",              provider: "openai-codex", contextWindow: 400_000, notes: "subscription" },
+    { id: "openai-codex/codex-mini-latest",  displayName: "Codex Mini",         provider: "openai-codex", contextWindow: 200_000, notes: "subscription · cheap" },
+  ],
   google: [
     { id: "google/gemini-2.0-flash", displayName: "Gemini 2.0 Flash", provider: "google", contextWindow: 1_000_000, notes: "cheap + fast" },
     { id: "google/gemini-1.5-pro",   displayName: "Gemini 1.5 Pro",   provider: "google", contextWindow: 2_000_000 },

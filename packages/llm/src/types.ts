@@ -392,5 +392,23 @@ export interface ClientConfig {
        */
       getActiveTools?: () => ToolDefinition[] | undefined;
     };
+    /**
+     * Options for the OpenAI Codex (ChatGPT subscription) provider.
+     *
+     * - `tokenProvider`: hands the client a fresh access token + account
+     *   id per request. Wired by the gateway to a `CodexAuthService`
+     *   instance that handles refresh + on-disk persistence. Required —
+     *   without it, `createClient` has no way to authenticate.
+     * - `sessionId`: optional sticky id. Passed as the Responses API's
+     *   `prompt_cache_key` so multi-turn sessions hit the prompt cache.
+     */
+    "openai-codex"?: {
+      tokenProvider: {
+        getAccessToken(): Promise<string>;
+        getAccountId?: () => string | undefined;
+        forceRefresh?: () => Promise<void>;
+      };
+      sessionId?: string;
+    };
   };
 }

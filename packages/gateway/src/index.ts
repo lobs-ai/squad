@@ -95,7 +95,7 @@ import {
   inferProvider,
   type LLMClient,
 } from "@squad/llm";
-import { resolveProviderConfig } from "./llm-config.js";
+import { resolveProviderConfig, buildCodexAuthService } from "./llm-config.js";
 import { RotatingLLMClient, shouldRotateKeys } from "./rotating-client.js";
 import { createGatewayServer, type GatewayHandle } from "./server.js";
 import { seedCoreFiles } from "./agent-prompt.js";
@@ -525,6 +525,31 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
       },
     };
   }
+
+  // Wire the openai-codex provider's token provider: bootstrap a
+  // CodexAuthService against the configured refresh token, point its
+  // cache at <data_dir>/codex-creds.json. The client itself is
+  // storage-agnostic — `tokenProvider` is the only seam between the
+  // gateway's persistence layer and the LLM request layer.
+  const codexProviderCfg = config.llm.providers["openai-codex"] as
+    | import("./llm-config.js").ProviderConfig
+    | undefined;
+  const codexAuth = buildCodexAuthService(codexProviderCfg, config.server.data_dir);
+  if (codexAuth) {
+    const existing = llmResolution.clientConfig.providerOptions ?? {};
+    llmResolution.clientConfig.providerOptions = {
+      ...existing,
+      "openai-codex": {
+        ...(existing["openai-codex"] ?? {}),
+        tokenProvider: {
+          getAccessToken: () => codexAuth.getAccessToken(),
+          getAccountId: () => codexAuth.getAccountId(),
+          forceRefresh: () => codexAuth.forceRefresh(),
+        },
+      },
+    };
+  }
+
   const sharedClient: LLMClient | undefined = (() => {
     if (opts.clientOverride) return opts.clientOverride;
     if (!config.llm.primary?.model) return undefined;
