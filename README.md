@@ -67,3 +67,7 @@ Early development. The current repo is the design; packages under `packages/` ar
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+MIT — see [LICENSE](./LICENSE).
