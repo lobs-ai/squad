@@ -278,6 +278,14 @@ export async function runChatTurn(
       );
     }
 
+    // Channel turns (a session a channel created — Discord/Slack/etc.) deliver
+    // replies explicitly via the `reply` tool: nothing the agent writes is
+    // auto-sent. Detect via the session's `platform`, which channels set at
+    // session.start. Dashboard/CLI/subagent/cron turns have no platform and
+    // keep the direct "assistant message is the reply" behavior.
+    const channelPlatform = deps.sessions.tryGet(options.sessionId)?.platform ?? undefined;
+    const isChannelTurn = !!channelPlatform;
+
     // Compute the per-turn tool allow-list. Priority:
     //   1. options.toolsAllow — caller pinned a specific list (e.g. cron jobs).
     //   2. toolGroups + per-session unlocked set — the lazy-loading path.
@@ -289,6 +297,18 @@ export async function runChatTurn(
         ...options.toolGroups.activeToolNames(unlocked),
         "describe_tool_group",
       ];
+    }
+
+    // Resolve the final tool name list, then gate `reply`: it's registered but
+    // belongs to no group, so it never shows up via the computation above. We
+    // add it iff this is a channel turn, and strip it everywhere else so a
+    // dashboard/CLI agent can't call a tool with nowhere to send.
+    let toolNames = activeTools
+      ? options.toolRegistry.names().filter((n) => activeTools!.includes(n))
+      : options.toolRegistry.names();
+    toolNames = toolNames.filter((n) => n !== "reply");
+    if (isChannelTurn && options.toolRegistry.names().includes("reply")) {
+      toolNames.push("reply");
     }
 
     const toolGroupsIndex =
@@ -333,6 +353,9 @@ export async function runChatTurn(
     } catch {
       provider = undefined;
     }
+    const channelReplySection = isChannelTurn
+      ? buildChannelReplySection(channelPlatform!)
+      : undefined;
     const systemPrompt =
       options.systemPrompt ??
       buildSquadSystemPrompt({
@@ -345,6 +368,7 @@ export async function runChatTurn(
         ...(contextFilesSection ? { contextFilesSection } : {}),
         ...(deps.runtimeEnvSection ? { runtimeEnvSection: deps.runtimeEnvSection } : {}),
         ...(startupWarnings.length > 0 ? { startupWarnings } : {}),
+        ...(channelReplySection ? { channelReplySection } : {}),
       });
 
     // toolUseId → tool_calls row id, so tool_result can find the row begin()
@@ -361,9 +385,7 @@ export async function runChatTurn(
       model: options.model,
       fallbacks: options.fallbacks ?? [],
       cwd: options.cwd,
-      tools: activeTools
-        ? options.toolRegistry.names().filter((n) => activeTools!.includes(n))
-        : options.toolRegistry.names(),
+      tools: toolNames,
       toolRegistry: options.toolRegistry,
       timeout: { total: 300 },
       session,
@@ -473,6 +495,30 @@ export async function runChatTurn(
   persister!.finalize(result.output);
 
   return { userMessage, runId, result };
+}
+
+/**
+ * System-prompt section for channel turns. Spells out the explicit-send
+ * contract: the turn's text is internal, and the `reply` tool is the only way
+ * to actually send — any number of times, or not at all.
+ */
+function buildChannelReplySection(platform: string): string {
+  return `## You're on a channel — sending is explicit
+This conversation is happening on a **${platform}** channel. Messages from the
+user arrive as your input, and **nothing you write is delivered automatically**
+— your turn's text (reasoning, draft answers) stays internal to the gateway.
+
+To actually say something to the user, call the \`reply\` tool:
+
+- Call \`reply\` whenever you want to send a message — a quick acknowledgement at
+  the start, progress in the middle, the final result at the end. Each call
+  sends one message.
+- You can call it several times in one turn, or **not at all**. If no response
+  is warranted, just don't call it — silence is a valid outcome here.
+- It posts to this channel by default; pass \`channel_id\` to target a different
+  channel/thread on the same platform.
+- Don't write your answer as plain turn text expecting it to be sent — it won't
+  be. Route everything the user should see through \`reply\`.`;
 }
 
 // Re-export textBlocks for the chat dispatcher to normalize input.

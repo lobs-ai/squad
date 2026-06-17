@@ -167,6 +167,21 @@ export interface ChannelHandleCapabilities {
   supportsApprovals?: boolean;
 }
 
+/** Where a `reply` should land. */
+export interface ChannelSendTarget {
+  /**
+   * The originating session's remote id (the channel's own route key, e.g.
+   * Discord's `guild:channel:user`). The channel decodes whatever it stored
+   * at session-start time. May be null for sessions without a remote.
+   */
+  remoteId: string | null;
+  /**
+   * Explicit channel/thread id to send to instead of the session's default.
+   * When set, the channel posts here rather than decoding `remoteId`.
+   */
+  channelId?: string;
+}
+
 export interface ChannelHandle {
   id: string;
   /** Short kind identifier surfaced over the protocol — e.g. "discord". */
@@ -177,6 +192,13 @@ export interface ChannelHandle {
   capabilities?: ChannelHandleCapabilities;
   start(): Promise<void>;
   stop(): Promise<void>;
+  /**
+   * Deliver a message to the channel immediately, mid-run. Backs the generic
+   * `reply` tool so the agent can post to its originating channel without the
+   * gateway knowing any platform specifics. Optional — a channel that can't
+   * accept agent-initiated sends just omits it.
+   */
+  send?(target: ChannelSendTarget, content: string): Promise<{ messageId?: string }>;
 }
 
 /**

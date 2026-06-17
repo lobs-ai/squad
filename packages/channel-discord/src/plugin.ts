@@ -48,6 +48,17 @@ export default definePlugin({
       label: "Discord",
       start: () => channel.connect(),
       stop: () => channel.disconnect(),
+      // Backs the generic `reply` tool: post a message to the originating
+      // Discord channel mid-run. The session's remoteId is the bot's route
+      // key `guild:channel:user` — the channel snowflake is the middle field.
+      send: async ({ remoteId, channelId }, content) => {
+        const target = channelId ?? remoteId?.split(":")[1];
+        if (!target) {
+          throw new Error("discord reply: could not resolve a channel id to send to");
+        }
+        await channel.sendToChannel(target, content);
+        return {};
+      },
     });
     // Contribute the discord tool group + its executors. The group makes the
     // tools lazy-loadable (agents must call describe_tool_group({groups:

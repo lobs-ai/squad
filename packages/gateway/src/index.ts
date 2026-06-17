@@ -9,6 +9,7 @@ import {
   PromptContextStore,
   registerTaskTools,
   registerAskUserTool,
+  registerReplyTool,
   registerSpawnSubagentTool,
   registerConfigTools,
   registerMemoryTools,
@@ -77,6 +78,7 @@ import { McpRegistry } from "./mcp/registry.js";
 import { SubagentRuntimeRegistry } from "./subagents/runtime.js";
 import { getHookRegistry } from "@squad/runner";
 import { ChannelRegistry } from "./channels/registry.js";
+import { replyBackendFor } from "./channels/reply-backend.js";
 import { PeerSource } from "./peers/source.js";
 import { PairingStore } from "./auth/pairing.js";
 import { JsonFilePairingPersistence } from "./auth/pairing-persist.js";
@@ -963,6 +965,12 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
   };
   registerAppTools(toolRegistry, appBackend);
 
+  // The `reply` tool delivers agent-authored messages back to the channel a
+  // session is on. Registered here (after the channel registry exists) so its
+  // backend can resolve session → platform → channel sender at call time.
+  // runs.ts exposes it to the LLM only on channel turns.
+  registerReplyTool(toolRegistry, replyBackendFor({ sessions, channels }));
+
   // ── PromptContext mutators ────────────────────────────────────────────
   // Push the current state of channels / delivery handlers / plugins /
   // skills / toolsets into the live PromptContextStore. Each call bumps
@@ -1436,6 +1444,19 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
       if (!binding) {
         const sess = sessions.tryGet(sessionId);
         if (sess?.parentSessionId) return { surface: "subagent" };
+        // Channels create sessions with `platform` set (e.g. "discord") but
+        // don't register an in-memory binding, so fall back to platform to
+        // recognize channel turns — otherwise they'd render as "dashboard"
+        // and channel-conditional prompt fragments would never fire.
+        if (sess?.platform) {
+          const rec = channels.list().find((c) => c.kind === sess.platform);
+          return {
+            surface: "channel",
+            channelKind: sess.platform,
+            ...(rec ? { channelId: rec.id } : {}),
+            ...(rec?.capabilities ? { capabilities: rec.capabilities } : {}),
+          };
+        }
         return { surface: "dashboard" };
       }
       const channelRecord = channels.recordFor(binding.channelId);

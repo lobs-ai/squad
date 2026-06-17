@@ -53,12 +53,13 @@ export class DiscordChannel extends Channel {
     this.options.logger?.info({}, "discord channel: gateway WS connected");
 
     this.gateway.onEvent((topic, data) => {
-      if (topic.startsWith("chat.text_delta/")) {
-        const d = data as { sessionId: string; delta: string };
-        this.onTextDelta(d.sessionId, d.delta);
-      } else if (topic.startsWith("chat.assistant_message/")) {
-        const d = data as { sessionId: string; message: { content: Array<{ type: string; text?: string }> } };
-        this.onAssistantFinal(d.sessionId, d.message.content);
+      // The agent delivers its own replies via the `reply` tool during the
+      // run, so we don't auto-send anything on assistant_message — we only use
+      // it as the run-complete signal to stop the typing indicator and clean
+      // up. Errors still surface to the channel so failures aren't silent.
+      if (topic.startsWith("chat.assistant_message/")) {
+        const d = data as { sessionId: string };
+        this.onRunComplete(d.sessionId);
       } else if (topic.startsWith("chat.error/")) {
         const d = data as { sessionId: string; message: string };
         this.onChatError(d.sessionId, d.message);
@@ -103,9 +104,13 @@ export class DiscordChannel extends Channel {
         const stopTyping = payload.reply.startTyping();
         this.activeSessions.set(sessionId, { sink: payload.reply, stopTyping });
 
+        // Frame the inbound message so the agent knows it arrived from a
+        // Discord channel (and which one). How to respond — that nothing is
+        // auto-sent and replies go through the `reply` tool — is covered by
+        // the system prompt for channel turns.
         await this.gateway.request("chat.send", {
           sessionId,
-          content: payload.content,
+          content: frameInbound(payload),
         });
       },
     });
@@ -146,39 +151,41 @@ export class DiscordChannel extends Channel {
     }
   }
 
-  private accumulators: Map<string, string> = new Map();
-
-  private onTextDelta(sessionId: string, delta: string): void {
-    if (!this.activeSessions.has(sessionId)) return;
-    // Accumulate so an error after partial generation can still surface
-    // whatever the model produced. Deltas don't drive any UI — typing
-    // indicator stays on until the final message lands.
-    const acc = (this.accumulators.get(sessionId) ?? "") + delta;
-    this.accumulators.set(sessionId, acc);
-  }
-
-  private onAssistantFinal(sessionId: string, content: Array<{ type: string; text?: string }>): void {
+  /**
+   * Run finished. The agent's replies (if any) already went out via the
+   * `reply` tool, so there's nothing to send here — just stop the typing
+   * indicator and release the per-message sink.
+   */
+  private onRunComplete(sessionId: string): void {
     const session = this.activeSessions.get(sessionId);
     if (!session) return;
-    const text = content
-      .map((b) => (b.type === "text" && b.text ? b.text : ""))
-      .filter(Boolean)
-      .join("\n");
     session.stopTyping();
-    if (text) void session.sink.send(text);
     this.activeSessions.delete(sessionId);
-    this.accumulators.delete(sessionId);
   }
 
   private onChatError(sessionId: string, message: string): void {
     const session = this.activeSessions.get(sessionId);
     if (!session) return;
-    const acc = this.accumulators.get(sessionId);
-    const errLine = `⚠️ ${message}`;
-    const final = acc ? `${acc}\n\n${errLine}` : errLine;
     session.stopTyping();
-    void session.sink.send(final);
+    void session.sink.send(`⚠️ ${message}`);
     this.activeSessions.delete(sessionId);
-    this.accumulators.delete(sessionId);
   }
+}
+
+/**
+ * Wrap an inbound Discord message with a one-line source header so the agent
+ * knows where it came from (and the channel id, in case it wants to target a
+ * thread or use the richer `discord_message` tool). The reply mechanics live
+ * in the system prompt, not here.
+ */
+function frameInbound(payload: {
+  channelId: string;
+  guildId: string | null;
+  userName: string;
+  content: string;
+}): string {
+  const where = payload.guildId
+    ? `channel ${payload.channelId}, guild ${payload.guildId}`
+    : `DM, channel ${payload.channelId}`;
+  return `[New Discord message — ${where}, from ${payload.userName}]\n${payload.content}`;
 }

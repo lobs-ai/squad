@@ -80,6 +80,21 @@ export class ChannelRegistry {
     return { ...DEFAULT_CAPS, ...e.handle.capabilities };
   }
 
+  /**
+   * The outbound `send` for the first registered channel of a given kind, or
+   * null when no such channel exists or it can't accept agent-initiated sends.
+   * Used by the `reply` tool to route a message to the channel that owns a
+   * session (matched on the session's `platform`, which equals the channel
+   * kind, e.g. "discord").
+   */
+  senderForKind(kind: string): NonNullable<ChannelHandle["send"]> | null {
+    for (const e of this.entries.values()) {
+      const handleKind = e.handle.kind ?? "channel";
+      if (handleKind === kind && e.handle.send) return e.handle.send.bind(e.handle);
+    }
+    return null;
+  }
+
   bind(input: { channelId: string; sessionId: string; route: Record<string, unknown> }): ChannelBinding {
     if (!this.entries.has(input.channelId)) {
       throw new Error(`unknown channel: ${input.channelId}`);

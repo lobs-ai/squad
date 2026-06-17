@@ -357,6 +357,14 @@ export interface BuildSquadPromptInput {
    *      predicate can scope a warning to a specific surface/channel).
    */
   startupWarnings?: string[];
+  /**
+   * Pre-rendered channel-reply guidance. Set by `runs.ts` only on channel
+   * turns (a session bound to Discord/Slack/etc.). Explains that the turn's
+   * text is internal and the agent must use the `reply` tool to actually send
+   * — possibly several times, possibly not at all. Omitted on dashboard/CLI
+   * turns, where the assistant message is delivered directly.
+   */
+  channelReplySection?: string;
 }
 
 /**
@@ -382,6 +390,7 @@ export function buildSquadSystemPrompt(input: BuildSquadPromptInput): string {
     contextFilesSection,
     runtimeEnvSection,
     startupWarnings,
+    channelReplySection,
   } = input;
   const sections: string[] = [];
 
@@ -469,6 +478,10 @@ agent-facing index that points to the right page for the question. **Do not
 grep your own source code to figure out how Squad works** — that's what
 those docs are for. If you don't know where the Squad checkout is on this
 machine, use \`find_files\` for \`docs/agent/INDEX.md\`.`);
+
+  if (channelReplySection && channelReplySection.trim().length > 0) {
+    sections.push(channelReplySection);
+  }
 
   if (runtimeEnvSection && runtimeEnvSection.trim().length > 0) {
     sections.push(runtimeEnvSection);

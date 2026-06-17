@@ -6,6 +6,7 @@ export * from "./prompt-slots.js";
 export * from "./groups.js";
 export * from "./tasks/index.js";
 export * from "./questions/index.js";
+export * from "./reply/index.js";
 export * from "./subagents/index.js";
 export * from "./config/index.js";
 export * from "./memory/index.js";
