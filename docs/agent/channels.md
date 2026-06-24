@@ -5,6 +5,10 @@ the dashboard's chat view. **Every** channel is a plugin. The gateway has no
 hard-coded knowledge of any specific channel; even Discord arrives as a
 plugin (it just happens to be loaded in-process by default).
 
+Two channels ship today: **`channel-discord`** (the reference channel) and
+**`channel-slack`**, plus the dashboard's built-in chat view. Both are plugins
+on `@squad/channel-sdk`; adding a third is "implement the renderer contract."
+
 ## Two deployment modes
 
 | Mode         | Where it runs                              | When to use                        |
@@ -120,6 +124,7 @@ Don't import `discord.js` (or any channel-specific library) into
 
 - SDK: `packages/channel-sdk/src/`
 - Discord: `packages/channel-discord/src/`
+- Slack: `packages/channel-slack/src/`
 - Registry: `packages/gateway/src/channels/registry.ts`
 - Protocol: `packages/protocol/src/namespaces/channels.ts`
 - SPEC: `SPEC.md` § "Discord Implementation Plan" for D0/D1/D2 phasing

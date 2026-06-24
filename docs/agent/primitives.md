@@ -9,8 +9,8 @@ features onto `chat.*` — extend the right namespace or add a new one.**
 ## Subagents
 
 A subagent is a child agent loop with its own session, model, tools, system
-prompt, and budget. Spawned via the `spawn_subagent` tool (default group:
-`subagents`).
+prompt, and budget. Spawned via the `spawn_subagent` tool (in the lazy
+`subagents` tool group — unlock it with `describe_tool_group`).
 
 ### Two flavours
 

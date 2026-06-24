@@ -21,7 +21,7 @@ And one discipline: **vendored, not imported.** `packages/runner` and `packages/
 
 One **gateway** process owns sessions, the agent loop, plugins, storage, the subagent pool, the task store, and the question store. Channels and clients connect over the same WebSocket wire protocol as the **React dashboard** (served by the gateway). See `SPEC.md` for the full design.
 
-v1 ships exactly one first-party channel — **Discord** — to prove the contract end-to-end. By default Discord runs **in-process** as a channel plugin so `docker compose up` is one container. The same package runs as a standalone process via `@squad/channel-sdk` when users want isolation. See the [Discord Implementation Plan](SPEC.md#discord-implementation-plan) in `SPEC.md`.
+Two first-party channels ship — **Discord** (the reference channel) and **Slack** — both as channel plugins on `@squad/channel-sdk`. By default they run **in-process** so `docker compose up` is one container; the same package runs as a standalone process when users want isolation. A new channel is "implement the renderer contract" — no gateway or agent-side changes. See `SPEC.md` for the channel design.
 
 **LLM providers:** v1 ships every provider the vendored `packages/llm` supports (all of agentic's providers — anthropic, openai, openrouter, google, groq, deepseek, mistral, together, xai, perplexity, fireworks, cerebras, cohere, sambanova, novita, hyperbolic, lambda, ollama, lmstudio, llamacpp, vllm, z-ai, minimax, kimi, opencode-zen, opencode-go, plus the `openai-compatible` escape hatch). They all run through three client implementations: native Anthropic, native OpenAI, and a shared OpenAI-compatible client. The default model is Anthropic but any installed provider is usable per-session — and per-subagent.
 
@@ -41,25 +41,29 @@ v1 ships exactly one first-party channel — **Discord** — to prove the contra
 ```
 squad/
 ├── packages/
-│   ├── gateway/            # WS/HTTP server, dispatch, plugin host, storage, subagent pool,
-│   │                       # task store, question store
+│   ├── gateway/            # WS/HTTP server, dispatch, plugin host, storage, subagent pool, task &
+│   │                       # question stores, approvals, routines, memory, MCP, apps, doctor, traces
 │   ├── runner/             # Agent loop (VENDORED from ../agentic — see VENDOR.md, do not add as dep)
 │   ├── llm/                # LLMClient + provider implementations (VENDORED from ../agentic)
-│   ├── tools/              # BaseTool + registry + built-in tools:
-│   │                       # spawn_subagent, create_task, update_task, list_tasks, get_task, ask_user
-│   ├── protocol/           # Wire types + Zod schemas (includes subagents.*, tasks.*, questions.*)
-│   ├── plugin-sdk/         # definePlugin() contract (kinds: tool, provider, channel, skill, routine, subagent)
-│   ├── channel-sdk/        # Shared runtime for channel processes + renderer contract for tasks + questions
+│   ├── tools/              # BaseTool + registry + built-in tools and tool groups (lazy loading)
+│   ├── protocol/           # Wire types + Zod schemas (subagents.*, tasks.*, questions.*, …)
+│   ├── plugin-sdk/         # definePlugin() contract + manifest (squad.plugin.json) validation
+│   ├── plugin-test/        # Conformance harness for plugin authors
+│   ├── channel-sdk/        # Shared runtime for channel processes + renderer contract
 │   ├── channel-discord/    # First-party Discord channel (in-process by default; standalone supported)
+│   ├── channel-slack/      # Second first-party channel (Slack)
 │   ├── client-cli/         # Reference terminal client — proves any client can be built on the protocol
-│   └── dashboard/          # React + Vite web UI
-├── extensions/             # User-authored plugins
+│   ├── dashboard/          # React + Vite web UI, served by the gateway at /
+│   ├── memcore/            # Typed memory engine (Postgres-backed, hybrid FTS + vector retrieval)
+│   ├── app-sdk/            # SDK for "apps" the gateway registers, probes, and proxies
+│   └── plugin-google-auth/, plugin-gmail/, plugin-google-calendar/, plugin-google-drive/  # first-party plugins
+├── extensions/             # User-authored plugins (example subagent + toolset plugins)
 ├── examples/
-│   ├── compose.yml                  # default: one service, Discord in-process
-│   ├── compose.split-channels.yml   # opt-in: gateway + discord as separate services
+│   ├── compose.yml                  # default: one service, channels in-process
+│   ├── compose.split-channels.yml   # opt-in: gateway + channel as separate services
 │   └── subagents/                   # starter subagent definitions
 ├── VENDOR.md               # pinned source commits for files copied from lobs/agentic
-└── docs/
+└── docs/                   # SPEC.md + agent-facing reference under docs/agent/
 ```
 
 Keep packages single-purpose. The gateway must not import `discord.js` (or any channel-specific library) directly; channel-ness lives in the channel packages and is loaded via the plugin host. Clients depend on `@squad/protocol`, never the other way around.
@@ -201,36 +205,40 @@ When you change anything the user sees in the dashboard (`packages/dashboard`) �
 
 ## Status
 
-The ten-phase v1 plan in `PLAN.md` is shipped on `main`. Each package
-compiles and tests pass (`pnpm -r build`, `pnpm -r test`). Current
-snapshot:
+The original ten-phase v1 plan (`PLAN.md`) shipped, and the platform has
+grown well past it. Every package compiles and tests pass (`pnpm -r build`,
+`pnpm -r test`). Current snapshot:
 
-- `@squad/protocol` — every namespace (`session.*`, `chat.*`,
-  `subagents.*`, `tasks.*`, `questions.*`, `approvals.*`, `plugins.*`,
-  `channels.*`, `routines.*`, `admin.*`) has a Zod schema and a TS type.
-- `@squad/runner` / `@squad/llm` / `@squad/tools` — vendored from
-  agentic `7daf6df`. See `VENDOR.md`.
-- `@squad/gateway` — HTTP + WS + SQLite (migrations 001–005), the full
-  dispatch layer, delivery coordinator, subagent pool, plugin host,
-  approval policy engine, cron routines, dashboard statics.
-- `@squad/client-cli` — reference terminal client + `ProtocolClient`
-  reusable shape.
-- `@squad/channel-sdk` + `@squad/channel-discord` — SDK with
-  reconnecting client, session map, renderer contract. Discord D0+D1
-  in; D2 (buttons, task embed, reaction approvals, attachments) is
-  scaffolded but not end-to-end — it needs a live test guild.
+- `@squad/protocol` — namespaces `session.*`, `chat.*`, `subagents.*`,
+  `tasks.*`, `questions.*`, `approvals.*`, `plugins.*`, `channels.*`,
+  `routines.*`, `commands.*`, `toolsets.*`, `apps.*`, `logs.*`, and
+  `admin.*` (which also carries pairing `pair.*`, `peers.changed`, and
+  `trace.step`). Each has a Zod schema and a TS type.
+- `@squad/runner` / `@squad/llm` / `@squad/tools` — vendored from agentic
+  `7daf6df`. See `VENDOR.md`.
+- `@squad/gateway` — HTTP + WS + SQLite, the full dispatch layer, delivery
+  coordinator, subagent pool (incl. stdio runtimes for Claude Code / Codex),
+  plugin host (manifested, hot-reload), approval engine (tag-match +
+  predicate-rule DSL), cron **and webhook** routines, MCP registry + server,
+  MemCore-backed memory with idle session ingestion, apps registry/proxy,
+  doctor, crash recovery, pairing + peers, `trace.step` observability,
+  credential-pool rotation, an OpenAI-compatible `/v1` HTTP shim, and the
+  dashboard statics.
+- `@squad/client-cli` — reference terminal client + reusable `ProtocolClient`.
+- `@squad/channel-sdk` + `@squad/channel-discord` + `@squad/channel-slack` —
+  SDK with reconnecting client, session map, renderer contract; Discord and
+  Slack both shipped as channel plugins.
 - `@squad/dashboard` — React + Vite, served by the gateway at `/`.
+- `@squad/memcore` — standalone typed memory engine (Postgres-backed),
+  hybrid FTS + vector retrieval, typed memory graph.
 
-Explicit gaps worth attention on the next pass:
-- Discord D2 (ask-user buttons, pinned task embed, reaction approvals,
-  attachments). All the protocol + SDK pieces are in place.
-- Approval escalation wiring — the policy engine + `approvals.*`
-  dispatch exist but `before_tool_call` isn't wired to escalate yet.
-- Routine execution — routines register and fire, but firing only
-  creates a session; it doesn't yet push the prompt through
-  `runChatTurn` or honor the `delivery` field.
-- FTS5 search UI — the index is populated, `session.search` is
-  stubbed.
+Genuine gaps / not-yet-built:
+- A sandboxed code-execution tool (`run_script` / RPC) and a Docker-isolated
+  exec backend.
+- Markdown export/import for memory — MemCore is the single source of truth;
+  there's no on-disk mirror.
+- Agent-authored skills — skills exist as parameterized subagent definitions,
+  but the agent doesn't synthesize new ones from experience yet.
 
-When you add work, update `PLAN.md` to reflect the new shape.
-Check `SPEC.md`'s Roadmap section before starting anything new.
+When you add work, keep `README.md`, this file, and `docs/agent/` in sync.
+Check `SPEC.md`'s roadmap before starting anything new.

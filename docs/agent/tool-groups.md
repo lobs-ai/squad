@@ -19,17 +19,20 @@ These are the tools you *always* have without doing anything.
 
 ## Lazy groups (in the index, not in the schema)
 
-| Group        | Tools (high level)                                                 |
-|--------------|--------------------------------------------------------------------|
-| `cron`       | manage cron-scheduled routines                                     |
-| `tasks`      | `create_task`, `update_task`, `list_tasks`, `get_task`             |
-| `subagents`  | `spawn_subagent`, `create_subagent`, etc.                          |
-| `memory`     | propose / update / archive / search memory entries                 |
-| `config`     | inspect / set gateway config                                       |
-| `restart`    | restart the gateway (rare; user-initiated)                         |
-| `doctor`     | health checks                                                      |
-| `html-to-pdf`| render HTML to PDF                                                 |
-| `pptx`       | build PowerPoint presentations                                     |
+| Group              | Tools (high level)                                          |
+|--------------------|-------------------------------------------------------------|
+| `plugin-management`| install / enable / disable / configure plugins              |
+| `env`              | read / set gateway environment + secrets                    |
+| `cron`             | manage cron- and webhook-scheduled routines                 |
+| `tasks`            | `create_task`, `update_task`, `list_tasks`, `get_task`      |
+| `subagents`        | `spawn_subagent`, `create_subagent`, etc.                   |
+| `memory`           | propose / update / archive / search memory entries          |
+| `config`           | inspect / set gateway config                                |
+| `restart`          | restart the gateway (rare; user-initiated)                  |
+| `doctor`           | health checks                                               |
+| `apps`             | list / inspect registered apps                              |
+| `html-to-pdf`      | render HTML to PDF                                          |
+| `pptx`             | build PowerPoint presentations                             |
 
 Source of truth: `BUILTIN_GROUPS` in `packages/tools/src/index.ts`.
 

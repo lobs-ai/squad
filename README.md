@@ -28,15 +28,16 @@ Manage multiple squads with `squad mgr` — see `squad mgr help`.
 ## How it works
 
 ```
- Discord  ─┐                   ┌──▶  Runner (agent loop)  ──▶  LLM + Tools
-Dashboard ─┼──WS──▶  Gateway  ─┤                          ──▶  Subagent pool (parallel workers)
- Your CLI ─┘                   ├──▶  Task store (session-tree-scoped, shared)
-                               ├──▶  Question store (pending asks, channel-rendered)
-                               └──▶  SQLite (FTS5)
+ Discord  ─┐                    ┌──▶ Runner (agent loop) ──▶ LLM (27 providers) + Tools + MCP servers
+  Slack   ─┤                    ├──▶ Subagent pool (parallel; Claude Code / Codex runtimes plug in)
+Dashboard ─┼──WS──▶ Gateway  ───┼──▶ Task store · Question store · Approval engine (channel-rendered)
+ Your CLI ─┤       + /v1 HTTP   ├──▶ Routines (cron + webhook) · trace.step observability
+   …      ─┘                    ├──▶ SQLite (sessions / messages / tasks, FTS5)
+                                └──▶ MemCore (typed memory, hybrid FTS + vector retrieval)
 ```
 
 - **Gateway** — one long-running process. Owns the wire protocol, sessions, storage, plugins, the agent loop, the subagent pool, the task store, and the question store. Channel-agnostic.
-- **Channels** — anything that speaks the channel contract. Discord ships in-process by default; run it as a separate container for isolation if you want. Each channel declares its rendering capabilities and gets native tasks + questions for free.
+- **Channels** — anything that speaks the channel contract. Discord and Slack ship as channel plugins, in-process by default; run a channel as a separate container for isolation if you want. Each channel declares its rendering capabilities and gets native tasks + questions for free.
 - **Subagents** — `spawn_subagent({id, task, model, tools, budget})`. Each subagent gets its own session, its own live WebSocket topic, and inherits the parent's task list.
 - **Tasks** — `create_task` / `update_task` / `list_tasks`. Scoped to a session tree so parents and subagents coordinate through one list.
 - **Ask-user** — `ask_user({questions: [{question, options, preview?}]})`. One tool call, channel-native rendering.
@@ -45,24 +46,29 @@ Dashboard ─┼──WS──▶  Gateway  ─┤                          ─�
 
 See [SPEC.md](SPEC.md) for the full design.
 
-## What's in v1
+## What's shipped
 
-- **Subagent primitive** — parallel workers, per-subagent model/tools/budget, tree view in dashboard, FTS5 across every run
+- **Subagent primitive** — parallel workers, per-subagent model/tools/budget, tree view in dashboard, FTS5 across every run. External agent runtimes (Claude Code, Codex) plug in as subagent kinds over stdio.
 - **Task primitive** — shared task list per session tree, dependencies, live updates to every client
 - **Ask-user primitive** — structured multiple-choice questions with per-channel native rendering (Discord buttons, dashboard cards, CLI select)
-- **Channel-agnostic gateway** with Discord as the first-party reference channel (in-process by default, out-of-process option documented)
-- **Every LLM provider agentic supports** — native Anthropic, native OpenAI, and ~24 OpenAI-compatible endpoints (OpenRouter, Google, Groq, DeepSeek, Mistral, xAI, Perplexity, Fireworks, Cerebras, Cohere, SambaNova, Novita, Hyperbolic, Lambda, Ollama, LM Studio, llama.cpp, vLLM, z-ai, Minimax, Kimi, plus an `openai-compatible` escape hatch)
-- **Minimal built-in tools** — read/write/list/fetch/search plus the subagent, task, and ask-user tools
-- **SQLite sessions** with FTS5 search across parent and subagent transcripts
-- **Approval queue** for tools tagged `write` / `exec` / `network`; pluggable policy engine for per-path / per-host rules
-- **Cron routines**
-- **Plugin API** for tools, providers, channels, skills, routines, subagents
+- **Two first-party channels** — Discord (reference) and Slack, both as plugins on the channel SDK. In-process by default, out-of-process supported.
+- **MCP, first-class** — MCP servers register as tools indistinguishable from native ones at the registry layer; the gateway can also expose itself as an MCP server.
+- **Agent-curated memory** — MemCore, a separate typed memory engine (hybrid FTS + vector retrieval) feeding eager + per-turn-retrieval prompt blocks, with idle session ingestion.
+- **Every LLM provider agentic supports** — native Anthropic, native OpenAI, and ~24 OpenAI-compatible endpoints (OpenRouter, Google, Groq, DeepSeek, Mistral, xAI, Perplexity, Fireworks, Cerebras, Cohere, SambaNova, Novita, Hyperbolic, Lambda, Ollama, LM Studio, llama.cpp, vLLM, z-ai, Minimax, Kimi, plus an `openai-compatible` escape hatch) — with per-provider credential pools (round-robin + 429 backoff).
+- **Built-in tools, lazy-loaded via tool groups** — read/write/edit/ls, grep/glob/find/code_search, exec, web search/fetch, the three primitives, plus memory, cron, config, env, plugin-management, apps, doctor, restart, html-to-pdf and pptx.
+- **SQLite sessions** with FTS5 search across parent and subagent transcripts; crash recovery re-fires in-flight turns at boot.
+- **Approval engine** — tag-match plus a structured predicate-rule DSL, scoped global / session / subagent, with a live dashboard queue.
+- **Routines** — cron- and webhook-triggered agent runs with prompt / script payloads and pluggable delivery.
+- **HTTP API** — OpenAI-compatible `/v1` shim alongside the WebSocket protocol.
+- **Observability** — structured `trace.step` events per agent-loop iteration.
+- **Context-file auto-discovery** — walks up from `cwd` loading AGENTS.md / CLAUDE.md / SQUAD.md / .cursorrules.
+- **Plugin system** — manifested (`squad.plugin.json`), hot-reloadable; registers tools, providers, channels, skills, routines, subagents, toolsets, slash commands, HTTP routes, prompt fragments, and dashboard UI contributions.
 
-Explicitly **not** in v1: other first-party channels (Slack, Telegram, email, voice), Kubernetes, multi-user, plugin sandboxing, a marketplace, a learning loop / agent-curated memory. See [SPEC.md](SPEC.md#what-v1-is-not) for why.
+Not yet shipped: a sandboxed code-execution tool (`run_script` / RPC), a Docker-isolated exec backend, markdown export/import for memory, agent-authored skills, multi-user, plugin sandboxing, a marketplace, Kubernetes. See [SPEC.md](SPEC.md) for the long-form design.
 
 ## Status
 
-Early development. The current repo is the design; packages under `packages/` are being scaffolded.
+Actively developed and running. ~70K lines across 18 workspace packages; `pnpm -r build` and `pnpm -r test` pass. The four primitives, both channels, MCP, memory, routines, the approval engine, and the dashboard are wired end-to-end. See [AGENTS.md](AGENTS.md) for the per-package snapshot and [docs/agent/](docs/agent/INDEX.md) for the agent-facing reference.
 
 ## Contributing
 

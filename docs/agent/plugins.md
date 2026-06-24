@@ -69,6 +69,7 @@ api.commands.register(cmd)               // slash commands surfaced via commands
 api.toolsets.register(def)               // curated tool bundles for spawn_subagent
 api.delivery.register(kind, handler)     // routine delivery fan-out (e.g. "discord")
 api.promptFragments.register(fragment)   // conditional prompt extensions; see below
+api.http.register(method, path, handler) // mount HTTP routes (OAuth callbacks, webhooks); needs `http` manifest permission
 api.ui.contribute(contribution)          // declarative UI metadata for the dashboard
 api.logger / api.config
 ```

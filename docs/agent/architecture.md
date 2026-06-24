@@ -4,13 +4,15 @@
 
 A self-hostable agent platform. One **gateway** process owns:
 
-- WebSocket + HTTP server
-- Session storage (SQLite)
+- WebSocket + HTTP server (incl. an OpenAI-compatible `/v1` shim)
+- Session storage (SQLite) + crash recovery
 - The agent loop (vendored from `lobs/agentic` — see [vendoring.md](vendoring.md))
-- The plugin host
-- The subagent pool
-- The task store, the question store, the approval queue
-- The cron-based **routine** scheduler
+- The plugin host (manifested, hot-reloadable) and the MCP registry
+- The subagent pool (incl. stdio runtimes for Claude Code / Codex)
+- The task store, the question store, the approval engine (tag-match + rule DSL)
+- The cron- and webhook-based **routine** scheduler
+- MemCore-backed memory (a separate Postgres engine) + idle session ingestion
+- The apps registry/proxy, the doctor, and `trace.step` observability
 - The dashboard (served as static assets at `/`)
 
 Every other piece — Discord, the React dashboard, the CLI, third-party UIs —
@@ -23,11 +25,11 @@ protocol exposes it and any client can do the same.
 │ channel-discord  │─WS─▶│                                      │
 │ dashboard        │─WS─▶│              Gateway                 │
 │ client-cli       │─WS─▶│                                      │
-│ <your client>    │─WS─▶│   dispatch · plugin host · runs.ts   │
-└──────────────────┘     │                                      │
-                         │   subagent pool · tasks · questions  │
+│ channel-slack    │─WS─▶│   dispatch · plugin host · runs.ts   │
+│ <your client>    │─WS─▶│                                      │
+└──────────────────┘     │   subagent pool · tasks · questions  │
                          │   approvals · routines · MemCore     │
-                         │                                      │
+                         │   MCP · apps · traces · /v1 HTTP     │
                          │   SQLite (sessions / messages /      │
                          │   tool_calls / tasks / questions / …)│
                          └──────────────────────────────────────┘
@@ -72,11 +74,16 @@ packages/
 ├── llm/             # LLMClient + provider implementations (VENDORED)
 ├── tools/           # BaseTool + registry + built-ins + tool groups (lazy loading)
 ├── protocol/        # Wire types + Zod schemas — the contract
-├── plugin-sdk/      # definePlugin() + GatewayAPI surface for plugin authors
+├── plugin-sdk/      # definePlugin() + GatewayAPI surface + manifest validation
+├── plugin-test/     # Conformance harness for plugin authors
 ├── channel-sdk/     # Shared runtime for channel processes + renderer contract
 ├── channel-discord/ # First-party Discord channel (in-process by default)
+├── channel-slack/   # Second first-party channel (Slack)
 ├── client-cli/      # Reference terminal client
-└── dashboard/       # React + Vite UI, served by the gateway at /
+├── dashboard/       # React + Vite UI, served by the gateway at /
+├── memcore/         # Typed memory engine (Postgres-backed, hybrid retrieval)
+├── app-sdk/         # SDK for "apps" the gateway registers, probes, and proxies
+└── plugin-google-*  # First-party plugins (google-auth, gmail, calendar, drive)
 extensions/          # User-authored plugins (tools, channels, providers, subagents, …)
 examples/            # compose files, sample config, starter subagent definitions
 ```

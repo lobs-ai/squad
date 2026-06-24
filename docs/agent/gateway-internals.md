@@ -165,7 +165,7 @@ The crash window is one in-flight LLM turn — `runs.ts` flushes at every
 
 `packages/gateway/src/memory/`:
 
-- Backed by a separate `memcore` package (Postgres or local). `service.ts`
+- Backed by a separate `memcore` package (Postgres). `service.ts`
   exposes `eagerForSession(sessionId)` and `retrievalForTurn(query, scope)`.
 - `session-ingest.ts` — extraction pipeline that turns finished runs into
   memory entries.

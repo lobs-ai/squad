@@ -15,6 +15,7 @@ you works. Read the page that matches the question.
 | How do plugins inject conditional prompt hints into tools?        | [plugins.md](plugins.md) § fragments |
 | How does Discord (or any channel) talk to the gateway?            | [channels.md](channels.md)         |
 | What's on the wire? How do I add a new method/event?              | [protocol.md](protocol.md)         |
+| How do MCP servers / external runtimes (Claude Code, Codex) plug in? | [gateway-internals.md](gateway-internals.md) + [plugins.md](plugins.md) |
 | What exactly does the gateway do per turn? Where is X stored?     | [gateway-internals.md](gateway-internals.md) |
 | Where do messages, tasks, memory live in SQLite?                  | [storage-and-memory.md](storage-and-memory.md) |
 | Why are `runner` and `llm` copies, not deps?                      | [vendoring.md](vendoring.md)       |

@@ -22,9 +22,9 @@ One of Squad's three load-bearing claims is **"vendored, not imported — one re
 4. No vendored file is edited without a corresponding note in the file's header and a changelog entry in the re-sync PR. Local edits on top of vendored code are fine — they just need to be visible.
 5. We do not list `@lobs/agentic` (or any `agentic/*` package) as a dependency in any `package.json`.
 
-## Vendored files (v1)
+## Vendored files
 
-Filled in as we import. Track the source commit here the moment a file is copied.
+All vendored files are currently pinned to agentic `7daf6df` (synced 2026-04-23).
 
 ### `packages/runner/src/`
 
@@ -72,8 +72,10 @@ the runner. See the header comment in that file.
 
 ## Files we deliberately do NOT vendor
 
-- `packages/runner/src/session.ts` — Squad has its own SQLite session store.
-- Anything in agentic's runtime layer (WS runtime service) — v1 runs the loop in-process in the gateway.
+- Anything in agentic's runtime layer (the WS runtime service) — Squad runs the loop in-process in the gateway.
+- agentic's resilient-client / circuit-breaker / key-manager machinery — Squad does retries + fallbacks outside the runner (`packages/gateway/src/rotating-client.ts`, `packages/llm/src/chain.ts`).
+
+Note: the runner's in-memory `session.ts` / `session-transcript.ts` **are** vendored (the loop needs them), but Squad's **persistent** session store is its own thing in `packages/gateway/src/db/` — not agentic's.
 
 ## Re-sync cadence
 

@@ -33,22 +33,24 @@ Every method's `params` and `result` are typed via `methodRegistry` in
 registered schema, checks the grant's authorisation, then hands typed params
 to the handler.
 
-## Namespaces (v1)
+## Namespaces
 
 | Namespace     | Purpose                                                                   |
 |---------------|---------------------------------------------------------------------------|
-| `session.*`   | start, resume, end, list, search                                          |
-| `chat.*`      | send (user message), stream (server push), history                        |
-| `subagents.*` | list defs, spawn, cancel, tree, history                                   |
-| `tasks.*`     | create, update, get, list, claim, watch                                   |
+| `session.*`   | start, resume, end, list, search, rename, compact, setModel, wake, stats  |
+| `chat.*`      | send (user message), stream (server push), history, cancel                |
+| `subagents.*` | list / create / delete defs, spawn, cancel, tree, history                 |
+| `tasks.*`     | create, update, get, list, claim, delete, watch                           |
 | `questions.*` | ask, answer, cancel, list (pending), history                              |
-| `approvals.*` | list, decide                                                              |
-| `plugins.*`   | list, enable, disable, reload, configure                                  |
+| `approvals.*` | list, decide, list / add / remove rules, allow_path                       |
+| `plugins.*`   | list, enable, disable, reload, configure, install, uninstall, catalog, describe |
 | `channels.*`  | list, bind / unbind, capabilities                                         |
-| `routines.*`  | list, create, update, delete, run_now                                     |
-| `admin.*`     | health, config, tokens.create, tokens.revoke                              |
+| `routines.*`  | list, create, update, delete, run_now, runs, tail                         |
 | `commands.*`  | list slash commands contributed by plugins                                |
 | `toolsets.*`  | list, resolve toolset bundles                                             |
+| `apps.*`      | list, get, unregister (+ `registered` / `health_changed` events)          |
+| `logs.*`      | tail, entry — log streaming                                               |
+| `admin.*`     | health, config, identity, models, peers (pairing `pair.*` + `trace.step` events live here too) |
 
 Source list: `packages/protocol/src/namespaces/index.ts`. Each namespace is
 its own file in that directory; reading `tasks.ts`, `subagents.ts`, etc. is
@@ -58,12 +60,14 @@ how you discover the exact param/result shapes.
 
 | Family       | Examples                                                                   |
 |--------------|----------------------------------------------------------------------------|
-| Chat         | `chat.user_message`, `chat.assistant_message`, `chat.text_delta`, `chat.tool_call`, `chat.tool_result` |
+| Session      | `session.created`, `session.updated`, `session.wake`                       |
+| Chat         | `chat.user_message`, `chat.assistant_message`, `chat.text_delta`, `chat.tool_call`, `chat.tool_result`, `chat.error` |
 | Subagents    | `subagents.spawned`, `subagents.text_delta`, `subagents.tool_call`, `subagents.tool_result`, `subagents.completed`, `subagents.failed` |
 | Tasks        | `tasks.created`, `tasks.updated`, `tasks.deleted`                          |
 | Questions    | `questions.asked`, `questions.answered`, `questions.cancelled`, `questions.timed_out` |
-| Approvals    | `approvals.pending`, `approvals.decided`                                   |
-| Platform     | `plugins.changed`, `routines.fired`, `log.line`, `context.injected`        |
+| Approvals    | `approvals.pending`, `approvals.decided`, `approvals.rule_added`, `approvals.rule_removed` |
+| Apps         | `apps.registered`, `apps.unregistered`, `apps.health_changed`             |
+| Platform     | `plugins.changed`, `routines.fired`, `log.line`, `context.injected`, `trace.step`, `peers.changed`, `pair.requested` |
 
 Subscriptions are **scoped**. `chat.text_delta/<sessionId>` only delivers
 text deltas for that session. The gateway only sends what the connection's

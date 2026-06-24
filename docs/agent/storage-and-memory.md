@@ -39,7 +39,11 @@ Backups = copy the file. Writes are serialised inside the process.
 
 ## MemCore — typed memory
 
-Separate package. Source-of-truth for cross-session memory entries.
+A separate, **Postgres-backed** package (`packages/memcore/`) — the
+source-of-truth for cross-session memory entries. The gateway's SQLite holds
+**no** memory rows (an early migration created `memory_entry` tables; a later
+one drops them). Memory lives entirely in MemCore: hybrid FTS + vector
+retrieval over a typed memory graph. Requires `MEMCORE_DATABASE_URL`.
 
 ### Entry types (mirrors the agent-side memory taxonomy)
 
