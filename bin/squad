@@ -57,7 +57,7 @@ case "$cmd" in
         *)       extra+=("$a") ;;
       esac
     done
-    exec $cli mgr start --all "${extra[@]}"
+    exec $cli mgr start --all ${extra[@]+"${extra[@]}"}
     ;;
 
   stop)
