@@ -14,6 +14,7 @@ import { attach } from "./wire.js";
 import type { Config } from "./config.js";
 import { registerSessionMethods } from "./dispatch/session.js";
 import { registerChatMethods } from "./dispatch/chat.js";
+import type { HarnessRuntimeDeps } from "./harness-run.js";
 import { registerAdminMethods } from "./dispatch/admin.js";
 import { registerTaskMethods } from "./dispatch/tasks.js";
 import { registerQuestionMethods } from "./dispatch/questions.js";
@@ -172,6 +173,12 @@ export interface GatewayDeps {
    * from the channel binding for the session (or surface defaults).
    */
   renderContextFor?: (sessionId: string) => import("@squad/tools").RenderContext;
+  /**
+   * External-harness runtime. When set and a session adopts a harness, chat
+   * turns run through it instead of the in-process runner. Built by boot from
+   * `config.harness`.
+   */
+  harness?: HarnessRuntimeDeps;
 }
 
 export interface GatewayHandle {
@@ -502,6 +509,7 @@ function buildDispatcher(deps: GatewayDeps): Dispatcher {
     ...(deps.runtimeEnvSection ? { runtimeEnvSection: deps.runtimeEnvSection } : {}),
     ...(deps.promptContextStore ? { promptContextStore: deps.promptContextStore } : {}),
     ...(deps.renderContextFor ? { renderContextFor: deps.renderContextFor } : {}),
+    ...(deps.harness ? { harness: deps.harness } : {}),
   });
   registerTaskMethods(d, deps.tasks, deps.broadcast);
   registerQuestionMethods(d, deps.questions);

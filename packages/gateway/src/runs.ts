@@ -29,10 +29,38 @@ import {
   unregisterActivePersister,
 } from "./run-persistence.js";
 import { runWithAgentContext } from "./agent-context.js";
+import { runHarnessTurn, type HarnessRuntimeDeps } from "./harness-run.js";
+import type { HarnessKind, HarnessSurface, HarnessToolDef } from "@squad/harness";
 
 function textBlocks(content: ContentBlock[] | string): ContentBlock[] {
   if (typeof content === "string") return [{ type: "text", text: content }];
   return content;
+}
+
+/**
+ * Squad primitives to expose to a harness as MCP tools this turn: every
+ * registered tool EXCEPT those the harness covers natively (read/exec/…) and
+ * `reply` outside channel turns.
+ */
+function buildPrimitiveToolDefs(
+  registry: ToolRegistry,
+  nativeMap: Readonly<Record<string, string>>,
+  isChannelTurn: boolean,
+): HarnessToolDef[] {
+  return registry
+    .getDefinitions()
+    .filter((d) => !nativeMap[d.name] && (d.name !== "reply" || isChannelTurn))
+    .map((d) => ({
+      name: d.name,
+      description: d.description,
+      inputSchema: (d.input_schema ?? {}) as Record<string, unknown>,
+    }));
+}
+
+/** Strip a `provider/` prefix from a model id for the harness's namespace. */
+function stripProviderPrefix(model: string): string {
+  const idx = model.lastIndexOf("/");
+  return idx >= 0 ? model.slice(idx + 1) : model;
 }
 
 export interface RunOptions {
@@ -133,6 +161,13 @@ export interface RunDeps {
    * subagent / cron-isolated as appropriate.
    */
   renderContextFor?: (sessionId: string) => RenderContext;
+  /**
+   * External-harness runtime. When set AND the session adopts a harness, the
+   * turn runs through the harness (Claude Agent SDK / Codex SDK) instead of the
+   * in-process runner. Built by boot from `config.harness`; absent in tests and
+   * legacy deployments, which then always use the runner.
+   */
+  harness?: HarnessRuntimeDeps;
 }
 
 /**
@@ -194,6 +229,24 @@ export async function runChatTurn(
       );
     }
 
+    // Decide whether this session runs on an external harness. Sticky once a
+    // session adopts one (so resume targets the same harness conversation);
+    // new sessions without prior assistant history adopt the configured
+    // default, while in-flight legacy sessions stay on the runner so they
+    // don't lose context that only lives in squad's own history.
+    const harnessState = deps.sessions.getHarnessState(options.sessionId);
+    let harnessKind: HarnessKind | null = null;
+    if (deps.harness) {
+      if (harnessState.kind) {
+        harnessKind = harnessState.kind as HarnessKind;
+      } else if (
+        deps.harness.defaultKind &&
+        !history.some((m) => m.role === "assistant")
+      ) {
+        harnessKind = deps.harness.defaultKind;
+      }
+    }
+
     deps.sessions.setStatus(options.sessionId, "running");
     deps.traceRegistry?.register(runId, options.sessionId);
 
@@ -208,16 +261,20 @@ export async function runChatTurn(
     // tool calls. The flush itself is driven by the shared `before_llm_call`
     // hook installed below; we register this run's persister into the
     // module-level map keyed by runId.
-    ensureIncrementalFlushHook(deps.logger);
-    persister = new RunPersister({
-      messages: deps.messages,
-      broadcast: deps.broadcast,
-      sessionId: options.sessionId,
-      session,
-      runId,
-      messageCountBefore,
-    });
-    registerActivePersister(runId, persister);
+    // Runner path only — the harness path persists its own assistant message
+    // and tool calls, and has no runner Session to incrementally flush.
+    if (!harnessKind) {
+      ensureIncrementalFlushHook(deps.logger);
+      persister = new RunPersister({
+        messages: deps.messages,
+        broadcast: deps.broadcast,
+        sessionId: options.sessionId,
+        session,
+        runId,
+        messageCountBefore,
+      });
+      registerActivePersister(runId, persister);
+    }
 
     // Default system prompt: Squad onboarding + the live core files. Read core
     // files at the top of every turn so edits the agent makes mid-session
@@ -451,14 +508,48 @@ export async function runChatTurn(
     // captured at gateway boot (notably the claude-cli MCP bridge
     // executor) can pass them into tool meta. Without this, ask_user
     // and other session-scoped tools throw on every CLI-routed call.
-    const runWithAgentCtx = (): Promise<AgentResult> =>
-      runWithAgentContext({ sessionId: options.sessionId, taskId: runId }, () =>
-        runAgent(spec),
+    let execTurn: () => Promise<AgentResult>;
+    if (harnessKind && deps.harness) {
+      const surface = (renderForPrompt?.surface ?? "dashboard") as HarnessSurface;
+      const squadToolDefs = buildPrimitiveToolDefs(
+        options.toolRegistry,
+        deps.harness.nativeToolMap,
+        isChannelTurn,
       );
-    if (deps.promptContextStore && renderForPrompt) {
-      result = await deps.promptContextStore.runWithRender(renderForPrompt, runWithAgentCtx);
+      execTurn = () =>
+        runHarnessTurn({
+          harness: deps.harness!,
+          kind: harnessKind!,
+          sessionId: options.sessionId,
+          runId,
+          model: stripProviderPrefix(options.model),
+          resume: harnessState.harnessSessionId,
+          hadKind: harnessState.kind !== null,
+          appendSystemPrompt: systemPrompt,
+          squadToolDefs,
+          toolRegistry: options.toolRegistry,
+          cwd: options.cwd,
+          surface,
+          input: { text: spec.task },
+          onTextChunk: spec.onTextChunk,
+          onProgress: spec.onProgress,
+          deps: {
+            sessions: deps.sessions,
+            messages: deps.messages,
+            broadcast: deps.broadcast,
+            logger: deps.logger,
+          },
+        });
     } else {
-      result = await runWithAgentCtx();
+      execTurn = () =>
+        runWithAgentContext({ sessionId: options.sessionId, taskId: runId }, () =>
+          runAgent(spec),
+        );
+    }
+    if (deps.promptContextStore && renderForPrompt) {
+      result = await deps.promptContextStore.runWithRender(renderForPrompt, execTurn);
+    } else {
+      result = await execTurn();
     }
   } catch (err) {
     // Persist whatever made it onto Session._ref() before the throw so the
@@ -492,7 +583,9 @@ export async function runChatTurn(
     result.usage.outputTokens,
   );
 
-  persister!.finalize(result.output);
+  // Runner path finalizes the assistant message here; the harness path already
+  // persisted + broadcast its own inside runHarnessTurn.
+  if (persister) persister.finalize(result.output);
 
   return { userMessage, runId, result };
 }

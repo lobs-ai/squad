@@ -23,6 +23,7 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
+    "@squad/harness": "workspace:*",
     "@squad/llm": "workspace:*",
     "@squad/plugin-sdk": "workspace:*",
     "@squad/protocol": "workspace:*",

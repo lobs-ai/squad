@@ -20,6 +20,8 @@ interface SessionRow {
   tokens_in: number;
   tokens_out: number;
   compact_at_start: number;
+  harness_kind: string | null;
+  harness_session_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -316,6 +318,34 @@ export class SessionStore {
       )
       .run(tokensIn, tokensOut, new Date().toISOString(), id);
     this.emit("updated", this.get(id));
+  }
+
+  // ─── external harness binding ─────────────────────────────────────────────
+  // Which external harness drives this session ("claude" / "codex") and its
+  // harness-side session id, so the next turn resumes the same conversation.
+  // Kind is sticky once set; a null kind means the legacy in-process runner.
+  // Stored as direct columns (not on SessionRecord) — internal to the gateway.
+
+  getHarnessState(id: string): { kind: string | null; harnessSessionId: string | null } {
+    const row = this.db
+      .prepare("SELECT harness_kind, harness_session_id FROM sessions WHERE id = ?")
+      .get(id) as { harness_kind: string | null; harness_session_id: string | null } | undefined;
+    return {
+      kind: row?.harness_kind ?? null,
+      harnessSessionId: row?.harness_session_id ?? null,
+    };
+  }
+
+  setHarnessKind(id: string, kind: string | null): void {
+    this.db
+      .prepare("UPDATE sessions SET harness_kind = ?, updated_at = ? WHERE id = ?")
+      .run(kind, new Date().toISOString(), id);
+  }
+
+  setHarnessSessionId(id: string, harnessSessionId: string): void {
+    this.db
+      .prepare("UPDATE sessions SET harness_session_id = ?, updated_at = ? WHERE id = ?")
+      .run(harnessSessionId, new Date().toISOString(), id);
   }
 
   // ─── ingestion state ────────────────────────────────────────────────────

@@ -11,6 +11,7 @@
     { "path": "../runner" },
     { "path": "../llm" },
     { "path": "../tools" },
-    { "path": "../plugin-sdk" }
+    { "path": "../plugin-sdk" },
+    { "path": "../harness" }
   ]
 }

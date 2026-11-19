@@ -12,6 +12,7 @@ import type { RunCoordinator } from "../delivery/coordinator.js";
 import type { MemoryService } from "../memory/service.js";
 import type { TitleGenerator } from "../title-generator.js";
 import { ProtocolError, ErrorCode, type ContentBlock, type MessageRecord } from "@squad/protocol";
+import type { HarnessRuntimeDeps } from "../harness-run.js";
 
 export interface ChatDeps {
   sessions: SessionStore;
@@ -51,6 +52,8 @@ export interface ChatDeps {
   promptContextStore?: import("@squad/tools").PromptContextStore;
   /** Per-session RenderContext factory; forwarded to runChatTurn. */
   renderContextFor?: (sessionId: string) => import("@squad/tools").RenderContext;
+  /** External-harness runtime; forwarded to runChatTurn. */
+  harness?: HarnessRuntimeDeps;
 }
 
 export function registerChatMethods(dispatcher: Dispatcher, deps: ChatDeps): void {

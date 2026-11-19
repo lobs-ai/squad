@@ -260,6 +260,19 @@ const migrations: Migration[] = [
       CREATE INDEX idx_tool_calls_llm_use_id ON tool_calls(llm_tool_use_id);
     `,
   },
+  {
+    // Records which external harness drives a session and its harness-side
+    // session id, so subsequent turns resume the same conversation. Both
+    // nullable: a NULL harness_kind means the session uses the legacy
+    // in-process runner. harness_kind is sticky once set — you must resume
+    // a harness session with the same harness it was created on.
+    id: 14,
+    name: "session_harness",
+    up: `
+      ALTER TABLE sessions ADD COLUMN harness_kind TEXT;
+      ALTER TABLE sessions ADD COLUMN harness_session_id TEXT;
+    `,
+  },
 ];
 
 export function runMigrations(db: DatabaseHandle): void {

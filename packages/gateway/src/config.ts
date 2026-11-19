@@ -133,6 +133,38 @@ const llmConfigSchema = z
     providers: {},
   });
 
+const harnessConfigSchema = z
+  .object({
+    /**
+     * External harness driving the main agent loop for sessions that adopt
+     * it. "off" (default) keeps the in-process runner. "claude" runs the
+     * Claude Agent SDK; "codex" runs the Codex SDK (Phase 2). A session that
+     * adopts a harness pins it (sticky) so later turns resume the same
+     * conversation. Only new sessions (no prior assistant history) adopt the
+     * default — existing sessions stay on the runner.
+     */
+    default: z.enum(["off", "claude", "codex"]).default("off"),
+    /**
+     * Native leaf tools the harness may use (its own Read/Edit/Bash/…). These
+     * stay out of the squad MCP control plane; squad primitives (ask_user,
+     * tasks, subagents, reply, memory) are exposed via MCP regardless.
+     */
+    native_tools: z
+      .array(z.string())
+      .default([
+        "Read",
+        "Edit",
+        "Write",
+        "Bash",
+        "Grep",
+        "Glob",
+        "WebSearch",
+        "WebFetch",
+        "Task",
+      ]),
+  })
+  .default({});
+
 export const configSchema = z.object({
   server: z
     .object({
@@ -252,6 +284,7 @@ export const configSchema = z.object({
     })
     .default({ tokens: [] }),
   llm: llmConfigSchema,
+  harness: harnessConfigSchema,
   subagents: z
     .object({
       max_concurrent_global: z.number().int().positive().default(8),

@@ -100,6 +100,8 @@ import {
 import { resolveProviderConfig, buildCodexAuthService } from "./llm-config.js";
 import { RotatingLLMClient, shouldRotateKeys } from "./rotating-client.js";
 import { createGatewayServer, type GatewayHandle } from "./server.js";
+import { claudeHarnessFactory, codexHarnessFactory, type HarnessAuth } from "@squad/harness";
+import { NATIVE_TOOL_MAP, type HarnessRuntimeDeps } from "./harness-run.js";
 import { seedCoreFiles } from "./agent-prompt.js";
 import { memoryBackendFor } from "./memory/backend.js";
 import { MemoryLLMRouter } from "./memory/llm-router.js";
@@ -1379,6 +1381,68 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     defaultModel: config.llm.primary.model,
   });
 
+  // External-harness runtime (Claude Agent SDK / Codex SDK). Built so sessions
+  // that have already pinned a harness keep resuming it; `defaultKind` controls
+  // whether NEW sessions adopt one. Auth resolves lazily — a misconfigured
+  // token only surfaces when a harness turn actually runs.
+  const harnessConfigDir = join(config.server.data_dir, "harness");
+  mkdirSync(harnessConfigDir, { recursive: true });
+  const resolveClaudeAuth = (): HarnessAuth => {
+    const providers = config.llm.providers as Record<
+      string,
+      import("./llm-config.js").ProviderConfig
+    >;
+    const cli = providers["claude-cli"];
+    const oauthEnv = cli?.oauth_token_env ?? "CLAUDE_CODE_OAUTH_TOKEN";
+    const oauth = cli?.oauth_token ?? process.env[oauthEnv];
+    if (oauth && oauth.trim().length > 0) return { mode: "subscription", token: oauth };
+    const anthropic = providers["anthropic"];
+    const apiEnv = anthropic?.api_key_env ?? "ANTHROPIC_API_KEY";
+    const apiKey = anthropic?.api_key ?? process.env[apiEnv];
+    if (apiKey && apiKey.trim().length > 0) return { mode: "api-key", token: apiKey };
+    throw new Error(
+      "claude harness requires auth: run `claude setup-token` and set " +
+        "CLAUDE_CODE_OAUTH_TOKEN (or providers.claude-cli.oauth_token), or set ANTHROPIC_API_KEY",
+    );
+  };
+  const resolveCodexAuth = (): HarnessAuth => {
+    const providers = config.llm.providers as Record<
+      string,
+      import("./llm-config.js").ProviderConfig
+    >;
+    const openai = providers["openai"];
+    const apiEnv = openai?.api_key_env ?? "OPENAI_API_KEY";
+    const apiKey = openai?.api_key ?? process.env[apiEnv];
+    if (!apiKey || apiKey.trim().length === 0) {
+      throw new Error(
+        "codex harness requires an OpenAI-format API key: set OPENAI_API_KEY " +
+          "(or providers.openai.api_key), and optionally providers.openai.base_url for a custom endpoint",
+      );
+    }
+    return {
+      mode: "api-key",
+      token: apiKey,
+      ...(openai?.base_url ? { baseUrl: openai.base_url } : {}),
+    };
+  };
+  const harnessRuntime: HarnessRuntimeDeps = {
+    defaultKind: config.harness.default === "off" ? null : config.harness.default,
+    factory: (kind) => {
+      if (kind === "claude") return claudeHarnessFactory;
+      if (kind === "codex") return codexHarnessFactory;
+      throw new Error(`harness kind '${kind}' is not implemented yet`);
+    },
+    auth: (kind) => {
+      if (kind === "claude") return resolveClaudeAuth();
+      if (kind === "codex") return resolveCodexAuth();
+      throw new Error(`harness kind '${kind}' has no auth resolver`);
+    },
+    configDir: harnessConfigDir,
+    nativeToolMap: NATIVE_TOOL_MAP,
+    nativeTools: config.harness.native_tools,
+    approval: async () => ({ behavior: "allow" as const }),
+  };
+
   const handle = createGatewayServer({
     config,
     logger,
@@ -1396,6 +1460,7 @@ export async function boot(opts: BootOptions): Promise<BootedGateway> {
     toolRegistry,
     toolGroups,
     workspaceDir,
+    harness: harnessRuntime,
     memory: memoryService,
     titleGenerator,
     ...(sessionIngestion ? { sessionIngestion } : {}),
